@@ -29,6 +29,7 @@
 #include "spock.h"
 #include "spock_common.h"
 #include "spock_relcache.h"
+#include "spock_worker.h"
 
 #define SPOCKRELATIONHASH_INITIAL_SIZE 128
 static HTAB *SpockRelationHash = NULL;
@@ -37,6 +38,11 @@ static HTAB *SpockRelationHash = NULL;
 static void spock_relcache_init(void);
 static int	tupdesc_get_att_by_name(TupleDesc desc, const char *attname);
 
+/*
+ * relcache_free_entry
+ *		Release everything an entry owns in CacheMemoryContext, leaving it
+ *		ready to be filled in again.
+ */
 static void
 relcache_free_entry(SpockRelation *entry)
 {
@@ -53,10 +59,31 @@ relcache_free_entry(SpockRelation *entry)
 		pfree(entry->attnames);
 	}
 
+	/*
+	 * attrtypes and attrtypmods are allocated per entry in
+	 * spock_relation_cache_update(); free them with the rest of the entry and
+	 * clear the pointers so the entry can be refilled cleanly.
+	 */
+	if (entry->attrtypes)
+	{
+		pfree(entry->attrtypes);
+		entry->attrtypes = NULL;
+	}
+	if (entry->attrtypmods)
+	{
+		pfree(entry->attrtypmods);
+		entry->attrtypmods = NULL;
+	}
+
 	if (entry->attmap)
 		pfree(entry->attmap);
 	if (entry->delta_apply_functions)
 		pfree(entry->delta_apply_functions);
+	if (entry->arbiterIndexes != NIL)
+	{
+		list_free(entry->arbiterIndexes);
+		entry->arbiterIndexes = NIL;
+	}
 
 	entry->natts = 0;
 	entry->reloid = InvalidOid;
@@ -79,7 +106,8 @@ spock_relation_open(uint32 remoteid, LOCKMODE lockmode)
 	 * entry.  An index dropped under the apply worker (notably DROP INDEX
 	 * CONCURRENTLY, whose lock does not block apply) otherwise leaves a stale
 	 * index list on the cached relation, and the next ExecOpenIndices() would
-	 * index_open() the removed OID and raise "could not open relation with OID".
+	 * index_open() the removed OID and raise "could not open relation with
+	 * OID".
 	 */
 	AcceptInvalidationMessages();
 
@@ -97,10 +125,12 @@ spock_relation_open(uint32 remoteid, LOCKMODE lockmode)
 	/* Need to update the local cache? */
 	if (!OidIsValid(entry->reloid))
 	{
-		RangeVar	   *rv = makeNode(RangeVar);
-		int				i;
-		TupleDesc		desc;
-		ResultRelInfo  *relinfo;
+		RangeVar   *rv = makeNode(RangeVar);
+		int			i;
+		TupleDesc	desc;
+		ResultRelInfo *relinfo;
+		StringInfoData missing;
+		int			num_missing = 0;
 
 		rv->schemaname = (char *) entry->nspname;
 		rv->relname = (char *) entry->relname;
@@ -112,16 +142,15 @@ spock_relation_open(uint32 remoteid, LOCKMODE lockmode)
 
 		/*
 		 * Reset delta-apply metadata before rescanning. A relcache
-		 * invalidation only resets entry->reloid; the function-Oid array
-		 * and has_delta_columns flag carry over from the prior state.
-		 * Without this reset, dropping a delta_apply_function attoption
-		 * would leave a stale Oid behind and has_delta_columns stuck at
-		 * true.
+		 * invalidation only resets entry->reloid; the function-Oid array and
+		 * has_delta_columns flag carry over from the prior state. Without
+		 * this reset, dropping a delta_apply_function attoption would leave a
+		 * stale Oid behind and has_delta_columns stuck at true.
 		 *
 		 * Also resize the array to the local TupleDesc width. The
-		 * cache_update path sizes it to remote natts, but the scan loop
-		 * below indexes by attmap[i] (a local position), which can exceed
-		 * remote natts when local has columns the remote does not.
+		 * cache_update path sizes it to remote natts, but the scan loop below
+		 * indexes by attmap[i] (a local position), which can exceed remote
+		 * natts when local has columns the remote does not.
 		 */
 		if (entry->delta_apply_functions != NULL)
 			pfree(entry->delta_apply_functions);
@@ -140,6 +169,26 @@ spock_relation_open(uint32 remoteid, LOCKMODE lockmode)
 			AttributeOpts *aopt;
 
 			entry->attmap[i] = tupdesc_get_att_by_name(desc, entry->attnames[i]);
+
+			/*
+			 * A missing local column is handled like a missing local
+			 * relation. Collect every missing column rather than stopping at
+			 * the first, so an operator repairing a drifted schema gets the
+			 * whole list at once instead of one column per apply attempt.
+			 * Skip the rest of the loop body: it indexes the local tupdesc by
+			 * attmap[i].
+			 */
+			if (unlikely(entry->attmap[i] < 0))
+			{
+				if (num_missing == 0)
+					initStringInfo(&missing);
+				else
+					appendStringInfoString(&missing, ", ");
+
+				appendStringInfo(&missing, "\"%s\"", entry->attnames[i]);
+				num_missing++;
+				continue;
+			}
 
 			/*
 			 * If we find attribute options for this column and the
@@ -172,10 +221,59 @@ spock_relation_open(uint32 remoteid, LOCKMODE lockmode)
 			}
 		}
 
+		/*
+		 * Report the mismatch on the first pass so apply_work() records the
+		 * cause, then return NULL during exception replay so the caller can
+		 * apply the configured exception behaviour instead of erroring again.
+		 * Close with NoLock like every other apply-path close: the lock stays
+		 * until the replication transaction ends rather than being dropped on
+		 * a table we are part way through.
+		 */
+		if (unlikely(num_missing > 0))
+		{
+			if (MyApplyWorker == NULL || !MyApplyWorker->use_try_block)
+				ereport(ERROR,
+						(errcode(ERRCODE_UNDEFINED_COLUMN),
+						 errmsg_plural("unknown column name %s in relation \"%s\".\"%s\"",
+									   "unknown column names %s in relation \"%s\".\"%s\"",
+									   num_missing,
+									   missing.data, entry->nspname,
+									   entry->relname)));
+
+			pfree(missing.data);
+			spock_relation_close(entry, NoLock);
+			return NULL;
+		}
+
 		relinfo = makeNode(ResultRelInfo);
 		InitResultRelInfo(relinfo, entry->rel, 1, NULL, 0);
 		entry->reloid = RelationGetRelid(entry->rel);
 		entry->idxoid = RelationGetReplicaIndex(relinfo->ri_RelationDesc);
+
+		/*
+		 * Cache the indexes that can arbitrate an applied INSERT.  Like the
+		 * delta-apply metadata above this is derived state: a relcache
+		 * invalidation only resets entry->reloid, so rebuild it here rather
+		 * than let the previous mapping's list carry over.
+		 */
+		{
+			MemoryContext oldcontext;
+			List	   *arbiters;
+
+			/*
+			 * Build the new list before touching the old one.  This runs
+			 * catalog code that can throw, and the entry outlives the error:
+			 * freeing first would leave a dangling pointer behind for the
+			 * next lookup -- or for relcache_free_entry() -- to trip over.
+			 */
+			oldcontext = MemoryContextSwitchTo(CacheMemoryContext);
+			arbiters = SpockBuildInsertArbiterIndexes(entry->rel);
+			MemoryContextSwitchTo(oldcontext);
+
+			if (entry->arbiterIndexes != NIL)
+				list_free(entry->arbiterIndexes);
+			entry->arbiterIndexes = arbiters;
+		}
 
 		/* Cache trigger info. */
 		entry->hasTriggers = false;
@@ -249,7 +347,13 @@ spock_relation_cache_update(uint32 remoteid, char *schemaname,
 	entry->delta_apply_functions = palloc0(natts * sizeof(Oid));
 	MemoryContextSwitchTo(oldcontext);
 
-	/* XXX Should we validate the relation against local schema here? */
+	/* Filled in by spock_relation_open() along with the rest of the mapping. */
+	entry->arbiterIndexes = NIL;
+
+	/*
+	 * Local-schema validation requires the lock taken by
+	 * spock_relation_open().
+	 */
 
 	entry->reloid = InvalidOid;
 }
@@ -282,12 +386,22 @@ spock_relation_cache_updater(SpockRemoteRel *remoterel)
 	entry->attnames = palloc(remoterel->natts * sizeof(char *));
 	for (i = 0; i < remoterel->natts; i++)
 		entry->attnames[i] = pstrdup(remoterel->attnames[i]);
+
+	entry->attrtypes = NULL;
+	entry->attrtypmods = NULL;
+
 	entry->attmap = palloc(remoterel->natts * sizeof(int));
 	entry->has_delta_columns = false;
 	entry->delta_apply_functions = palloc0(remoterel->natts * sizeof(Oid));
 	MemoryContextSwitchTo(oldcontext);
 
-	/* XXX Should we validate the relation against local schema here? */
+	/* Filled in by spock_relation_open() along with the rest of the mapping. */
+	entry->arbiterIndexes = NIL;
+
+	/*
+	 * Local-schema validation requires the lock taken by
+	 * spock_relation_open().
+	 */
 
 	entry->reloid = InvalidOid;
 }
@@ -381,6 +495,10 @@ spock_relcache_init(void)
 
 /*
  * Find attribute index in TupleDesc struct by attribute name.
+ *
+ * Returns -1 if no such column exists locally; the caller decides how to
+ * react (this can legitimately happen on a schema mismatch between nodes,
+ * which is not this function's business to escalate).
  */
 static int
 tupdesc_get_att_by_name(TupleDesc desc, const char *attname)
@@ -395,7 +513,7 @@ tupdesc_get_att_by_name(TupleDesc desc, const char *attname)
 			return i;
 	}
 
-	elog(ERROR, "unknown column name %s", attname);
+	return -1;
 }
 
 
@@ -412,6 +530,10 @@ spock_lookup_delta_function(char *fname, Oid typeoid)
 	FuncCandidateList candidates;
 	FuncCandidateList fc;
 	Oid			funcoid = InvalidOid;
+#if PG_VERSION_NUM >= 190000
+	/* PG19 added a mandatory out-parameter that the callee dereferences */
+	int			fgc_flags = 0;
+#endif
 
 	/* Split the function name into [schema.][funcname] */
 	if (!SplitIdentifierString(fname, '.', &namelist))
@@ -428,13 +550,14 @@ spock_lookup_delta_function(char *fname, Oid typeoid)
 	}
 
 	/* Find a match */
-	candidates = FuncnameGetCandidates(namestrings, 3, NIL,
-									   false, false, false, false
 #if PG_VERSION_NUM >= 190000
-	/* PG19 added a mandatory out-parameter that the callee dereferences */
-									   , &(int){0}
+	candidates = FuncnameGetCandidates(namestrings, 3, NIL,
+									   false, false, false, false,
+									   &fgc_flags);
+#else
+	candidates = FuncnameGetCandidates(namestrings, 3, NIL,
+									   false, false, false, false);
 #endif
-		);
 	for (fc = candidates; fc != NULL; fc = fc->next)
 		if (fc->args[0] == typeoid &&
 			fc->args[1] == typeoid &&

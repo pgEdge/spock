@@ -716,8 +716,8 @@ reportDependentObjects(const ObjectAddresses *targetObjects,
 	 * operating environment.
 	 */
 	if (spock_enable_quiet_mode || (behavior == DROP_CASCADE &&
-		msglevel < my_client_min_messages &&
-		(msglevel < my_log_min_messages || my_log_min_messages == LOG)))
+									msglevel < my_client_min_messages &&
+									(msglevel < my_log_min_messages || my_log_min_messages == LOG)))
 		return;
 
 	/*

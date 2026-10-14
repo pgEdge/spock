@@ -119,9 +119,10 @@ modified:
 | `spock`           | yes               | yes             | yes
 | `snowflake`       | yes               | yes             | yes
 | `lolor`           | yes               | no              | yes
+| `coldfront`       | yes               | no              | yes
 | `pgedge_ace` (schema only) | yes      | yes             | no
 
-`spock`, `snowflake`, and `lolor` each have both a `schema` and an
+`spock`, `snowflake`, `lolor` and `coldfront` each have both a `schema` and an
 `extension` row. The `replicate_ddl` column above is the value on the
 `schema` row; the `extension` row carries `replicate_ddl = NULL` (not
 applicable), while `exclude_from_dump`/`block_in_repset` apply to both.
@@ -129,6 +130,14 @@ applicable), while `exclude_from_dump`/`block_in_repset` apply to both.
 `lolor` is excluded from the dump but is intentionally allowed in replication
 sets: its tables must replicate so that large objects survive a
 `DROP EXTENSION` on every node, not only where the drop was issued.
+
+`coldfront` is the pgEdge tiered storage extension. Every node creates its
+objects with its own `CREATE EXTENSION coldfront`, so structure sync leaves
+them out. Its tables stay allowed in replication sets because Coldfront adds
+several of them to the `default` set itself, among them the bakery claim
+tables and the tiered view registry, to coordinate writes across the mesh.
+The cold data behind a tiered view lives in shared Iceberg storage outside
+PostgreSQL and is not replicated by Spock.
 
 `pgedge_ace` is the schema used by the pgEdge ACE utility. It is node-local
 configuration/state, not application data: its DDL is kept local for the

@@ -17,7 +17,7 @@
  *   - SpockGroupHash: shmem hash keyed by (dbid, node_id, remote_node_id).
  *     Each entry (SpockGroupEntry) contains:
  *       * key                           -- identity
- *       * progress (SpockApplyProgress) -- last applied remote commit snapshot
+ *       * progress (SpockApplyProgress) -- aggregate apply/receive progress
  *       * nattached, prev_processed_cv  -- apply-worker coordination (runtime)
  *
  * Persistence:
@@ -89,9 +89,9 @@ spock_init_progress_fields(SpockApplyProgress *progress)
 	Assert(OidIsValid(progress->key.remote_node_id));
 
 	/*
-	 * Initialize all non-key fields to zero/invalid values.
-	 * Using 0 for timestamps follows PostgreSQL convention where
-	 * timestamp 0 represents "not set" (see CommitTsShmemInit).
+	 * Initialize all non-key fields to zero/invalid values. Using 0 for
+	 * timestamps follows PostgreSQL convention where timestamp 0 represents
+	 * "not set" (see CommitTsShmemInit).
 	 */
 	progress->remote_commit_ts = 0;
 	progress->prev_remote_ts = 0;
@@ -242,6 +242,48 @@ spock_group_attach(Oid dbid, Oid node_id, Oid remote_node_id)
 }
 
 /*
+ * spock_group_ensure_entry
+ *
+ * Make sure a progress entry exists for the group without attaching to it.
+ * For callers (e.g. sub_create) that only need the entry present; nattached
+ * keeps counting actual apply workers, which readers rely on to know how
+ * many streams feed the entry.
+ */
+void
+spock_group_ensure_entry(Oid dbid, Oid node_id, Oid remote_node_id)
+{
+	SpockGroupKey key;
+	SpockGroupEntry *entry;
+	bool		found;
+
+	Assert(OidIsValid(dbid) && OidIsValid(node_id) &&
+		   OidIsValid(remote_node_id));
+
+	key = make_key(dbid, node_id, remote_node_id);
+
+	LWLockAcquire(SpockCtx->apply_group_master_lock, LW_EXCLUSIVE);
+
+	entry = (SpockGroupEntry *) hash_search(SpockGroupHash, &key,
+											HASH_ENTER, &found);
+	if (entry == NULL)
+	{
+		LWLockRelease(SpockCtx->apply_group_master_lock);
+		elog(ERROR, "SpockGroupHash is full, cannot create entry for group "
+			 "(dbid=%u, node_id=%u, remote_node_id=%u)",
+			 dbid, node_id, remote_node_id);
+	}
+
+	if (!found)
+	{
+		spock_init_progress_fields(&entry->progress);
+		pg_atomic_init_u32(&entry->nattached, 0);
+		ConditionVariableInit(&entry->prev_processed_cv);
+	}
+
+	LWLockRelease(SpockCtx->apply_group_master_lock);
+}
+
+/*
  * spock_group_detach
  *
  * Decrements nattached. Entries are not deleted (stable pointers).
@@ -274,22 +316,24 @@ progress_update_struct(SpockApplyProgress *dest, const SpockApplyProgress *src)
 	Assert(dest->key.node_id == src->key.node_id);
 	Assert(dest->key.remote_node_id == src->key.remote_node_id);
 
+	/*
+	 * LSN and timestamp order may differ for forwarded transactions. Keep
+	 * remote_commit_ts paired with its local observation fields, and update
+	 * prev_remote_ts in stream order. Statistics-only updates have no commit
+	 * timestamp and must not change prev_remote_ts.
+	 */
+	if (dest->remote_commit_lsn < src->remote_commit_lsn)
+		dest->remote_commit_lsn = src->remote_commit_lsn;
+
 	if (dest->remote_commit_ts < src->remote_commit_ts)
 	{
-		/*
-		 * This is the most advanced commit. Save its progress.
-		 *
-		 * NOTE: According to apply group machinery their commit order should
-		 * follow the timestamp order. That means there are no way for a
-		 * commit to come with an oldest commit timestamp except we don't
-		 * update this commit's part of the data at all.
-		 */
 		dest->remote_commit_ts = src->remote_commit_ts;
-		dest->prev_remote_ts = src->prev_remote_ts;
-		dest->remote_commit_lsn = src->remote_commit_lsn;
 		dest->last_updated_ts = src->last_updated_ts;
 		dest->updated_by_decode = src->updated_by_decode;
 	}
+
+	if (src->remote_commit_ts != 0)
+		dest->prev_remote_ts = src->prev_remote_ts;
 
 	/* Here is more frequent statistics to update */
 	if (dest->remote_insert_lsn < src->remote_insert_lsn)
@@ -331,8 +375,8 @@ progress_update_struct(SpockApplyProgress *dest, const SpockApplyProgress *src)
 bool
 spock_group_progress_update(const SpockApplyProgress *sap)
 {
-	SpockGroupEntry	   *entry;
-	bool				found;
+	SpockGroupEntry *entry;
+	bool		found;
 
 	Assert(OidIsValid(sap->key.dbid) && OidIsValid(sap->key.node_id) &&
 		   OidIsValid(sap->key.remote_node_id));
@@ -340,7 +384,7 @@ spock_group_progress_update(const SpockApplyProgress *sap)
 
 	if (!SpockGroupHash || !SpockCtx)
 	{
-		/*
+		/*----------
 		 * This should never happen in normal operation. The shared memory
 		 * structures are initialized during postmaster startup via
 		 * shmem_startup_hook. If we hit this, it likely indicates:
@@ -420,7 +464,7 @@ spock_group_progress_update_ptr(SpockGroupEntry *e,
 TimestampTz
 apply_worker_get_prev_remote_ts(void)
 {
-	TimestampTz	prev_remote_ts;
+	TimestampTz prev_remote_ts;
 
 	Assert(MyApplyWorker != NULL);
 	Assert(MyApplyWorker->apply_group != NULL);
@@ -432,6 +476,7 @@ apply_worker_get_prev_remote_ts(void)
 		LWLockRelease(SpockCtx->apply_group_master_lock);
 	}
 	else
+
 		/*
 		 * Should never happen. In production just send the worker into
 		 * exception behaviour without crash.
@@ -470,11 +515,11 @@ spock_group_foreach(SpockGroupIterCB cb, void *arg)
 static void
 dump_one_group_cb(const SpockGroupEntry *entry, void *arg)
 {
-	DumpCtx	   *ctx = (DumpCtx *) arg;
+	DumpCtx    *ctx = (DumpCtx *) arg;
 
 	/* Only the progress payload goes to disk. It already contains the key. */
 	write_buf(ctx->fd, &entry->progress, sizeof(SpockApplyProgress),
-												SPOCK_RES_DUMPFILE "(data)");
+			  SPOCK_RES_DUMPFILE "(data)");
 	ctx->count++;
 }
 
@@ -490,17 +535,16 @@ dump_one_group_cb(const SpockGroupEntry *entry, void *arg)
 void
 spock_group_resource_dump(void)
 {
-	char				pathdir[MAXPGPATH];
-	char				pathtmp[MAXPGPATH];
-	char				pathfin[MAXPGPATH];
-	int					fd = -1;
-	SpockResFileHeader	hdr = {0};
-	DumpCtx				dctx = {0};
+	char		pathdir[MAXPGPATH];
+	char		pathtmp[MAXPGPATH];
+	char		pathfin[MAXPGPATH];
+	int			fd = -1;
+	SpockResFileHeader hdr = {0};
+	DumpCtx		dctx = {0};
 
 	/*
 	 * Safety check: if shared memory isn't initialized, we can't dump. This
-	 * shouldn't happen but check anyway.
-	 * Do not tolerate it in development.
+	 * shouldn't happen but check anyway. Do not tolerate it in development.
 	 */
 	Assert(SpockCtx && SpockGroupHash);
 	if (!SpockCtx || !SpockGroupHash)
@@ -578,9 +622,9 @@ spock_group_resource_dump(void)
 static void
 spock_group_resource_load(void)
 {
-	char				pathfin[MAXPGPATH];
-	int					fd;
-	SpockResFileHeader	hdr;
+	char		pathfin[MAXPGPATH];
+	int			fd;
+	SpockResFileHeader hdr;
 
 	/*
 	 * Check that we are actually inside shmem startup or recovery that
@@ -635,18 +679,19 @@ spock_group_resource_load(void)
 	/* Read each record and upsert */
 	for (uint32 i = 0; i < hdr.entry_count; i++)
 	{
-		SpockApplyProgress	rec;
-		bool				ret;
+		SpockApplyProgress rec;
+		bool		ret;
 
 		/* XXX: Do we need any kind of CRC here? */
 		read_buf(fd, &rec, sizeof(SpockApplyProgress),
-												SPOCK_RES_DUMPFILE "(data)");
+				 SPOCK_RES_DUMPFILE "(data)");
 
 		/*
 		 * Note: if ever version is changed in SpockApplyProgress and need
 		 * compatibility, it should be translated here. For now, 1:1.
 		 */
 		ret = spock_group_progress_update(&rec);
+
 		/*
 		 * Should never happen in real life, but be tolerant in production as
 		 * much as possible.
@@ -670,9 +715,9 @@ spock_group_resource_load(void)
 void
 spock_group_progress_update_list(List *lst)
 {
-	ListCell *lc;
+	ListCell   *lc;
 
-	foreach (lc, lst)
+	foreach(lc, lst)
 	{
 		SpockApplyProgress *sap = (SpockApplyProgress *) lfirst(lc);
 
@@ -692,8 +737,8 @@ spock_group_progress_update_list(List *lst)
 	spock_rmgr_log_resource_dump(SPOCK_DUMP_TABLE_SYNC, lst);
 
 	/*
-	 * Free the list and each object. Be careful here because it is inside
-	 * a memory context that is rarely reset.
+	 * Free the list and each object. Be careful here because it is inside a
+	 * memory context that is rarely reset.
 	 */
 	list_free_deep(lst);
 }
@@ -711,7 +756,7 @@ spock_group_progress_update_list(List *lst)
 void
 spock_group_progress_force_set_list(List *lst)
 {
-	ListCell *lc;
+	ListCell   *lc;
 
 	if (!SpockGroupHash || !SpockCtx)
 	{
@@ -720,11 +765,11 @@ spock_group_progress_force_set_list(List *lst)
 		return;
 	}
 
-	foreach (lc, lst)
+	foreach(lc, lst)
 	{
 		SpockApplyProgress *sap = (SpockApplyProgress *) lfirst(lc);
-		SpockGroupEntry	   *entry;
-		bool				found;
+		SpockGroupEntry *entry;
+		bool		found;
 
 		LWLockAcquire(SpockCtx->apply_group_master_lock, LW_EXCLUSIVE);
 
@@ -754,10 +799,8 @@ spock_group_progress_force_set_list(List *lst)
 		}
 
 		/*
-		 * Force-set: unconditionally adopt sap as authoritative. Cannot use
-		 * progress_update_struct here -- its max-by-timestamp merge skips
-		 * remote_commit_lsn when sap->remote_commit_ts == 0, which is a legal
-		 * shape when the peer is post-reconcile and pre-recovery.
+		 * The resume snapshot is authoritative and may move progress
+		 * backward; progress_update_struct() cannot express that override.
 		 */
 		entry->progress = *sap;
 

@@ -1,0 +1,128 @@
+#
+# Nightly cross-major upgrade of a Spock cluster (no Docker)
+#
+# Builds two PostgreSQL majors plus the Spock extension for each, brings up a
+# three-node Spock mesh on the older one, populates it with the core
+# PostgreSQL regression database, then upgrades the cluster one node at a time
+# and checks that replication survives and the nodes still agree.
+#
+# The whole thing is driven by tests/run-cluster-upgrade.sh, so it runs
+# identically on a developer laptop.  This workflow's job is just: provision
+# deps, invoke the script, keep the evidence.
+#
+# Dependency footprint is dictated by the script's ./configure flags
+# (--enable-debug --enable-cassert --without-icu --without-readline
+# --with-ssl=openssl):
+#
+#   parser/scanner   -> bison, flex
+#   --with-ssl       -> libssl-dev  (also what builds contrib/pgcrypto)
+#   (default zlib)   -> zlib1g-dev
+#   pkg detection    -> pkg-config
+#
+# ICU and readline are switched off on purpose: pg_upgrade compares the locale
+# provider and ICU version between the two clusters, and two independently
+# configured majors are far more likely to agree on plain libc/C.  Everything
+# else the script touches -- gcc, make, perl, git, rsync -- is preinstalled on
+# ubuntu-latest.  If you change the configure flags in the script, sync this
+# list with it.
+#
+# ACE (https://github.com/pgEdge/ace) is checked out and built here because
+# the script uses it to compare the nodes.  Its go.mod asks for a newer Go
+# than the runner image ships, hence the explicit setup-go.
+#
+
+name: Nightly Cluster Upgrade
+run-name: Cross-major cluster upgrade (nightly)
+
+on:
+  workflow_dispatch:          # manual: "Run workflow" button in the UI
+  schedule:
+    # 04:00 UTC, two hours after nightly_tap.yml, so the two do not contend
+    # for runners.  Not hung off pushes: this builds two PostgreSQL majors
+    # from source and takes hours.
+    - cron: '0 4 * * *'
+
+permissions:
+  contents: read
+
+jobs:
+  cluster-upgrade:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+
+    steps:
+      - name: Checkout spock
+        # Full history: the script builds the pre-upgrade nodes from
+        # OLD_SPOCK_REF (v5_STABLE by default) out of this same clone, and a
+        # shallow checkout has no such ref to check out.
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Checkout ACE
+        uses: actions/checkout@v4
+        with:
+          repository: pgEdge/ace
+          path: ace
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
+            --no-install-recommends \
+              bison flex pkg-config zlib1g-dev libssl-dev
+
+      - name: Free up disk space
+        # Two --enable-cassert PostgreSQL source trees plus their installs, six
+        # data directories holding the regression database, and pg_upgrade's
+        # copies of them do not fit alongside the runner's preinstalled
+        # toolchains.  Removing those is worth more than it costs.
+        run: |
+          df -h /
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
+          sudo rm -rf /usr/local/share/boost "${AGENT_TOOLSDIRECTORY:-/opt/hostedtoolcache}"
+          df -h /
+
+      - name: Set up Go for ACE
+        # Must come *after* "Free up disk space": that step wipes the runner's
+        # tool cache, which is where setup-go installs the toolchain and what
+        # the PATH entry it exports points at.  Run earlier, the Go it installs
+        # is deleted again and run-cluster-upgrade.sh fails its `command -v go`
+        # check, aborting the job with "ACE is required and could not be found".
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: ace/go.mod
+
+      - name: Upgrade the cluster
+        env:
+          ACE_SRC: ${{ github.workspace }}/ace
+        run: |
+          set -euo pipefail
+          rc=0
+          ./tests/run-cluster-upgrade.sh || rc=$?
+          # The script's exit status is its verdict, so it is classified here
+          # rather than swallowed.  0 and 22 both mean the upgraded cluster
+          # came out consistent -- 22 adds advisory findings, which are in the
+          # log this job keeps.  Every other status is a real failure and is
+          # re-raised unchanged.
+          case "${rc}" in
+            0)  echo "cluster upgraded and verified" ;;
+            22) echo "cluster upgraded and verified, with advisory findings in cluster-upgrade/log/procedure.log" ;;
+            *)  echo "cluster upgrade FAILED with status ${rc}" >&2
+                exit "${rc}" ;;
+          esac
+
+      - name: Collect evidence
+        # Kept on success as well as on failure: the per-phase logs and the
+        # relation/row-count snapshots are the evidence behind a green run, and
+        # a green run that quietly compared nothing would be worse than a red
+        # one.  Skipped only on cancellation, when there is nothing to keep.
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: cluster-upgrade-evidence
+          path: |
+            cluster-upgrade/log/**
+            cluster-upgrade/report/**
+          if-no-files-found: warn
+          retention-days: 14

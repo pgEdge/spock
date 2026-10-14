@@ -117,23 +117,43 @@ required Postgres parameters to the end of the file:
 
 ```sql
 wal_level = logical
-max_worker_processes = 10
+max_worker_processes = 20   # see the sizing guide below
 max_replication_slots = 10
 max_wal_senders = 10
 shared_preload_libraries = 'spock'
 track_commit_timestamp = on
+output_plugin_libraries = 'pgoutput, test_decoding, spock_output'
+                            # only on servers that have this parameter; see below
 ```
+
+The values above are a working starting point for a small cluster (two or
+three nodes, one replicated database). They are not one-size-fits-all: Spock
+launches a supervisor, a slot sync worker, one background worker per database
+in the instance, and one per subscription; subscription counts scale with node count multiplied by the number of
+replicated databases, and `max_worker_processes` is shared with parallel query
+workers. See
+[Sizing Postgres Resources for Spock](sizing.md) for the formulas and
+per-cluster recommendations before going to production.
+
+Set `output_plugin_libraries` only if your server has that parameter — it was
+added by a 2026 security fix and, without `spock_output` listed there, logical
+decoding fails with `library "spock_output" may not be used as an output
+plugin`. The check runs every time decoding starts, so it stops established
+clusters after a minor-version upgrade too, and it applies to every node. On
+older releases the parameter does not exist and setting it stops the server
+from starting. See [Configuring Spock](configuring.md) for how to check.
 
 Note on replication origin states:
 
 - PostgreSQL 15-17: The `max_replication_slots` parameter controls both the
   number of replication slots and the number of replication origin states;
-  when sizing this parameter, account for both slots and origins (typically
-  one origin per subscription).
+  when sizing this parameter, account for both slots and origins (one origin
+  per subscription, and subscriptions are counted per replicated database).
 - PostgreSQL 18+: A new parameter `max_active_replication_origins` was
   introduced to separately control the number of replication origin states;
   the default value is 10, which may be insufficient for clusters with many
-  subscriptions; set this to at least the number of subscriptions plus some
+  subscriptions; set this to at least the number of subscriptions this node
+  applies - `(nodes - 1) x replicated databases` in a full mesh - plus some
   headroom (similar sizing to `max_replication_slots`).
 
 After modifying the Postgres parameters, use your OS-specific command to

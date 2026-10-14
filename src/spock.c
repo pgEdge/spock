@@ -74,8 +74,8 @@
 
 #if PG_VERSION_NUM >= 180000
 PG_MODULE_MAGIC_EXT(
-	.name = "spock",
-	.version = SPOCK_VERSION
+					.name = "spock",
+					.version = SPOCK_VERSION
 );
 #else
 PG_MODULE_MAGIC;
@@ -144,7 +144,7 @@ static const struct config_enum_entry exception_logging_options[] = {
 static const struct config_enum_entry readonly_options[] = {
 	{"off", READONLY_OFF, false},
 	{"local", READONLY_LOCAL, false},
-	{"user", READONLY_LOCAL, true},	/* backward-compatible alias */
+	{"user", READONLY_LOCAL, true}, /* backward-compatible alias */
 	{"all", READONLY_ALL, false},
 	{NULL, 0, false}
 };
@@ -182,10 +182,14 @@ bool		allow_ddl_from_functions = false;
 int			restart_delay_default;
 int			restart_delay_on_exception;
 int			spock_replay_queue_size;
-int			spock_pause_timeout = 10;	/* seconds to wait for apply workers to pause */
-int			spock_sync_timeout = 0;		/* seconds per sync wait; 0 = routine's own default */
-int			spock_read_retry_count = 5;	/* heap update/delete: retries when local tuple is missing */
+int			spock_pause_timeout = 10;	/* seconds to wait for apply workers
+										 * to pause */
+int			spock_sync_timeout = 0; /* seconds per sync wait; 0 = routine's
+									 * own default */
+int			spock_read_retry_count = 5; /* heap update/delete: retries when
+										 * local tuple is missing */
 bool		check_all_uc_indexes = false;
+bool		non_conflicting_inserts = false;
 bool		spock_enable_quiet_mode = false;
 int			log_origin_change = SPOCK_ORIGIN_NONE;
 int			spock_apply_idle_timeout = 300;
@@ -427,16 +431,17 @@ spock_connect_base(const char *connstr, const char *appname,
 	i++;
 
 	/*
-	 * Force assorted GUC parameters to settings that ensure that the peer will
-	 * output data values in a form that is unambiguous to us when the transfer
-	 * happens in text mode.  (We don't touch our own settings; that would
-	 * surprise user-defined code running here, such as triggers.)  ISO is the
-	 * only DateStyle that always emits an unambiguous date and an explicit
-	 * numeric UTC offset, which is also why TimeZone needs no forcing.
+	 * Force assorted GUC parameters to settings that ensure that the peer
+	 * will output data values in a form that is unambiguous to us when the
+	 * transfer happens in text mode.  (We don't touch our own settings; that
+	 * would surprise user-defined code running here, such as triggers.)  ISO
+	 * is the only DateStyle that always emits an unambiguous date and an
+	 * explicit numeric UTC offset, which is also why TimeZone needs no
+	 * forcing.
 	 *
 	 * Subscription sync reads spock.progress from a peer over a regular
-	 * connection, so this is applied to those as well, not only to replication
-	 * ones.
+	 * connection, so this is applied to those as well, not only to
+	 * replication ones.
 	 *
 	 * Caution: an explicit array entry overrides any "options" carried by the
 	 * expanded dbname string, so the user's must be prepended rather than
@@ -465,18 +470,21 @@ spock_connect_base(const char *connstr, const char *appname,
 
 	if (PQstatus(conn) != CONNECTION_OK)
 	{
+		char	   *conn_errmsg = pstrdup(PQerrorMessage(conn));
+
+		PQfinish(conn);
 		ereport(ERROR,
 				(errmsg("could not connect to the postgresql server%s: %s",
 						replication ? " in replication mode" : "",
-						PQerrorMessage(conn)),
+						conn_errmsg),
 				 errdetail("dsn was: %s", s.data)));
 	}
 
 	/*
 	 * Released only once nothing can read vals[] again.  libpq copied what it
-	 * needed during the call above, so freeing earlier would work, but it would
-	 * leave a dangling entry in vals[] across the error path -- and that path
-	 * already formats connection details for the report.
+	 * needed during the call above, so freeing earlier would work, but it
+	 * would leave a dangling entry in vals[] across the error path -- and
+	 * that path already formats connection details for the report.
 	 */
 	pfree(options_val);
 
@@ -515,8 +523,9 @@ spock_get_conninfo_option(const char *connstr, const char *keyword)
 		 * Deliberately not an error.  PQconnectdbParams() takes a dbname with
 		 * neither '=' nor a URI prefix literally, so a DSN of plain "mydb"
 		 * connects today while PQconninfoParse() rejects it; raising an error
-		 * here would break such configurations.  Report no options instead, and
-		 * let PQconnectdbParams() complain if the string really is malformed.
+		 * here would break such configurations.  Report no options instead,
+		 * and let PQconnectdbParams() complain if the string really is
+		 * malformed.
 		 *
 		 * The error string is malloc'd, so we must free it explicitly.
 		 */
@@ -806,11 +815,11 @@ start_manager_workers(void)
 
 	while (HeapTupleIsValid(tup = heap_getnext(scan, ForwardScanDirection)))
 	{
-		Form_pg_database	pgdatabase = (Form_pg_database) GETSTRUCT(tup);
-		Oid					dboid = pgdatabase->oid;
-		SpockWorker		worker;
-		HeapTuple			rev;
-		bool				connectable = false;
+		Form_pg_database pgdatabase = (Form_pg_database) GETSTRUCT(tup);
+		Oid			dboid = pgdatabase->oid;
+		SpockWorker worker;
+		HeapTuple	rev;
+		bool		connectable = false;
 
 		CHECK_FOR_INTERRUPTS();
 
@@ -829,11 +838,11 @@ start_manager_workers(void)
 
 		/*
 		 * Revalidate the dboid is still connectable.  The seq-scan tuple
-		 * above can have become stale: another backend may have DROPped
-		 * the database or set datconnlimit = -2 (invalid-database marker)
-		 * while we walk pg_database.  Without this check the manager
-		 * worker FATALs during attach with "cannot connect to invalid
-		 * database" or "database <oid> does not exist", which sustains a
+		 * above can have become stale: another backend may have DROPped the
+		 * database or set datconnlimit = -2 (invalid-database marker) while
+		 * we walk pg_database.  Without this check the manager worker FATALs
+		 * during attach with "cannot connect to invalid database" or
+		 * "database <oid> does not exist", which sustains a
 		 * supervisor-respawn loop under heavy tenant-DB churn (SUP-137).
 		 */
 		rev = SearchSysCache1(DATABASEOID, ObjectIdGetDatum(dboid));
@@ -886,7 +895,7 @@ start_manager_workers(void)
 static void
 spock_supervisor_on_exit(int code, Datum arg)
 {
-	int		retries = SPOCK_SHUTDOWN_DRAIN_MAX_RETRIES;
+	int			retries = SPOCK_SHUTDOWN_DRAIN_MAX_RETRIES;
 
 	if (code != 0)
 		return;
@@ -899,7 +908,7 @@ spock_supervisor_on_exit(int code, Datum arg)
 
 	if (spock_any_apply_worker_running())
 		elog(LOG, "spock supervisor: shutdown drain timed out, "
-				  "SHUTDOWN forensic snapshot may be incomplete");
+			 "SHUTDOWN forensic snapshot may be incomplete");
 
 	spock_group_resource_dump();
 	spock_rmgr_log_resource_dump(SPOCK_DUMP_SHUTDOWN, NULL);
@@ -1445,6 +1454,18 @@ _PG_init(void)
 							 0,
 							 NULL, NULL, NULL);
 
+	DefineCustomBoolVariable("spock.non_conflicting_inserts",
+							 gettext_noop("Assert that an applied INSERT never collides with a local row."),
+							 gettext_noop("Skips the conflict lookup and the speculative insertion "
+										  "the apply worker otherwise performs for every INSERT. "
+										  "A collision is then raised as a duplicate key error and "
+										  "handled according to spock.exception_behaviour."),
+							 &non_conflicting_inserts,
+							 false,
+							 PGC_POSTMASTER,
+							 0,
+							 NULL, NULL, NULL);
+
 	DefineCustomIntVariable("spock.output_delay",
 							"For testing conflicts, delay in output plugin in ms",
 							"For testing conflicts, delay in output plugin in milliseconds",
@@ -1459,13 +1480,13 @@ _PG_init(void)
 							NULL);
 
 	DefineCustomEnumVariable("spock.log_origin_change",
-							gettext_noop("If set, log when the origin of a tuple changes."),
-							NULL,
-							&log_origin_change,
-							SPOCK_ORIGIN_NONE,
-							SpockOriginConflicts,
-							PGC_SUSET, 0,
-							NULL, NULL, NULL);
+							 gettext_noop("If set, log when the origin of a tuple changes."),
+							 NULL,
+							 &log_origin_change,
+							 SPOCK_ORIGIN_NONE,
+							 SpockOriginConflicts,
+							 PGC_SUSET, 0,
+							 NULL, NULL, NULL);
 
 	DefineCustomIntVariable("spock.apply_idle_timeout",
 							"Maximum idle time in seconds before apply worker reconnects",

@@ -259,6 +259,10 @@ Use `spock.sub_resync_table` to resynchronize an existing table.
 
 The table may not be the target of any foreign key constraints.
 
+After scheduling the resynchronization, the function raises a `WARNING` if
+the cached `spock.node` row of the provider differs from the provider's own
+row; see [spock.sub_resync_table](functions/spock_sub_resync_table.md).
+
 !!! warning
     This function will truncate the table immediately, and only then begin
     synchronising it, so it will be empty while being synced. The command does

@@ -117,6 +117,7 @@ PG_FUNCTION_INFO_V1(spock_create_node);
 PG_FUNCTION_INFO_V1(spock_drop_node);
 PG_FUNCTION_INFO_V1(spock_alter_node_add_interface);
 PG_FUNCTION_INFO_V1(spock_alter_node_drop_interface);
+PG_FUNCTION_INFO_V1(spock_node_refresh_info_one);
 
 /* Subscription management. */
 PG_FUNCTION_INFO_V1(spock_create_subscription);
@@ -142,6 +143,7 @@ PG_FUNCTION_INFO_V1(spock_wait_for_subscription_sync_complete);
 PG_FUNCTION_INFO_V1(spock_wait_for_table_sync_complete);
 
 PG_FUNCTION_INFO_V1(spock_create_sync_event);
+PG_FUNCTION_INFO_V1(spock_node_info_emit);
 PG_FUNCTION_INFO_V1(spock_pause_apply_workers);
 PG_FUNCTION_INFO_V1(spock_resume_apply_workers);
 
@@ -500,6 +502,98 @@ spock_alter_node_drop_interface(PG_FUNCTION_ARGS)
 }
 
 /*
+ * Fetch a known peer's identity via dsn and return its current
+ * location/country/info (including any "tiebreaker" key within info),
+ * provided it still answers as node_id/node_name. spock.node_refresh_info()
+ * (plpgsql) is the one that actually writes this into spock.node -- a
+ * plain UPDATE is simpler there than doing it here in C.
+ *
+ * This is the one piece of the refresh that has to be C -- opening an
+ * arbitrary libpq connection -- so it takes the resolved
+ * node_id/node_name/dsn as plain arguments rather than looking anything up
+ * itself; spock.node_refresh_info() does the interface-fallback lookup and
+ * node enumeration in SQL, where both are simpler, and calls this once per
+ * node with its own per-node error handling.
+ *
+ * spock_connect() cleans up its own connection internally on failure
+ * (spock_connect_base(), src/spock.c); the try/catch below instead
+ * guards spock_remote_node_info(), which can raise after a successful
+ * connect and would otherwise leak that connection. Without it, a bulk
+ * (no-argument) refresh with several peers failing at that step leaks one
+ * connection per failure in a single call, and spock.node_refresh_info()
+ * being called again later (e.g. from a periodic job) adds more on top --
+ * a real accumulation, not a single one-off leak.
+ */
+Datum
+spock_node_refresh_info_one(PG_FUNCTION_ARGS)
+{
+	Oid			node_id = PG_GETARG_OID(0);
+	char	   *node_name = NameStr(*PG_GETARG_NAME(1));
+	char	   *dsn = text_to_cstring(PG_GETARG_TEXT_PP(2));
+	PGconn	   *conn;
+	SpockNode  *fresh = NULL;
+	TupleDesc	tupdesc;
+	Datum		values[3];
+	bool		nulls[3];
+	HeapTuple	result;
+
+	if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)
+		elog(ERROR, "return type must be a row type");
+
+	conn = spock_connect(dsn, node_name, "refresh");
+	PG_TRY();
+	{
+		fresh = spock_remote_node_info(conn, NULL, NULL, NULL);
+	}
+	PG_CATCH();
+	{
+		PQfinish(conn);
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+	PQfinish(conn);
+
+	/*
+	 * Defense-in-depth, not the primary safeguard: in the common
+	 * single-interface case, a dsn that no longer points at the right node
+	 * would already show up as broken replication. This guards the narrower
+	 * case of a node with multiple interfaces (e.g. node_add_interface() for
+	 * failover) where the caller's chosen interface can go stale while the
+	 * active subscription keeps working fine over a different one.
+	 *
+	 * Check the name too, not just the id: node ids are 16-bit hashes of the
+	 * name, so a DSN that has drifted to an entirely different, unrelated
+	 * cluster can coincidentally answer with the same id for a different
+	 * node. Requiring both to match makes that far less likely to slip
+	 * through as a false match.
+	 */
+	if (fresh->id != node_id || strcmp(fresh->name, node_name) != 0)
+		ereport(ERROR,
+				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+				 errmsg("dsn for node \"%s\" now answers as a different "
+						"node (id=%u, name=\"%s\") than the one on record "
+						"(id=%u)",
+						node_name, fresh->id, fresh->name, node_id)));
+
+	memset(nulls, false, sizeof(nulls));
+	if (fresh->location != NULL)
+		values[0] = CStringGetTextDatum(fresh->location);
+	else
+		nulls[0] = true;
+	if (fresh->country != NULL)
+		values[1] = CStringGetTextDatum(fresh->country);
+	else
+		nulls[1] = true;
+	if (fresh->info != NULL)
+		values[2] = JsonbPGetDatum(fresh->info);
+	else
+		nulls[2] = true;
+
+	result = heap_form_tuple(BlessTupleDesc(tupdesc), values, nulls);
+	return HeapTupleGetDatum(result);
+}
+
+/*
  * Reject changes that enable forwarding alongside another enabled
  * subscription on this node.
  *
@@ -518,7 +612,7 @@ spock_alter_node_drop_interface(PG_FUNCTION_ARGS)
  */
 static void
 enforce_forwarding_exclusivity(Oid target_sub_id, const char *target_sub_name,
-								bool target_enabled, List *target_forward_origins)
+							   bool target_enabled, List *target_forward_origins)
 {
 	SpockLocalNode *localnode = get_local_node(true, false);
 	List	   *subs;
@@ -526,7 +620,8 @@ enforce_forwarding_exclusivity(Oid target_sub_id, const char *target_sub_name,
 	bool		target_forwards = target_enabled && list_length(target_forward_origins) > 0;
 
 	if (!target_enabled)
-		return;		/* a disabled target can never conflict with anything */
+		return;					/* a disabled target can never conflict with
+								 * anything */
 
 	subs = get_node_subscriptions(localnode->node->id, false);
 	foreach(lc, subs)
@@ -732,8 +827,14 @@ spock_create_subscription(PG_FUNCTION_ARGS)
 	spock_stat_create_subscription(sub.id);
 #endif
 
-	/* Create progress entry to track commit ts per local/remote origin */
-	spock_group_attach(MyDatabaseId, localnode->node->id, originif.nodeid);
+	/*
+	 * Create progress entry to track commit ts per local/remote origin.
+	 * Ensure-only: this backend is not an apply worker, so it must not count
+	 * itself in nattached (readers use it as the number of streams feeding
+	 * the entry).
+	 */
+	spock_group_ensure_entry(MyDatabaseId, localnode->node->id,
+							 originif.nodeid);
 
 
 	/* Create synchronization status for the subscription. */
@@ -1092,7 +1193,7 @@ spock_alter_subscription_options(PG_FUNCTION_ARGS)
 
 	while ((r = JsonbIteratorNext(&it, &v, false)) != WJB_END_OBJECT)
 	{
-		char   *key;
+		char	   *key;
 
 		if (r != WJB_KEY)
 			ereport(ERROR,
@@ -1104,7 +1205,7 @@ spock_alter_subscription_options(PG_FUNCTION_ARGS)
 		if (strcmp(key, "forward_origins") == 0 ||
 			strcmp(key, "skip_schema") == 0)
 		{
-			List   *result = NIL;
+			List	   *result = NIL;
 
 			r = JsonbIteratorNext(&it, &v, false);
 			if (r != WJB_BEGIN_ARRAY)
@@ -1115,7 +1216,7 @@ spock_alter_subscription_options(PG_FUNCTION_ARGS)
 
 			while ((r = JsonbIteratorNext(&it, &v, false)) != WJB_END_ARRAY)
 			{
-				char   *elem;
+				char	   *elem;
 
 				if (r != WJB_ELEM || v.type != jbvString)
 					ereport(ERROR,
@@ -1148,7 +1249,7 @@ spock_alter_subscription_options(PG_FUNCTION_ARGS)
 		}
 		else if (strcmp(key, "apply_delay") == 0)
 		{
-			char   *delay_str;
+			char	   *delay_str;
 
 			r = JsonbIteratorNext(&it, &v, false);
 			if (r != WJB_VALUE || v.type != jbvString)
@@ -1158,10 +1259,10 @@ spock_alter_subscription_options(PG_FUNCTION_ARGS)
 
 			delay_str = pnstrdup(v.val.string.val, v.val.string.len);
 			sub->apply_delay = DatumGetIntervalP(
-				DirectFunctionCall3(interval_in,
-									CStringGetDatum(delay_str),
-									ObjectIdGetDatum(InvalidOid),
-									Int32GetDatum(-1)));
+												 DirectFunctionCall3(interval_in,
+																	 CStringGetDatum(delay_str),
+																	 ObjectIdGetDatum(InvalidOid),
+																	 Int32GetDatum(-1)));
 			changed = true;
 		}
 		else
@@ -1274,7 +1375,7 @@ spock_alter_subscription_synchronize(PG_FUNCTION_ARGS)
 static void
 check_readonly_for_resync(const char *nspname, const char *relname)
 {
-	char	tablename[NAMEDATALEN * 2 + 2];
+	char		tablename[NAMEDATALEN * 2 + 2];
 
 	if (spock_readonly != READONLY_OFF)
 	{
@@ -1287,6 +1388,77 @@ check_readonly_for_resync(const char *nspname, const char *relname)
 						   spock_readonly == READONLY_ALL ? "all" : "user"),
 				 errhint("Set spock.readonly to 'off' before resyncing.")));
 	}
+}
+
+/*
+ * NULL-safe string comparison for optional node attributes.
+ */
+static bool
+node_attr_equal(const char *a, const char *b)
+{
+	if (a == NULL || b == NULL)
+		return a == b;
+	return strcmp(a, b) == 0;
+}
+
+/*
+ * Warn if the cached spock.node row of the subscription's provider differs
+ * from the provider's own. Node metadata reaches subscribers through logical
+ * messages, which a table resynchronization neither replays nor compares, so
+ * a cached copy that missed an update stays stale until it is refreshed.
+ *
+ * This is advisory: an unreachable provider or a failed fetch is reported as
+ * a WARNING and does not fail the resynchronization.
+ */
+static void
+warn_if_origin_node_info_differs(SpockSubscription *sub)
+{
+	SpockNode  *cached = sub->origin;
+	SpockNode  *fresh = NULL;
+	PGconn	   *volatile conn = NULL;
+	MemoryContext oldcontext = CurrentMemoryContext;
+
+	PG_TRY();
+	{
+		conn = spock_connect(sub->origin_if->dsn, sub->origin->name, "resync");
+		fresh = spock_remote_node_info(conn, NULL, NULL, NULL);
+	}
+	PG_CATCH();
+	{
+		ErrorData  *edata;
+
+		MemoryContextSwitchTo(oldcontext);
+		edata = CopyErrorData();
+		FlushErrorState();
+		if (conn != NULL)
+			PQfinish(conn);
+		ereport(WARNING,
+				(errmsg("could not compare cached metadata of node \"%s\" with the provider: %s",
+						cached->name, edata->message)));
+		FreeErrorData(edata);
+		return;
+	}
+	PG_END_TRY();
+	PQfinish(conn);
+
+	if (fresh->id != cached->id || strcmp(fresh->name, cached->name) != 0)
+		ereport(WARNING,
+				(errmsg("provider for subscription \"%s\" answers as node \"%s\" (id=%u), "
+						"not the cached node \"%s\" (id=%u)",
+						sub->name, fresh->name, fresh->id,
+						cached->name, cached->id)));
+	else if (!node_attr_equal(fresh->location, cached->location) ||
+			 !node_attr_equal(fresh->country, cached->country) ||
+			 (fresh->info == NULL) != (cached->info == NULL) ||
+			 (fresh->info != NULL &&
+			  !DatumGetBool(DirectFunctionCall2(jsonb_eq,
+												JsonbPGetDatum(fresh->info),
+												JsonbPGetDatum(cached->info)))))
+		ereport(WARNING,
+				(errmsg("cached metadata of node \"%s\" differs from the provider's",
+						cached->name),
+				 errhint("Run spock.node_refresh_info('%s') to update it.",
+						 cached->name)));
 }
 
 /*
@@ -1318,10 +1490,10 @@ spock_alter_subscription_resynchronize_table(PG_FUNCTION_ARGS)
 	relname = RelationGetRelationName(rel);
 
 	/*
-	 * Check that the subscriber is in read-only mode BEFORE modifying
-	 * sync status or truncating. If it is readonly, the sync will fail.
-	 * With truncate=true this would cause data loss; without truncate
-	 * it causes an error loop.
+	 * Check that the subscriber is in read-only mode BEFORE modifying sync
+	 * status or truncating. If it is readonly, the sync will fail. With
+	 * truncate=true this would cause data loss; without truncate it causes an
+	 * error loop.
 	 */
 	check_readonly_for_resync(nspname, relname);
 
@@ -1361,6 +1533,9 @@ spock_alter_subscription_resynchronize_table(PG_FUNCTION_ARGS)
 	spock_subscription_changed(sub->id, false);
 
 	skip_wal_records_decoding(false);
+
+	warn_if_origin_node_info_differs(sub);
+
 	PG_RETURN_BOOL(true);
 }
 
@@ -2041,17 +2216,17 @@ spock_replication_set_add_all_relations(Name repset_name,
 				char	   *extname;
 
 				/*
-				 * The same schema may be named twice in nsp_names, and a second
-				 * visit would try to insert a duplicate catalog row and abort
-				 * the whole call.
+				 * The same schema may be named twice in nsp_names, and a
+				 * second visit would try to insert a duplicate catalog row
+				 * and abort the whole call.
 				 */
 				existing_relations = lappend_oid(existing_relations, reloid);
 
 				/*
 				 * Lock the relation and confirm it is still there before we
-				 * touch it.  This scan runs on the catalog snapshot, so a DROP
-				 * TABLE that committed after it started is not reflected in the
-				 * tuple we are holding.
+				 * touch it.  This scan runs on the catalog snapshot, so a
+				 * DROP TABLE that committed after it started is not reflected
+				 * in the tuple we are holding.
 				 */
 				targetrel = try_table_open(reloid, AccessShareLock);
 				if (targetrel == NULL)
@@ -2062,8 +2237,8 @@ spock_replication_set_add_all_relations(Name repset_name,
 				 * A relation belonging to an extension no replication set may
 				 * draw from is passed over here rather than inside the add
 				 * routines, which raise an error: a relation we merely came
-				 * across while walking a schema should not cost the caller the
-				 * rest of that schema.
+				 * across while walking a schema should not cost the caller
+				 * the rest of that schema.
 				 */
 				extoid = getExtensionOfObject(RelationRelationId, reloid);
 				extname = OidIsValid(extoid) ? get_extension_name(extoid) : NULL;
@@ -2609,28 +2784,40 @@ spock_schema_is_ddl_local(const char *nspname)
 }
 
 /*
- * Resolve rv to its schema and test replicate_ddl=false.  Runs post-execution,
+ * Resolve rv to its schema and test it against purpose.  Runs post-execution,
  * so CREATE/ALTER targets exist and an unqualified name resolves by opening the
  * relation (relation_openrv, not table_openrv: rv may name an index/view).  A
  * dropped relation is classifiable only when schema-qualified.
+ *
+ * On a match, *matched (when non-NULL) receives the schema name.
  */
 static bool
-rangevar_is_ddl_local(RangeVar *rv)
+rangevar_schema_matches(RangeVar *rv, ReservedObjectPurpose purpose,
+						const char **matched)
 {
 	Relation	rel;
-	bool		local;
+	char	   *nspname;
 
 	if (rv == NULL)
 		return false;
-	if (rv->schemaname != NULL)
-		return spock_schema_is_ddl_local(rv->schemaname);
 
-	rel = relation_openrv_extended(rv, AccessShareLock, true);
-	if (rel == NULL)
+	if (rv->schemaname != NULL)
+		nspname = rv->schemaname;
+	else
+	{
+		rel = relation_openrv_extended(rv, AccessShareLock, true);
+		if (rel == NULL)
+			return false;
+		nspname = get_namespace_name(RelationGetNamespace(rel));
+		relation_close(rel, AccessShareLock);
+	}
+
+	if (!spock_name_is_reserved(RESERVED_KIND_SCHEMA, purpose, nspname))
 		return false;
-	local = spock_schema_is_ddl_local(get_namespace_name(RelationGetNamespace(rel)));
-	relation_close(rel, AccessShareLock);
-	return local;
+
+	if (matched != NULL)
+		*matched = nspname;
+	return true;
 }
 
 /* True if `name` (case-sensitive) appears in a List of C strings. */
@@ -2643,48 +2830,75 @@ name_in_list(List *names, const char *name)
 		return false;
 	foreach(lc, names)
 		if (strcmp((char *) lfirst(lc), name) == 0)
-			return true;
+		return true;
 	return false;
 }
 
 /*
- * Does this DDL target ONLY node-local (replicate_ddl=false) schemas?  Only
- * statement types whose target schema is identifiable are classified; all
- * others replicate as before.  Known gap: dropping a node-local relation by an
- * unqualified name cannot be classified (the relation is already gone).
+ * Are this DDL statement's target schemas reserved for purpose?  Only statement
+ * types whose target schema is identifiable are classified; for all others this
+ * returns false and the statement is handled as before.  Known gap: dropping a
+ * relation by an unqualified name cannot be classified (the relation is
+ * already gone).
  *
- * A DROP is skipped only when EVERY object is node-local.  A statement mixing a
- * node-local object with a replicated one is shipped as-is: the raw command
- * text cannot be rewritten to strip the node-local object, so the subscriber --
- * where that object never existed -- would fail to drop it unless the drop
- * carries IF EXISTS.  Mixing node-local and replicated objects in one DROP is
- * therefore unsupported.
+ * match_all selects the quantifier over a multi-object DROP, and the two
+ * callers need opposite ones:
+ *
+ *	match_all = true   suppression.  A DROP is kept local only when EVERY
+ *					   object is node-local, because a false positive would
+ *					   silently lose DDL.  A statement mixing a node-local
+ *					   object with a replicated one is shipped as-is: the raw
+ *					   command text cannot be rewritten to strip the node-local
+ *					   object, so the subscriber -- where that object never
+ *					   existed -- would fail to drop it unless the drop carries
+ *					   IF EXISTS.  Mixing the two in one DROP is unsupported.
+ *
+ *	match_all = false  the guard rail.  ANY matching object trips it, because a
+ *					   false negative would let a mistake through.
+ *
+ * On a match, *matched (when non-NULL) receives the schema name that matched.
  */
 static bool
-stmt_targets_only_ddl_local(Node *stmt)
+stmt_schema_matches(Node *stmt, ReservedObjectPurpose purpose, bool match_all,
+					const char **matched)
 {
 	switch (nodeTag(stmt))
 	{
 		case T_CreateSchemaStmt:
-			return spock_schema_is_ddl_local(((CreateSchemaStmt *) stmt)->schemaname);
+			{
+				char	   *nspname = ((CreateSchemaStmt *) stmt)->schemaname;
+
+				if (nspname == NULL ||
+					!spock_name_is_reserved(RESERVED_KIND_SCHEMA, purpose, nspname))
+					return false;
+				if (matched != NULL)
+					*matched = nspname;
+				return true;
+			}
 		case T_CreateStmt:
-			return rangevar_is_ddl_local(((CreateStmt *) stmt)->relation);
+			return rangevar_schema_matches(((CreateStmt *) stmt)->relation,
+										   purpose, matched);
 		case T_CreateTableAsStmt:
-			return rangevar_is_ddl_local(((CreateTableAsStmt *) stmt)->into->rel);
+			return rangevar_schema_matches(((CreateTableAsStmt *) stmt)->into->rel,
+										   purpose, matched);
 		case T_AlterTableStmt:
-			return rangevar_is_ddl_local(((AlterTableStmt *) stmt)->relation);
+			return rangevar_schema_matches(((AlterTableStmt *) stmt)->relation,
+										   purpose, matched);
 		case T_ViewStmt:
-			return rangevar_is_ddl_local(((ViewStmt *) stmt)->view);
+			return rangevar_schema_matches(((ViewStmt *) stmt)->view,
+										   purpose, matched);
 		case T_CreateSeqStmt:
-			return rangevar_is_ddl_local(((CreateSeqStmt *) stmt)->sequence);
+			return rangevar_schema_matches(((CreateSeqStmt *) stmt)->sequence,
+										   purpose, matched);
 		case T_IndexStmt:
-			return rangevar_is_ddl_local(((IndexStmt *) stmt)->relation);
+			return rangevar_schema_matches(((IndexStmt *) stmt)->relation,
+										   purpose, matched);
 		case T_DropStmt:
 			{
 				DropStmt   *drop = (DropStmt *) stmt;
 				ListCell   *cell;
-				List	   *local;
-				bool		all_local = true;
+				List	   *reserved;
+				bool		result = match_all;
 
 				if (drop->objects == NIL)
 					return false;
@@ -2694,27 +2908,79 @@ stmt_targets_only_ddl_local(Node *stmt)
 					drop->removeType != OBJECT_MATVIEW && drop->removeType != OBJECT_FOREIGN_TABLE)
 					return false;
 
-				/* One catalog read for the whole (possibly multi-object) DROP. */
-				local = spock_reserved_object_names(RESERVED_KIND_SCHEMA,
-													RESERVED_PURPOSE_DDL);
+				/*
+				 * One catalog read for the whole (possibly multi-object)
+				 * DROP.
+				 */
+				reserved = spock_reserved_object_names(RESERVED_KIND_SCHEMA,
+													   purpose);
 				foreach(cell, drop->objects)
 				{
 					const char *schema = (drop->removeType == OBJECT_SCHEMA)
 						? strVal(lfirst(cell))
 						: makeRangeVarFromNameList((List *) lfirst(cell))->schemaname;
 
-					if (!name_in_list(local, schema))
+					if (name_in_list(reserved, schema) != match_all)
 					{
-						all_local = false;
+						/*
+						 * Decided: an unreserved object under ALL, or a
+						 * reserved one under ANY.  Either way the answer is
+						 * !match_all, and under ANY this object is the one to
+						 * name in the error.
+						 */
+						result = !match_all;
+						if (matched != NULL)
+							*matched = schema;
 						break;
 					}
 				}
-				list_free_deep(local);
-				return all_local;
+				list_free_deep(reserved);
+				return result;
 			}
 		default:
 			return false;
 	}
+}
+
+/* Does this DDL target ONLY node-local (replicate_ddl = false) schemas? */
+static bool
+stmt_targets_only_ddl_local(Node *stmt)
+{
+	return stmt_schema_matches(stmt, RESERVED_PURPOSE_DDL, true, NULL);
+}
+
+/*
+ * spock_guard_extension_owned_ddl
+ *
+ * Refuse direct DDL against a built-in extension-owned schema (spock,
+ * snowflake) while DDL replication is on.
+ *
+ * Nothing legitimate issues runtime DDL in these schemas -- their objects come
+ * from extension scripts, where AutoDDL is already suppressed via
+ * creating_extension -- so such a statement is almost certainly a user
+ * mistake.  Without this it would half-apply: the command text would replicate
+ * to peers while the relation was quietly kept out of every replication set.
+ *
+ * The caller runs this only when spock.enable_ddl_replication is on and the
+ * statement did not arrive from the apply queue, so clearing the GUC for the
+ * session (and repair mode) remains the escape hatch for deliberate
+ * node-local surgery.
+ */
+void
+spock_guard_extension_owned_ddl(Node *stmt)
+{
+	const char *nspname = NULL;
+
+	if (!stmt_schema_matches(stmt, RESERVED_PURPOSE_EXTENSION_OWNED, false,
+							 &nspname))
+		return;
+
+	ereport(ERROR,
+			(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+			 errmsg("cannot run DDL against schema %s while DDL replication is enabled",
+					nspname),
+			 errdetail("The schema is managed by an extension and its objects are not replicated."),
+			 errhint("For a deliberate node-local change, run the statement with spock.enable_ddl_replication = off.")));
 }
 
 /*
@@ -2764,12 +3030,12 @@ spock_auto_replicate_ddl(const char *query, List *replication_sets,
 	/*
 	 * Filter local commands and decide on search path setting.
 	 *
-	 * We label command as 'local' sometimes to state the fact that the protocol
-	 * does not support its replication.
+	 * We label command as 'local' sometimes to state the fact that the
+	 * protocol does not support its replication.
 	 */
 	switch (nodeTag(stmt))
 	{
-		/* Purely local commands */
+			/* Purely local commands */
 		case T_FetchStmt:
 		case T_NotifyStmt:
 		case T_ListenStmt:
@@ -2777,9 +3043,10 @@ spock_auto_replicate_ddl(const char *query, List *replication_sets,
 			goto skip_ddl;
 			break;
 
-		/*
-		 * We don't want to replicate statements that run outside of transactions
-		 */
+			/*
+			 * We don't want to replicate statements that run outside of
+			 * transactions
+			 */
 		case T_CreateTableSpaceStmt:
 		case T_DropTableSpaceStmt:
 		case T_VacuumStmt:
@@ -2825,11 +3092,12 @@ spock_auto_replicate_ddl(const char *query, List *replication_sets,
 					goto skip_ddl;
 
 				/*
-				 * The defining query is re-executed verbatim on the subscriber.
-				 * If it reads a temporary relation -- at any nesting level --
-				 * it would fail there, so let the local command stand but skip
-				 * replication and say why.  isQueryUsingTempRelation() walks the
-				 * whole analysed query tree.
+				 * The defining query is re-executed verbatim on the
+				 * subscriber. If it reads a temporary relation -- at any
+				 * nesting level -- it would fail there, so let the local
+				 * command stand but skip replication and say why.
+				 * isQueryUsingTempRelation() walks the whole analysed query
+				 * tree.
 				 */
 				if (isQueryUsingTempRelation(castNode(Query, ctas->query)))
 				{
@@ -2880,46 +3148,47 @@ spock_auto_replicate_ddl(const char *query, List *replication_sets,
 			break;
 
 #if PG_VERSION_NUM >= 190000
-		/*
-		 * PostgreSQL 19 folded CLUSTER into the new REPACK command, so a
-		 * CLUSTER statement now parses into a RepackStmt whose target is a
-		 * VacuumRelation rather than a bare RangeVar.
-		 */
+
+			/*
+			 * PostgreSQL 19 folded CLUSTER into the new REPACK command, so a
+			 * CLUSTER statement now parses into a RepackStmt whose target is
+			 * a VacuumRelation rather than a bare RangeVar.
+			 */
 		case T_RepackStmt:
-		{
-			RepackStmt	   *cstmt = (RepackStmt *) stmt;
-			RangeVar	   *cluster_rel = cstmt->relation ? cstmt->relation->relation : NULL;
+			{
+				RepackStmt *cstmt = (RepackStmt *) stmt;
+				RangeVar   *cluster_rel = cstmt->relation ? cstmt->relation->relation : NULL;
 #else
 		case T_ClusterStmt:
-		{
-			ClusterStmt	   *cstmt = (ClusterStmt *) stmt;
-			RangeVar	   *cluster_rel = cstmt->relation;
-#endif
-			bool			skip_cluster = true;
-
-			if (cluster_rel != NULL)
 			{
-				Relation	rel;
-				Oid			tableOid;
+				ClusterStmt *cstmt = (ClusterStmt *) stmt;
+				RangeVar   *cluster_rel = cstmt->relation;
+#endif
+				bool		skip_cluster = true;
 
-				/*
-				 * Single relation case may be allowed if it is not a
-				 * partitioned table. Don't care about errors - if we replicate
-				 * this command it means everything must be ok, or we are in
-				 * trouble and deserve an ERROR.
-				 */
-				tableOid = RangeVarGetRelidExtended(cluster_rel,
-												AccessShareLock, 0, NULL, NULL);
-				rel = table_open(tableOid, NoLock);
-				skip_cluster = (rel->rd_rel->relkind == RELKIND_PARTITIONED_TABLE);
-				table_close(rel, AccessShareLock);
+				if (cluster_rel != NULL)
+				{
+					Relation	rel;
+					Oid			tableOid;
+
+					/*
+					 * Single relation case may be allowed if it is not a
+					 * partitioned table. Don't care about errors - if we
+					 * replicate this command it means everything must be ok,
+					 * or we are in trouble and deserve an ERROR.
+					 */
+					tableOid = RangeVarGetRelidExtended(cluster_rel,
+														AccessShareLock, 0, NULL, NULL);
+					rel = table_open(tableOid, NoLock);
+					skip_cluster = (rel->rd_rel->relkind == RELKIND_PARTITIONED_TABLE);
+					table_close(rel, AccessShareLock);
+				}
+
+				if (skip_cluster)
+					goto skip_ddl;
+
+				add_search_path = false;
 			}
-
-			if (skip_cluster)
-				goto skip_ddl;
-
-			add_search_path = false;
-		}
 			break;
 
 		case T_AlterTableSpaceOptionsStmt:
@@ -2947,22 +3216,22 @@ spock_auto_replicate_ddl(const char *query, List *replication_sets,
 				goto skip_ddl;
 			break;
 		case T_ReindexStmt:
-		{
-			ReindexStmt	   *rstmt = (ReindexStmt *) stmt;
-			bool			concurrently = false;
-
-			foreach(lc, rstmt->params)
 			{
-				DefElem    *opt = (DefElem *) lfirst(lc);
+				ReindexStmt *rstmt = (ReindexStmt *) stmt;
+				bool		concurrently = false;
 
-				if (strcmp(opt->defname, "concurrently") != 0)
-					continue;
-				concurrently = defGetBoolean(opt);
+				foreach(lc, rstmt->params)
+				{
+					DefElem    *opt = (DefElem *) lfirst(lc);
+
+					if (strcmp(opt->defname, "concurrently") != 0)
+						continue;
+					concurrently = defGetBoolean(opt);
+				}
+
+				if (concurrently)
+					goto skip_ddl;
 			}
-
-			if (concurrently)
-				goto skip_ddl;
-		}
 			break;
 
 		case T_DropStmt:
@@ -2993,7 +3262,8 @@ spock_auto_replicate_ddl(const char *query, List *replication_sets,
 													roleoid,
 													castNode(Query, estmt->query)->utilityStmt);
 
-				return false;	/* EXPLAIN without ANALYZE: nothing replicated. */
+				return false;	/* EXPLAIN without ANALYZE: nothing
+								 * replicated. */
 			}
 			break;
 
@@ -3003,8 +3273,8 @@ spock_auto_replicate_ddl(const char *query, List *replication_sets,
 	}
 
 	/*
-	 * Report replication status. In quiet mode, downgrade INFO/WARNING to
-	 * LOG level to reduce output verbosity.
+	 * Report replication status. In quiet mode, downgrade INFO/WARNING to LOG
+	 * level to reduce output verbosity.
 	 */
 	if (warn)
 		elog(spock_enable_quiet_mode ? LOG : WARNING,
@@ -3413,6 +3683,23 @@ spock_wait_for_sync_complete(char *subscription_name, char *relnamespace, char *
 		PushActiveSnapshot(GetLatestSnapshot());
 
 		subsync = get_subscription_sync_status(sub->id, true);
+
+		/*
+		 * No status row means the subscription was dropped under us, or
+		 * dropped and created again.  Look it up afresh: a wait on a row that
+		 * is never coming back, or on a subscription id that no longer
+		 * exists, would never end.
+		 */
+		if (subsync == NULL)
+		{
+			sub = get_subscription_by_name(subscription_name, true);
+			if (sub == NULL)
+				ereport(ERROR,
+						(errcode(ERRCODE_UNDEFINED_OBJECT),
+						 errmsg("subscription \"%s\" does not exist",
+								subscription_name)));
+		}
+
 		isdone = subsync && subsync->status == SYNC_STATUS_READY;
 		free_sync_status(subsync);
 
@@ -3723,8 +4010,8 @@ get_channel_stats(PG_FUNCTION_ARGS)
 		/*
 		 * Acquire spinlock before reading counter values to prevent torn
 		 * reads. The writer (handle_stats_counter) uses entry->mutex to
-		 * protect counter updates, so we must use the same lock for reads
-		 * to ensure atomic access to 64-bit counter values.
+		 * protect counter updates, so we must use the same lock for reads to
+		 * ensure atomic access to 64-bit counter values.
 		 */
 		SpinLockAcquire(&entry->mutex);
 		for (j = 0; j < SPOCK_STATS_NUM_COUNTERS; j++)
@@ -3759,12 +4046,12 @@ reset_channel_stats(PG_FUNCTION_ARGS)
 
 	/*
 	 * In principle we could reset only specific channel statistics; but that
-	 * would be more complicated, and it's probably not worth the trouble.
-	 * So for now, just reset all entries.
+	 * would be more complicated, and it's probably not worth the trouble. So
+	 * for now, just reset all entries.
 	 */
-		hash_seq_init(&hash_seq, SpockHash);
-		while ((entry = hash_seq_search(&hash_seq)) != NULL)
-		{
+	hash_seq_init(&hash_seq, SpockHash);
+	while ((entry = hash_seq_search(&hash_seq)) != NULL)
+	{
 		if (hash_search(SpockHash,
 						&entry->key,
 						HASH_REMOVE,
@@ -3960,8 +4247,8 @@ spock_create_sync_event(PG_FUNCTION_ARGS)
 	 * directly.
 	 */
 #if PG_VERSION_NUM >= 170000
-	lsn = (LogLogicalMessage)(SPOCK_MESSAGE_PREFIX, (char *) &message,
-							  sizeof(message), transactional, true);
+	lsn = (LogLogicalMessage) (SPOCK_MESSAGE_PREFIX, (char *) &message,
+							   sizeof(message), transactional, true);
 #else
 	lsn = LogLogicalMessage(SPOCK_MESSAGE_PREFIX, (char *) &message,
 							sizeof(message), transactional);
@@ -3971,6 +4258,66 @@ spock_create_sync_event(PG_FUNCTION_ARGS)
 	elog(DEBUG1, "SPOCK sync_event: emitted %s message at %X/%X",
 		 transactional ? "transactional" : "non-transactional",
 		 LSN_FORMAT_ARGS(lsn));
+
+	PG_RETURN_LSN(lsn);
+}
+
+/*
+ * Emit a transactional node-metadata snapshot. Receivers do not re-emit the
+ * message, so propagation is limited to direct subscribers.
+ */
+Datum
+spock_node_info_emit(PG_FUNCTION_ARGS)
+{
+	Name		node_name;
+	text	   *location = PG_ARGISNULL(1) ? NULL : PG_GETARG_TEXT_PP(1);
+	text	   *country = PG_ARGISNULL(2) ? NULL : PG_GETARG_TEXT_PP(2);
+	Jsonb	   *info = PG_ARGISNULL(3) ? NULL : PG_GETARG_JSONB_P(3);
+	StringInfoData json;
+	StringInfoData msg;
+	int32		mtype = SPOCK_NODE_INFO_MSG;
+	XLogRecPtr	lsn;
+
+	if (PG_ARGISNULL(0))
+		ereport(ERROR,
+				(errcode(ERRCODE_NULL_VALUE_NOT_ALLOWED),
+				 errmsg("node_name must not be null")));
+	node_name = PG_GETARG_NAME(0);
+
+	initStringInfo(&json);
+	appendStringInfoChar(&json, '{');
+
+	appendStringInfoString(&json, "\"node_name\": ");
+	escape_json(&json, NameStr(*node_name));
+
+	appendStringInfoString(&json, ", \"location\": ");
+	if (location != NULL)
+		escape_json(&json, text_to_cstring(location));
+	else
+		appendStringInfoString(&json, "null");
+
+	appendStringInfoString(&json, ", \"country\": ");
+	if (country != NULL)
+		escape_json(&json, text_to_cstring(country));
+	else
+		appendStringInfoString(&json, "null");
+
+	appendStringInfoString(&json, ", \"info\": ");
+	if (info != NULL)
+		appendStringInfoString(&json, JsonbToCString(NULL, &info->root, VARSIZE(info)));
+	else
+		appendStringInfoString(&json, "null");
+
+	appendStringInfoChar(&json, '}');
+
+	initStringInfo(&msg);
+	appendBinaryStringInfo(&msg, (char *) &mtype, sizeof(int32));
+	appendBinaryStringInfo(&msg, json.data, json.len);
+
+	lsn = LogLogicalMessage(SPOCK_MESSAGE_PREFIX, msg.data, msg.len, true /* transactional */ );
+
+	pfree(msg.data);
+	pfree(json.data);
 
 	PG_RETURN_LSN(lsn);
 }
@@ -3996,7 +4343,7 @@ spock_pause_apply_workers(PG_FUNCTION_ARGS)
 	/* Signal apply workers to pause at their next between-transaction point. */
 	pg_atomic_write_u32(&SpockCtx->pause_apply, 1);
 
-	/*
+	/*----------
 	 * Wait until all apply workers in this database have either:
 	 * - no active transaction (xid invalid = between transactions or idle), or
 	 * - set their paused flag (spinning on the pause_apply flag).
@@ -4006,7 +4353,7 @@ spock_pause_apply_workers(PG_FUNCTION_ARGS)
 	 */
 	while (waited_ms < max_wait_ms)
 	{
-		bool	all_paused = true;
+		bool		all_paused = true;
 
 		for (i = 0; i < SpockCtx->total_workers; i++)
 		{
@@ -4036,7 +4383,7 @@ spock_pause_apply_workers(PG_FUNCTION_ARGS)
 			break;
 
 		CHECK_FOR_INTERRUPTS();
-		pg_usleep(1000);	/* 1ms */
+		pg_usleep(1000);		/* 1ms */
 		waited_ms++;
 	}
 
@@ -4106,8 +4453,9 @@ spock_logical_replication_slot_scan(TimestampTz committs, bool *found)
 	 * Fix the upper bound of the scan before reading anything.
 	 *
 	 * The page_read callback used below waits for WAL rather than reporting
-	 * its end: once the reader catches up with the flush position it sleeps in
-	 * pg_usleep() until somebody appends more, which on an idle node is never.
+	 * its end: once the reader catches up with the flush position it sleeps
+	 * in pg_usleep() until somebody appends more, which on an idle node is
+	 * never.
 	 */
 	end_of_wal = GetFlushRecPtr(NULL);
 
@@ -4153,9 +4501,9 @@ spock_logical_replication_slot_scan(TimestampTz committs, bool *found)
 			/*
 			 * A NULL record with no message means the reader gave up short of
 			 * end_of_wal - it does that on a historic timeline, say after the
-			 * upstream of a cascading standby was promoted mid-scan.  The scan
-			 * result is then truncated rather than wrong: too early, never too
-			 * late.
+			 * upstream of a cascading standby was promoted mid-scan.  The
+			 * scan result is then truncated rather than wrong: too early,
+			 * never too late.
 			 */
 			if (record == NULL)
 				break;
@@ -4176,23 +4524,25 @@ spock_logical_replication_slot_scan(TimestampTz committs, bool *found)
 				continue;
 
 			/*
-			 * This origin test is what confines the scan to local commits, and
-			 * nothing below can stand in for it: xact_time is the local commit
-			 * time even on a replicated transaction, so without this a commit
-			 * from another node is indistinguishable from one of ours.
+			 * This origin test is what confines the scan to local commits,
+			 * and nothing below can stand in for it: xact_time is the local
+			 * commit time even on a replicated transaction, so without this a
+			 * commit from another node is indistinguishable from one of ours.
 			 */
 			if (XLogRecGetOrigin(ctx->reader) != InvalidRepOriginId)
 				continue;
 
 			/*
-			 * xl_xact_commit leads the record and xact_time is its first field
-			 * for both commit opcodes, so the timestamp needs no parsing.
+			 * xl_xact_commit leads the record and xact_time is its first
+			 * field for both commit opcodes, so the timestamp needs no
+			 * parsing.
 			 *
 			 * Do not reach for pg_commit_ts instead.  Once it has been
 			 * truncated past an xid it reports ts = 0, which reads here as a
 			 * commit older than anything the caller can ask about; it errors
 			 * out entirely when track_commit_timestamp is off; and it costs
-			 * CommitTsLock plus an SLRU lookup on every commit record scanned.
+			 * CommitTsLock plus an SLRU lookup on every commit record
+			 * scanned.
 			 */
 			Assert(XLogRecGetDataLen(ctx->reader) >= MinSizeOfXactCommit);
 			xlrec = (xl_xact_commit *) XLogRecGetData(ctx->reader);
@@ -4273,7 +4623,8 @@ spock_get_lsn_from_commit_ts(PG_FUNCTION_ARGS)
 
 	/*
 	 * Keep a copy of restart_lsn for the log line below: it is emitted after
-	 * the slot has been released, and MyReplicationSlot must not be read then.
+	 * the slot has been released, and MyReplicationSlot must not be read
+	 * then.
 	 */
 	start_lsn = MyReplicationSlot->data.restart_lsn;
 
@@ -4431,8 +4782,8 @@ get_apply_group_progress(PG_FUNCTION_ARGS)
 	while ((e = (SpockGroupEntry *) hash_seq_search(&it)) != NULL)
 	{
 		SpockApplyProgress *sap = &e->progress;
-		Datum				values[_GP_LAST_];
-		bool				nulls[_GP_LAST_] = {0};
+		Datum		values[_GP_LAST_];
+		bool		nulls[_GP_LAST_] = {0};
 
 		/*
 		 * Centralise conversion of local representation of the progress data

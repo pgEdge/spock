@@ -44,7 +44,12 @@ configuration parameters.
   SHOW max_replication_slots;
   ```
 
-  The minimum value is one per node on the provider.
+  A subscription that is initializing needs *two* slots on the provider: the
+  one held by its apply stream, plus one created for the sync worker that
+  copies the table data. Subscriptions are per database, so size for
+  `2 x subscribers x replicated databases` per node, plus any physical or
+  failover slots. On PostgreSQL 15-17 this parameter also caps replication
+  origins.
 
 - Verify that `max_wal_senders` is set to a sufficient value:
 
@@ -52,7 +57,10 @@ configuration parameters.
   SHOW max_wal_senders;
   ```
 
-  The minimum value is one per node on the provider.
+  Set this equal to `max_replication_slots`: every slot has a walsender behind
+  it while it streams, so the accounting above applies unchanged. A shortfall
+  here is the most common reason a cluster that replicates fine in steady
+  state cannot add or resync a table.
 
 - For PostgreSQL 18+, check the `max_active_replication_origins` setting:
 
@@ -60,7 +68,9 @@ configuration parameters.
   SHOW max_active_replication_origins;
   ```
 
-  Ensure that the value to at least the number of subscriptions plus headroom.
+  Ensure that the value is at least the number of subscriptions this node
+  applies - `(nodes - 1) x replicated databases` in a full mesh - plus
+  headroom.
 
 - If parameters were modified, restart PostgreSQL with this command:
 
@@ -141,7 +151,7 @@ only one `UNIQUE` index or constraint exists on downstream tables.
 
 The error message for deferrable index constraints appears as follows:
 
-```
+```text
 ERROR: spock doesn't support index rechecks needed for deferrable indexes
 DETAIL: relation "public"."test_relation" has deferrable indexes: "index1"
 ```
@@ -181,18 +191,73 @@ function properly:
 
 ```sql
 wal_level = logical
-max_worker_processes = 10
+max_worker_processes = 20
 max_replication_slots = 10
 max_wal_senders = 10
 shared_preload_libraries = 'spock'
 track_commit_timestamp = on
 ```
 
+The three numeric values shown are a small-cluster starting point. If you are
+troubleshooting worker registration failures, stuck subscriptions, or apply
+workers that will not start, size them from your actual topology using
+[Sizing Postgres Resources for Spock](sizing.md) - the defaults in the
+tutorials do not account for parallel query workers sharing the
+`max_worker_processes` pool, nor for the per-database managers, the
+supervisor, and the slot sync worker that every node runs.
+
 After modifying `postgresql.conf`, restart PostgreSQL with this command:
 
 ```bash
 sudo systemctl restart postgresql-18
 ```
+
+### Decoding Fails on `spock_output`
+
+Replication stops — either a new subscription never leaves the initializing
+state, or an established subscription stops applying after a minor-version
+upgrade — and the provider's log records:
+
+```
+ERROR:  library "spock_output" may not be used as an output plugin
+HINT:   If it is safe for all REPLICATION users to use this library as an
+        output plugin, add it to "output_plugin_libraries" and reload the
+        server configuration.
+```
+
+A 2026 PostgreSQL security fix (CVE-2026-6471, back-patched to every supported
+major) added the `output_plugin_libraries` parameter, and a library may no
+longer be used as an output plugin unless it is listed there. The default,
+`'pgoutput, test_decoding'`, excludes `spock_output`.
+
+The check runs whenever logical decoding starts, not only when the slot is
+created, so this is not limited to new subscriptions: a cluster that has been
+replicating for months will stop the first time a walsender starts decoding
+after the upgrade. Add the library on **every** node a subscription may connect
+to — which, in a mesh, is all of them — keeping the core defaults:
+
+```sql
+output_plugin_libraries = 'pgoutput, test_decoding, spock_output'
+```
+
+Include physical standbys and Patroni replicas that hold synchronized failover
+slots: a copied slot keeps `spock_output` as its plugin, so a standby missing
+this setting serves replication only until it is promoted, and then fails.
+
+The parameter is `PGC_SUSET`, so `SELECT pg_reload_conf();` is enough — no
+restart needed. The apply worker on the subscriber treats the failure as a
+lost connection and reconnects by itself once the provider has been
+reloaded; the subscription is not disabled.
+
+Only set the parameter if your server has it; on a release predating the fix,
+an unrecognised parameter in `postgresql.conf` stops the server from starting.
+Check with:
+
+```sql
+SELECT current_setting('output_plugin_libraries', true);
+```
+
+A NULL result means the parameter does not exist and must not be set.
 
 ### Conflict Resolution Issues
 
@@ -264,7 +329,12 @@ subscription.
 
 Possible causes and solutions include:
 
-- Insufficient `max_worker_processes` - increase the value.
+- Insufficient `max_worker_processes` - increase the value; see
+  [Sizing Postgres Resources for Spock](sizing.md). Remember that parallel
+  query workers draw from the same pool, so a parallel-heavy workload can
+  starve apply workers even when the value looks generous, and that the
+  supervisor, the per-database managers, and the slot sync worker each consume
+  a slot before any apply worker starts.
 - Network bandwidth limitations - check network throughput.
 - Large transactions - break into smaller transactions if possible.
 - Slow subscriber hardware - upgrade hardware or reduce workload.
@@ -442,7 +512,7 @@ SHOW log_filename;
 
 On RHEL/Rocky Linux, logs are typically located at:
 
-```
+```text
 /var/lib/pgsql/18/data/log/
 ```
 

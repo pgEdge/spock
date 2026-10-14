@@ -55,8 +55,13 @@ test: 032_lolor_largeobject_repset
 test: 033_zodan_lolor_add_node
 test: 034_reserved_object_ddl
 test: 037_wire_format_datestyle
+test: 038_reserved_schema_ddl_guard
+test: 039_no_replay_mode_leak
 test: 044_apply_change_logging
 test: 045_lsn_from_commit_ts
+test: 046_apply_worker_exception_misclassification
+test: 048_insert_conflict_race
+test: 049_wait_for_sync_dropped
 # Upgrade schema match test (builds from source, slow):
 #test: 018_upgrade_schema_match
 #
@@ -67,3 +72,8 @@ test: 105_group_slots
 # Regression tests
 test: 103_manager_worker_dboid_race
 test: 105_sub_disable_retransmit_after_disconnect
+test: 106_lww_conflict_full_mesh
+test: 107_node_refresh_info
+test: 108_apply_unknown_column_exception
+test: 109_node_info_propagation
+test: 110_resync_node_info_warning

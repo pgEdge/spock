@@ -42,6 +42,7 @@
 #include "funcapi.h"
 
 
+#include "spock_jsonb_utils.h"
 #include "spock_node.h"
 #include "spock_repset.h"
 #include "spock_worker.h"
@@ -135,13 +136,27 @@ typedef struct SubscriptionTuple
  * DDL is reserved when the object is node-local, i.e. its DDL is not
  * replicated, so replicate_ddl == false means reserved.  A NULL flag (e.g.
  * replicate_ddl is NULL for extensions) is never treated as reserved.
+ *
+ * RESERVED_PURPOSE_EXTENSION_OWNED is the one compound purpose: builtin AND
+ * block_in_repset AND replicate_ddl, which today selects exactly the spock and
+ * snowflake schemas.  Their objects come from extension scripts, so runtime DDL
+ * against them is a user mistake and AutoDDL refuses it.  All three parts
+ * matter:
+ *
+ *   builtin          an operator may reserve a schema to keep it out of the
+ *                    dump and out of replication sets and still legitimately
+ *                    create objects in it, so their rows are never guarded.
+ *   block_in_repset  a reserved schema whose tables may replicate (lolor) is
+ *                    ordinary as far as DDL is concerned.
+ *   replicate_ddl    a node-local schema (pgedge_ace) is the never-replicate
+ *                    class: its DDL stays local silently rather than erroring.
  */
 static bool
 row_reserved_for_purpose(HeapTuple tuple, TupleDesc tuple_desc,
 						 ReservedObjectPurpose purpose)
 {
-	bool	isnull;
-	bool	flag;
+	bool		isnull;
+	bool		flag;
 
 	switch (purpose)
 	{
@@ -157,9 +172,21 @@ row_reserved_for_purpose(HeapTuple tuple, TupleDesc tuple_desc,
 			flag = DatumGetBool(heap_getattr(tuple, Anum_reserved_replicate_ddl,
 											 tuple_desc, &isnull));
 			return !isnull && !flag;
+		case RESERVED_PURPOSE_EXTENSION_OWNED:
+			flag = DatumGetBool(heap_getattr(tuple, Anum_reserved_builtin,
+											 tuple_desc, &isnull));
+			if (isnull || !flag)
+				return false;
+			flag = DatumGetBool(heap_getattr(tuple, Anum_reserved_block_in_repset,
+											 tuple_desc, &isnull));
+			if (isnull || !flag)
+				return false;
+			flag = DatumGetBool(heap_getattr(tuple, Anum_reserved_replicate_ddl,
+											 tuple_desc, &isnull));
+			return !isnull && flag;
 	}
 	elog(ERROR, "unknown reserved object purpose %d", (int) purpose);
-	return false;	/* unreachable; keeps the compiler quiet */
+	return false;				/* unreachable; keeps the compiler quiet */
 }
 
 /* Open spock.reserved_object, failing closed with a hint if it is missing. */
@@ -193,13 +220,13 @@ bool
 spock_name_is_reserved(ReservedObjectKind kind, ReservedObjectPurpose purpose,
 					   const char *name)
 {
-	Relation		catalog_rel;
-	TupleDesc		tuple_desc;
-	SysScanDesc		scan;
-	HeapTuple		tuple;
-	const char	   *wanted_kind = (kind == RESERVED_KIND_EXTENSION)
-									? "extension" : "schema";
-	bool			found = false;
+	Relation	catalog_rel;
+	TupleDesc	tuple_desc;
+	SysScanDesc scan;
+	HeapTuple	tuple;
+	const char *wanted_kind = (kind == RESERVED_KIND_EXTENSION)
+		? "extension" : "schema";
+	bool		found = false;
 
 	if (name == NULL)
 		return false;
@@ -210,8 +237,8 @@ spock_name_is_reserved(ReservedObjectKind kind, ReservedObjectPurpose purpose,
 	scan = systable_beginscan(catalog_rel, InvalidOid, false, NULL, 0, NULL);
 	while (HeapTupleIsValid(tuple = systable_getnext(scan)))
 	{
-		bool	isnull;
-		char   *row_kind;
+		bool		isnull;
+		char	   *row_kind;
 
 		if (strcmp(NameStr(*DatumGetName(heap_getattr(tuple, Anum_reserved_name,
 													  tuple_desc, &isnull))),
@@ -245,13 +272,13 @@ List *
 spock_reserved_object_names(ReservedObjectKind kind,
 							ReservedObjectPurpose purpose)
 {
-	Relation		catalog_rel;
-	TupleDesc		tuple_desc;
-	SysScanDesc		scan;
-	HeapTuple		tuple;
-	List		   *names = NIL;
-	const char	   *wanted_kind = (kind == RESERVED_KIND_EXTENSION)
-									? "extension" : "schema";
+	Relation	catalog_rel;
+	TupleDesc	tuple_desc;
+	SysScanDesc scan;
+	HeapTuple	tuple;
+	List	   *names = NIL;
+	const char *wanted_kind = (kind == RESERVED_KIND_EXTENSION)
+		? "extension" : "schema";
 
 	catalog_rel = open_reserved_object(AccessShareLock);
 	tuple_desc = RelationGetDescr(catalog_rel);
@@ -259,8 +286,8 @@ spock_reserved_object_names(ReservedObjectKind kind,
 	scan = systable_beginscan(catalog_rel, InvalidOid, false, NULL, 0, NULL);
 	while (HeapTupleIsValid(tuple = systable_getnext(scan)))
 	{
-		bool	isnull;
-		char   *row_kind;
+		bool		isnull;
+		char	   *row_kind;
 
 		row_kind = TextDatumGetCString(heap_getattr(tuple, Anum_reserved_kind,
 													tuple_desc, &isnull));
@@ -276,8 +303,8 @@ spock_reserved_object_names(ReservedObjectKind kind,
 
 		names = lappend(names,
 						pstrdup(NameStr(*DatumGetName(
-							heap_getattr(tuple, Anum_reserved_name,
-										 tuple_desc, &isnull)))));
+													  heap_getattr(tuple, Anum_reserved_name,
+																   tuple_desc, &isnull)))));
 	}
 
 	systable_endscan(scan);
@@ -347,15 +374,15 @@ create_node(SpockNode *node)
 	/*
 	 * Detect node_id hash collisions before insertion.  The id is a 16-bit
 	 * hash of the node name, so two different names can produce the same
-	 * value.  A collision causes replication-origin ambiguity between the
-	 * two nodes.
+	 * value.  A collision causes replication-origin ambiguity between the two
+	 * nodes.
 	 */
 	existing = get_node(node->id, true);
 	if (existing != NULL)
 		elog(ERROR,
-				"node id %u (computed from name \"%s\") collides with existing "
-				"node \"%s\"; rename this node to resolve the collision",
-				node->id, node->name, existing->name);
+			 "node id %u (computed from name \"%s\") collides with existing "
+			 "node \"%s\"; rename this node to resolve the collision",
+			 node->id, node->name, existing->name);
 
 	rv = makeRangeVar(EXTENSION_NAME, CATALOG_NODE, -1);
 	rel = table_openrv(rv, RowExclusiveLock);
@@ -461,11 +488,8 @@ node_fromtuple(HeapTuple tuple, TupleDesc desc)
 	datum = heap_getattr(tuple, Anum_node_info, desc, &isnull);
 	if (!isnull)
 	{
-		Datum		value;
 		int32		intval;
-		FmgrInfo	flinfo;
-		FunctionCallInfo fcinfo;
-		bool		isnullval;
+		char	   *tiebreaker_str;
 
 		node->info = DatumGetJsonbP(datum);
 
@@ -473,33 +497,42 @@ node_fromtuple(HeapTuple tuple, TupleDesc desc)
 		 * The node entry has jsonb info, try to extract the tiebreaker value
 		 * from that. If it isn't set we fallback to the node-id.
 		 */
+		tiebreaker_str = spock_jsonb_get_text(node->info, "tiebreaker");
 
-		/* Set up function call info for jsonb_object_field_text(jsonb, text) */
-		fmgr_info(F_JSONB_OBJECT_FIELD_TEXT, &flinfo);
-
-		/* Allocate and initialize the call info structure */
-		fcinfo = palloc0(SizeForFunctionCallInfo(2));
-		InitFunctionCallInfoData(*fcinfo, &flinfo, 2, InvalidOid, NULL, NULL);
-
-		fcinfo->args[0].value = PointerGetDatum(node->info);
-		fcinfo->args[0].isnull = false;
-		fcinfo->args[1].value = CStringGetTextDatum("tiebreaker");
-		fcinfo->args[1].isnull = false;
-
-		value = FunctionCallInvoke(fcinfo);
-		isnullval = fcinfo->isnull;
-
-		if (!isnullval)
+		if (tiebreaker_str != NULL)
 		{
-			intval = pg_strtoint32(TextDatumGetCString(value));
-			node->tiebreaker = intval;
+			MemoryContext oldcontext;
+
+			/* Invalid metadata must not break general conflict resolution. */
+			oldcontext = CurrentMemoryContext;
+			PG_TRY();
+			{
+				intval = pg_strtoint32(tiebreaker_str);
+				node->tiebreaker = intval;
+			}
+			PG_CATCH();
+			{
+				/*
+				 * PG_CATCH runs in ErrorContext, which FlushErrorState()
+				 * resets
+				 */
+				MemoryContextSwitchTo(oldcontext);
+				FlushErrorState();
+				ereport(WARNING,
+						(errmsg("node \"%s\" (id=%u) has a malformed \"tiebreaker\" value \"%s\"",
+								node->name, node->id, tiebreaker_str),
+						 errdetail("Falling back to the node id as the tiebreaker."),
+						 errhint("Use spock.node_alter() or fix the value directly: "
+								 "UPDATE spock.node SET info = info || '{\"tiebreaker\": <integer>}' "
+								 "WHERE node_name = '%s';", node->name)));
+				node->tiebreaker = node->id;
+			}
+			PG_END_TRY();
 		}
 		else
 		{
 			node->tiebreaker = node->id;
 		}
-
-		pfree(fcinfo);
 	}
 	else
 	{
@@ -1286,6 +1319,7 @@ subscription_fromtuple(HeapTuple tuple, TupleDesc desc)
 		 * context that owns this SpockSubscription.
 		 */
 		Interval   *src = DatumGetIntervalP(d);
+
 		sub->apply_delay = (Interval *) palloc(sizeof(Interval));
 		memcpy(sub->apply_delay, src, sizeof(Interval));
 	}

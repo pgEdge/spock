@@ -51,6 +51,7 @@
 
 #include "spock.h"
 #include "spock_conflict.h"
+#include "spock_injection.h"
 #if PG_VERSION_NUM >= 180000
 #include "spock_conflict_stat.h"
 #endif
@@ -112,7 +113,18 @@ conflict_resolve_by_timestamp(RepOriginId local_origin_id,
 	 * inverting result of timestamp comparison if first update wins was
 	 * requested.
 	 */
-	if (!last_update_wins)
+	if (SPOCK_CONFLICT_TIE_FORCED())
+
+		/*
+		 * Test-only: force every conflict resolved by timestamp into the
+		 * tiebreaker branch below, regardless of the real commit timestamps.
+		 * Whether two independently-committed transactions on different nodes
+		 * land in the exact same commit-timestamp tick is otherwise a race no
+		 * test can force deterministically -- this makes the tiebreaker path
+		 * itself exercisable on demand.
+		 */
+		cmp = 0;
+	else if (!last_update_wins)
 		cmp = -cmp;
 
 	if (cmp > 0)
@@ -133,20 +145,28 @@ conflict_resolve_by_timestamp(RepOriginId local_origin_id,
 		 * The timestamps were equal. Use the "tiebreaker" from the spock.node
 		 * configuration to come up with a winner.
 		 *
-		 * loc_node is always this node (the one applying the change), not the
-		 * origin of the local tuple.  The tiebreaker answers "which physical
-		 * node wins?" — that is a property of the applying node vs the remote
-		 * sending node, regardless of what origin is stamped on the existing
-		 * local tuple.  Using local_origin_id here incorrectly resolves to the
-		 * same node on both sides whenever the local row was replicated from
-		 * the same source that is sending the update (single-writer topology).
+		 * Resolve the tie between the nodes that produced the two writes, not
+		 * necessarily the node applying the change. In a mesh, a third node
+		 * can hold a tuple from one origin while applying a change from
+		 * another. Every participant must compare that same origin pair to
+		 * choose the same winner.
 		 *
-		 * Same-origin shortcut: when the local tuple and the remote change share
-		 * the same origin (e.g. the same row updated twice in one upstream
-		 * transaction), there is no real conflict — apply the remote value.
+		 * Use the applying node when the tuple has no recorded origin or the
+		 * origin is absent from spock.node. The missing_ok lookup avoids
+		 * turning an unresolvable origin into an apply error.
+		 *
+		 * A recorded origin is not always a portable spock.node ID. Initial
+		 * table synchronization records a local replication-origin ID, and
+		 * that 16-bit value can collide with a node ID. The value alone does
+		 * not preserve enough provenance to distinguish those cases. A full
+		 * fix requires storing the origin kind; until then, a numeric
+		 * collision can still select the wrong node.
+		 *
+		 * If both writes have the same nonzero recorded origin, apply the
+		 * incoming value. This occurs, for example, when one upstream
+		 * transaction updates the same row more than once.
 		 */
-		SpockLocalNode *applying_node;
-		SpockNode  *loc_node;
+		SpockNode  *loc_node = NULL;
 		SpockNode  *rmt_node;
 
 		if (local_origin_id != InvalidRepOriginId &&
@@ -156,21 +176,28 @@ conflict_resolve_by_timestamp(RepOriginId local_origin_id,
 			return true;
 		}
 
-		applying_node = get_local_node(false, false);
-		loc_node = applying_node->node;
+		if (local_origin_id != InvalidRepOriginId)
+			loc_node = get_node(local_origin_id, true);
+		if (loc_node == NULL)
+			loc_node = get_local_node(false, false)->node;
 		rmt_node = get_node(remote_origin_id, false);
 
 		if (loc_node->tiebreaker == rmt_node->tiebreaker)
 		{
-			/*
+			/*----------
 			 * Equal tiebreaker values. Node creation prevents this for new
 			 * nodes, but existing clusters may still hit it. Apply remote and
-			 * warn so the operator can assign unique tiebreaker values:
+			 * warn so the operator can assign unique tiebreaker values. Run on
+			 * the node itself:
 			 *
-			 *   UPDATE spock.node
-			 *      SET info = COALESCE(info, '{}'::jsonb) ||
-			 *                 '{"tiebreaker": <unique_integer>}'
-			 *    WHERE node_name = '<name>';
+			 *   SELECT spock.node_alter(p_info_patch =>
+			 *                           '{"tiebreaker": <unique_integer>}');
+			 *
+			 * Direct subscribers receive the change automatically. A node whose
+			 * cached row missed the change, for example because the
+			 * transaction carrying it was skipped or discarded, keeps the old
+			 * value until spock.node_refresh_info() is run on it. See the
+			 * Tiebreaker section in docs/conflict_types.md.
 			 */
 			ereport(WARNING,
 					(errmsg("CONFLICT: node \"%s\" (id=%d) and node \"%s\" (id=%d) "
@@ -185,14 +212,18 @@ conflict_resolve_by_timestamp(RepOriginId local_origin_id,
 		if (loc_node->tiebreaker < rmt_node->tiebreaker)
 		{
 			/* TODO: Need diagnostic logging for ACE here */
-			elog(LOG, "CONFLICT: current node=%d wins over %d by tiebreaker", loc_node->id, rmt_node->id);
+			elog(LOG, "CONFLICT: existing row's origin node=%d wins over "
+				 "incoming change's origin node=%d by tiebreaker",
+				 loc_node->id, rmt_node->id);
 			*resolution = SpockResolution_KeepLocal;
 			return false;
 		}
 		else
 		{
 			/* TODO: Need diagnostic logging for ACE here */
-			elog(LOG, "CONFLICT: remote  node=%d wins over %d by tiebreaker", rmt_node->id, loc_node->id);
+			elog(LOG, "CONFLICT: incoming change's origin node=%d wins over "
+				 "existing row's origin node=%d by tiebreaker",
+				 rmt_node->id, loc_node->id);
 			*resolution = SpockResolution_ApplyRemote;
 			return true;
 		}
@@ -392,13 +423,16 @@ spock_report_conflict(SpockConflictType conflict_type,
 	if (conflict_type == SPOCK_CT_UPDATE_EXISTS || conflict_type == SPOCK_CT_DELETE_ORIGIN_DIFFERS)
 	{
 		/*
-		 * If updating a row that came from the same origin,
-		 * do not report it as a conflict nor log
+		 * If updating a row that came from the same origin, do not report it
+		 * as a conflict nor log
 		 */
 		if (local_tuple_origin == replorigin_session_origin)
 			return;
 
-		/* If updated in the same transaction, do not report it as a conflict nor log */
+		/*
+		 * If updated in the same transaction, do not report it as a conflict
+		 * nor log
+		 */
 		if (local_tuple_origin == InvalidRepOriginId &&
 			TransactionIdEquals(local_tuple_xid, GetTopTransactionId()))
 			return;
@@ -408,8 +442,8 @@ spock_report_conflict(SpockConflictType conflict_type,
 			conflict_type = SPOCK_CT_UPDATE_ORIGIN_DIFFERS;
 
 		/*
-		 * Origin-differs is normal replication flow, not a true conflict.
-		 * Do not write to spock.resolutions regardless of which side wins.
+		 * Origin-differs is normal replication flow, not a true conflict. Do
+		 * not write to spock.resolutions regardless of which side wins.
 		 */
 		save_in_resolutions = false;
 
@@ -440,9 +474,9 @@ spock_report_conflict(SpockConflictType conflict_type,
 					return;
 
 				/*
-				 * If the local tuple predates the subscription, it was
-				 * loaded before replication was set up (e.g. pg_restore).
-				 * Do not treat this as an origin-change conflict.
+				 * If the local tuple predates the subscription, it was loaded
+				 * before replication was set up (e.g. pg_restore). Do not
+				 * treat this as an origin-change conflict.
 				 */
 				if (local_tuple_commit_ts < MySubscription->created_at)
 					return;
@@ -471,8 +505,8 @@ spock_report_conflict(SpockConflictType conflict_type,
 
 	/*
 	 * Building the log message below stringifies both full tuples and does
-	 * catalog lookups, once per conflict.  Skip it when the level would not be
-	 * emitted.  (The resolutions-table write above is gated separately.)
+	 * catalog lookups, once per conflict.  Skip it when the level would not
+	 * be emitted.  (The resolutions-table write above is gated separately.)
 	 */
 	if (!message_level_is_interesting(spock_conflict_log_level))
 		return;
@@ -485,10 +519,10 @@ spock_report_conflict(SpockConflictType conflict_type,
 				timestamptz_to_str(local_tuple_commit_ts),
 				MAXDATELEN);
 		if (local_tuple_origin == InvalidRepOriginId)
-			strlcpy(local_origin_str, "local", sizeof(local_origin_str)); /* locally written */
+			strlcpy(local_origin_str, "local", sizeof(local_origin_str));	/* locally written */
 		else
 			snprintf(local_origin_str, sizeof(local_origin_str), "%u",
-				(unsigned int) local_tuple_origin);
+					 (unsigned int) local_tuple_origin);
 	}
 
 	initStringInfo(&remotetup);
@@ -570,17 +604,17 @@ spock_report_conflict(SpockConflictType conflict_type,
 		case SPOCK_CT_DELETE_ORIGIN_DIFFERS:
 			ereport(spock_conflict_log_level,
 					(errcode(ERRCODE_INTEGRITY_CONSTRAINT_VIOLATION),
-								errmsg("CONFLICT: remote %s on relation %s replica identity index %s (origin differs). Resolution: %s.",
-											SpockConflictTypeName(conflict_type),
-											qualrelname, idxname,
-											conflict_resolution_to_string(resolution)),
-					errdetail("existing local tuple {%s} xid=%u,origin=%s,timestamp=%s; remote delete in xact origin=%u,timestamp=%s,commit_lsn=%X/%X",
-								localtup.data, local_tuple_xid,
-								local_origin_str,
-								local_tup_ts_str,
-								replorigin_session_origin,
-								timestamptz_to_str(replorigin_session_origin_timestamp),
-								LSN_FORMAT_ARGS(replorigin_session_origin_lsn))));
+					 errmsg("CONFLICT: remote %s on relation %s replica identity index %s (origin differs). Resolution: %s.",
+							SpockConflictTypeName(conflict_type),
+							qualrelname, idxname,
+							conflict_resolution_to_string(resolution)),
+					 errdetail("existing local tuple {%s} xid=%u,origin=%s,timestamp=%s; remote delete in xact origin=%u,timestamp=%s,commit_lsn=%X/%X",
+							   localtup.data, local_tuple_xid,
+							   local_origin_str,
+							   local_tup_ts_str,
+							   replorigin_session_origin,
+							   timestamptz_to_str(replorigin_session_origin_timestamp),
+							   LSN_FORMAT_ARGS(replorigin_session_origin_lsn))));
 			break;
 		case SPOCK_CT_DELETE_EXISTS:
 			ereport(spock_conflict_log_level,
@@ -841,8 +875,8 @@ tuple_to_stringinfo(StringInfo s, TupleDesc tupdesc, HeapTuple tuple)
 		attr = TupleDescAttr(tupdesc, natt);
 
 		/*
-		 * don't print dropped or generated columns, we can't be sure everything
-		 * is available for them
+		 * don't print dropped or generated columns, we can't be sure
+		 * everything is available for them
 		 */
 		if (attr->attisdropped || attr->attgenerated)
 			continue;
@@ -921,9 +955,9 @@ tuple_to_stringinfo(StringInfo s, TupleDesc tupdesc, HeapTuple tuple)
 static uint64
 spock_cleanup_resolutions_core(int days)
 {
-	int				ret;
-	uint64			ndeleted;
-	StringInfoData	cmd;
+	int			ret;
+	uint64		ndeleted;
+	StringInfoData cmd;
 
 	initStringInfo(&cmd);
 	appendStringInfo(&cmd,
@@ -967,8 +1001,8 @@ spock_cleanup_resolutions_core(int days)
 uint64
 spock_cleanup_resolutions(void)
 {
-	uint64			ndeleted = 0;
-	MemoryContext	oldcontext;
+	uint64		ndeleted = 0;
+	MemoryContext oldcontext;
 
 	if (spock_resolutions_retention_days <= 0)
 		return 0;
@@ -980,14 +1014,14 @@ spock_cleanup_resolutions(void)
 	oldcontext = CurrentMemoryContext;
 
 	/*
-	 * The entire transaction lifetime lives inside PG_TRY so that errors
-	 * from StartTransactionCommand() or PushActiveSnapshot() — not just SPI
+	 * The entire transaction lifetime lives inside PG_TRY so that errors from
+	 * StartTransactionCommand() or PushActiveSnapshot() — not just SPI
 	 * execution failures — are also caught and downgraded to WARNING.
 	 *
-	 * SetCurrentStatementStartTimestamp() must precede StartTransactionCommand()
-	 * so the transaction's cached current_timestamp is initialised correctly.
-	 * PushActiveSnapshot() is required by SPI_execute (it asserts an active
-	 * snapshot exists).
+	 * SetCurrentStatementStartTimestamp() must precede
+	 * StartTransactionCommand() so the transaction's cached current_timestamp
+	 * is initialised correctly. PushActiveSnapshot() is required by
+	 * SPI_execute (it asserts an active snapshot exists).
 	 */
 	PG_TRY();
 	{
@@ -1012,8 +1046,8 @@ spock_cleanup_resolutions(void)
 		/*
 		 * Abort only if a transaction was actually started.  If the error
 		 * occurred in SetCurrentStatementStartTimestamp() or before
-		 * StartTransactionCommand() completed, there may be no transaction
-		 * to abort.  AbortCurrentTransaction() also handles SPI and snapshot
+		 * StartTransactionCommand() completed, there may be no transaction to
+		 * abort.  AbortCurrentTransaction() also handles SPI and snapshot
 		 * cleanup via AtEOXact_SPI() and AtAbort_Snapshot(), avoiding
 		 * double-cleanup if core() already called SPI_finish() before
 		 * CommitTransactionCommand() threw.
@@ -1047,7 +1081,7 @@ PG_FUNCTION_INFO_V1(spock_cleanup_resolutions_sql);
 Datum
 spock_cleanup_resolutions_sql(PG_FUNCTION_ARGS)
 {
-	int	days;
+	int			days;
 
 	if (!superuser())
 		ereport(ERROR,

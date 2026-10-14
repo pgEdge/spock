@@ -85,5 +85,7 @@ install -p -m 0644 %{_builddir}/%{pname}-%{version}/%{pname}%{spockmajorversion}
 %endif
 
 %changelog
+* Mon Sep 28 2026 Mason Sharp <mason.sharp@pgedge.com> - 6.0.0-beta2
+- Update spock package to 6.0.0-beta2
 * Wed Jul 01 2026 Muhammad Aqeel <muhammad.aqeel@pgedge.com> - 6.0.0-beta1
 - Initial spock package of 6.0.0-beta1

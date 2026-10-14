@@ -11,7 +11,7 @@
 #   2. Parse the tag → (repo_type, component-version, component-buildnum) and
 #      assert the tag matches include/spock.h and is a 6.x version.
 #   3. Build RPMs (almalinux 9/10) and DEBs (jammy / noble / resolute /
-#      bullseye / bookworm / trixie), amd64 + arm64, via pgedge-builder-action.
+#      bookworm / trixie), amd64 + arm64, via pgedge-builder-action.
 #      Each cell stages the source as release-artifacts/spock-<ver>.tar.gz
 #      straight from this run's checkout (`git archive`), so branch runs under
 #      simulate_tag build the exact commit under test with no network fetch.
@@ -131,7 +131,7 @@ jobs:
                   pg_versions: ${{ github.event.inputs.pg_versions || '16,17,18,19' }}
                   archs: '["amd64","arm64"]'
                   rpm_images: '["almalinux:9","almalinux:10"]'
-                  deb_images: '["ubuntu:jammy","ubuntu:noble","ubuntu:resolute","debian:bullseye","debian:bookworm","debian:trixie"]'
+                  deb_images: '["ubuntu:jammy","ubuntu:noble","ubuntu:resolute","debian:bookworm","debian:trixie"]'
                   skip_rpm: ${{ github.event.inputs.skip_rpm || 'false' }}
                   skip_deb: ${{ github.event.inputs.skip_deb || 'false' }}
 

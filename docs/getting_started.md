@@ -206,24 +206,53 @@ replication and load the Spock extension:
 
 ```sql
  wal_level = logical
-max_worker_processes = 10   # one per database on provider, one per node on subscriber
-max_replication_slots = 10  # one per node on provider
-max_wal_senders = 10        # one per node on provider
+max_worker_processes = 20   # see the sizing guide
+max_replication_slots = 10  # two per subscriber, per replicated database,
+                            # plus one per physical standby; 10 covers a
+                            # four-node mesh replicating one database
+max_wal_senders = 10        # keep equal to max_replication_slots
 shared_preload_libraries = 'spock'
 track_commit_timestamp = on # needed for conflict resolution
 listen_addresses = '*'
+output_plugin_libraries = 'pgoutput, test_decoding, spock_output'
+                            # only on servers that have this parameter; see below
 ```
+
+!!! info "Sizing `max_worker_processes`"
+
+    This parameter covers more than one worker per node: Spock runs a
+    supervisor, a slot sync worker (present on every node, primary or
+    standby), a manager for *every* connectable database in the instance
+    (including `postgres` and `template1`), an apply worker per subscription,
+    and a sync worker per subscription during table synchronization.
+    Subscriptions are created per database, so their count is the number of
+    other nodes *multiplied by* the number of replicated databases. The pool
+    is also shared with parallel query workers. See
+    [Sizing Postgres Resources for Spock](sizing.md) for the formulas.
+
+!!! note
+
+    Set `output_plugin_libraries` only if your server has that parameter — it
+    was added by a 2026 security fix and, without `spock_output` listed there,
+    logical decoding fails with `library "spock_output" may not be used as an
+    output plugin`. The check runs every time decoding starts, so it stops
+    established clusters after a minor-version upgrade too, and it applies to
+    every node. On older releases the parameter does not exist and setting it
+    stops the server from starting. See
+    [Configuring Spock](configuring.md) for how to check.
 
 !!! note
 
     - PostgreSQL 15-17: The `max_replication_slots` parameter controls
       both slots and replication origin states. Account for both when
-      sizing (typically one origin per subscription).
+      sizing (one origin per subscription, and subscriptions are counted
+      per replicated database).
 
     - PostgreSQL 18+: A new parameter `max_active_replication_origins`
       separately controls origin states. The default value is 10, which
       may be insufficient. Set the value to at least the number of
-      subscriptions plus headroom.
+      subscriptions this node applies - `(nodes - 1) x replicated
+      databases` in a full mesh - plus headroom.
 
 After modifying `postgresql.conf`, restart PostgreSQL using your
 OS-specific command.
@@ -510,7 +539,7 @@ Your two-node Spock cluster is now operational. The following documents describe
 If you encounter issues, review the following common problems and solutions.
 
 - Check the `pg_hba.conf` entries and ensure the nodes can connect to each other if replication is not starting.
-- Verify that `max_replication_slots` and `max_wal_senders` are set to sufficient values when a subscription is stuck initializing.
+- Verify that `max_replication_slots` and `max_wal_senders` are set to sufficient values when a subscription is stuck initializing. A subscription that is synchronizing needs a second slot and walsender on the provider in addition to those held by its apply stream; see [Sizing Postgres Resources for Spock](sizing.md).
 - If DDL is not replicating, confirm that the automatic DDL replication settings are enabled on both nodes.
 - If errors are not clear, review the PostgreSQL logs for detailed error messages.
 

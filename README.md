@@ -132,7 +132,17 @@ You will need to build the Spock extension on a patched PostgreSQL source tree t
    ```bash
    shared_preload_libraries = 'spock'
    track_commit_timestamp = on # needed for conflict resolution
+   output_plugin_libraries = 'pgoutput, test_decoding, spock_output'
    ```
+
+   Set `output_plugin_libraries` only if your server has that parameter: it was
+   added by a 2026 security fix (CVE-2026-6471), and unless `spock_output` is
+   listed there logical decoding fails with `library "spock_output" may not be
+   used as an output plugin` — on established clusters as well as new ones,
+   because the check runs every time decoding starts. On a release predating
+   the fix the parameter does not exist and setting it stops the server from
+   starting; check with
+   `SELECT current_setting('output_plugin_libraries', true)`.
 
 8. Then, connect to the server and use the `CREATE EXTENSION` command to create the spock extension on each node in the database you wish to replicate:
 
@@ -194,7 +204,7 @@ Modify the `postgresql.conf` file, adding:
     output_plugin_libraries = 'pgoutput, test_decoding, spock_output'
                                 # required on newer Postgres versions; must be additive
 
-PostgreSQL 15.19, 16.15, 17.11, 18.6, and 19 (and their later minor releases) require every logical decoding output plugin to be named in the `output_plugin_libraries` parameter before it can be used. Spock decodes with the `spock_output` plugin, so `spock_output` must appear in this list on every node, or slot creation fails with `library "spock_output" may not be used as an output plugin`.
+PostgreSQL 15.19, 16.15, 17.11, 18.6, and 19 (and their later minor releases) require every logical decoding output plugin to be named in the `output_plugin_libraries` parameter before it can be used. Spock decodes with the `spock_output` plugin, so `spock_output` must appear in this list on every node, physical standbys included, or logical decoding fails with `library "spock_output" may not be used as an output plugin`. Add the parameter only on a server that has it (see step 7 of the build instructions above): on an older release an unrecognised parameter stops the server from starting. See [Configuring Spock](docs/configuring.md).
 
 You'll also want to enable automatic ddl replication on each node; add these GUCs to the `postgresql.conf` file as well:
 

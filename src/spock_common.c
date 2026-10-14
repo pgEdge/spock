@@ -201,6 +201,61 @@ IsIndexUsableForInsertConflict(Relation idxrel)
 }
 
 /*
+ * SpockBuildInsertArbiterIndexes
+ *		List the indexes that can arbitrate an applied INSERT on this relation.
+ *
+ * Every immediate unique index qualifies: any of them can reject the tuple, so
+ * any of them has to be able to report that rather than raise it.  Note this
+ * is not the set spock.check_all_uc_indexes selects -- that GUC picks the
+ * indexes searched when looking for the local row, a different question with a
+ * different answer.
+ *
+ * Deferrable indexes are omitted because ExecInsertIndexTuples() only reports
+ * a speculative conflict for immediate ones.  Invalid indexes are omitted as
+ * core's infer_arbiter_indexes() omits them, although one that is ready for
+ * inserts -- still being built concurrently, or left behind by a failed
+ * build -- does enforce uniqueness: a clash on it is raised rather than
+ * reported, as it was before arbitration.  Exclusion constraints are not
+ * unique indexes, so violating one is raised too.
+ *
+ * The result is palloc'd in the current memory context.
+ */
+List *
+SpockBuildInsertArbiterIndexes(Relation rel)
+{
+	List	   *indexoids;
+	List	   *arbiters = NIL;
+	ListCell   *lc;
+
+	indexoids = RelationGetIndexList(rel);
+
+	foreach(lc, indexoids)
+	{
+		Oid			indexoid = lfirst_oid(lc);
+		HeapTuple	tuple;
+		Form_pg_index index;
+		bool		usable;
+
+		tuple = SearchSysCache1(INDEXRELID, ObjectIdGetDatum(indexoid));
+		if (!HeapTupleIsValid(tuple))
+			elog(ERROR, "cache lookup failed for index %u", indexoid);
+
+		index = (Form_pg_index) GETSTRUCT(tuple);
+		usable = index->indisunique &&
+			index->indisvalid &&
+			index->indimmediate;
+		ReleaseSysCache(tuple);
+
+		if (usable)
+			arbiters = lappend_oid(arbiters, indexoid);
+	}
+
+	list_free(indexoids);
+
+	return arbiters;
+}
+
+/*
  * Does this unique index treat NULLs as distinct (the default)?
  *
  * For such an index a NULL in any key column means the row can never have a
@@ -231,7 +286,7 @@ SpockIndexNullsAreDistinct(Relation idxrel)
  */
 static bool
 index_keys_match(TupleTableSlot *slot1, TupleTableSlot *slot2, Relation idxrel,
-			 ScanKey skey, int ncols)
+				 ScanKey skey, int ncols)
 {
 	bool		nulls_distinct = SpockIndexNullsAreDistinct(idxrel);
 	int			i;
@@ -290,12 +345,12 @@ index_keys_match(TupleTableSlot *slot1, TupleTableSlot *slot2, Relation idxrel,
 static ExprState *
 SpockPreparePredicateExpr(Relation idxrel, EState *estate)
 {
-	List       *predExprList;
+	List	   *predExprList;
 	ExprState  *result;
 	MemoryContext oldcxt;
 
 	if (heap_attisnull(idxrel->rd_indextuple, Anum_pg_index_indpred, NULL))
-	    return NULL;
+		return NULL;
 
 	oldcxt = MemoryContextSwitchTo(estate->es_query_cxt);
 	predExprList = RelationGetIndexPredicate(idxrel);
@@ -303,6 +358,7 @@ SpockPreparePredicateExpr(Relation idxrel, EState *estate)
 	MemoryContextSwitchTo(oldcxt);
 	return result;
 }
+
 /*
  * Check if the predicate matches by evaluating the index predicate on the
  * given tuple slot. This is used for both remote and local tuples.
@@ -360,16 +416,16 @@ SpockRelationFindReplTupleByIndex(EState *estate,
 
 	/*
 	 * Under NULLS DISTINCT (the default), a remote row with a NULL in any of
-	 * this index's key columns can never conflict with an existing row here --
-	 * NULL is never equal to anything, including another NULL -- so skip the
-	 * probe entirely.
+	 * this index's key columns can never conflict with an existing row here
+	 * -- NULL is never equal to anything, including another NULL -- so skip
+	 * the probe entirely.
 	 *
-	 * This is not just an optimization: spock_build_replindex_scan_key() emits
-	 * SK_SEARCHNULL for a NULL key value, which makes the btree return *every*
-	 * row whose key IS NULL.  index_keys_match() below then discards each of
-	 * them, so without this short-circuit every applied insert would run an
-	 * O(rows) scan -- guaranteed to find nothing -- on a unique index over a
-	 * mostly-NULL key column.
+	 * This is not just an optimization: spock_build_replindex_scan_key()
+	 * emits SK_SEARCHNULL for a NULL key value, which makes the btree return
+	 * *every* row whose key IS NULL.  index_keys_match() below then discards
+	 * each of them, so without this short-circuit every applied insert would
+	 * run an O(rows) scan -- guaranteed to find nothing -- on a unique index
+	 * over a mostly-NULL key column.
 	 *
 	 * Under NULLS NOT DISTINCT, NULLs compare equal, so a NULL-keyed row CAN
 	 * conflict; don't short-circuit -- let the scan run and let
@@ -383,7 +439,7 @@ SpockRelationFindReplTupleByIndex(EState *estate,
 		slot_getallattrs(searchslot);
 		for (i = 0; i < IndexRelationGetNumberOfKeyAttributes(idxrel); i++)
 		{
-			int		table_attno = indkey->values[i];
+			int			table_attno = indkey->values[i];
 
 			if (AttributeNumberIsValid(table_attno) &&
 				searchslot->tts_isnull[table_attno - 1])
@@ -696,11 +752,11 @@ commit_ts_str_has_offset(const char *s)
 	Assert(s != NULL);
 
 	/*
-	 * Not tokenisable as a datetime at all.  The caller parses before asking, so
-	 * a string that reaches us has already satisfied timestamptz_in() and this
-	 * should not happen; answer no rather than claim an offset we did not see.
-	 * Note the contract is that negative means failure, zero or positive
-	 * success.
+	 * Not tokenisable as a datetime at all.  The caller parses before asking,
+	 * so a string that reaches us has already satisfied timestamptz_in() and
+	 * this should not happen; answer no rather than claim an offset we did
+	 * not see. Note the contract is that negative means failure, zero or
+	 * positive success.
 	 */
 	if (ParseDateTime(s, workbuf, sizeof(workbuf), field, ftype,
 					  MAXDATEFIELDS, &nf) < 0)
@@ -708,9 +764,10 @@ commit_ts_str_has_offset(const char *s)
 
 	/*
 	 * DTK_TZ is a numeric UTC offset.  A zone abbreviation arrives as
-	 * DTK_STRING instead and is deliberately not accepted here: an abbreviation
-	 * is not unique across zones -- CST is China, Cuba and US Central -- so it
-	 * does not pin down an instant even when the reader can resolve it.
+	 * DTK_STRING instead and is deliberately not accepted here: an
+	 * abbreviation is not unique across zones -- CST is China, Cuba and US
+	 * Central -- so it does not pin down an instant even when the reader can
+	 * resolve it.
 	 */
 	for (i = 0; i < nf; i++)
 	{
@@ -759,18 +816,18 @@ str_to_timestamptz(const char *s)
 	TimestampTz result;
 
 	result = DatumGetTimestampTz(DirectFunctionCall3(timestamptz_in,
-													CStringGetDatum(s),
-													ObjectIdGetDatum(InvalidOid),
-													Int32GetDatum(-1)));
+													 CStringGetDatum(s),
+													 ObjectIdGetDatum(InvalidOid),
+													 Int32GetDatum(-1)));
 
 	/*
 	 * Rejects infinity and -infinity, which no server stamps a commit with.
 	 * Letting one through would put INT64_MAX or INT64_MIN into
 	 * SpockApplyProgress and from there into spock.progress, where every lag
 	 * figure and every prev_remote_ts comparison derived from it turns into
-	 * nonsense.  spock_sync.c already Asserts IS_VALID_TIMESTAMP on the result;
-	 * this makes the same check hold in production builds, at the one place all
-	 * such values pass through.
+	 * nonsense.  spock_sync.c already Asserts IS_VALID_TIMESTAMP on the
+	 * result; this makes the same check hold in production builds, at the one
+	 * place all such values pass through.
 	 */
 	if (!IS_VALID_TIMESTAMP(result))
 		ereport(ERROR,

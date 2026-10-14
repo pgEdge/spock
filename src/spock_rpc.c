@@ -307,14 +307,25 @@ spock_remote_node_info(PGconn *conn, char **sysid, char **dbname, char **replica
 
 	res = PQexec(conn, "SELECT * FROM spock.node_info()");
 	if (PQresultStatus(res) != PGRES_TUPLES_OK)
-		elog(ERROR, "could not fetch remote node info: %s\n", PQerrorMessage(conn));
+	{
+		char	   *errmsg = pstrdup(PQerrorMessage(conn));
+
+		PQclear(res);
+		elog(ERROR, "could not fetch remote node info: %s\n", errmsg);
+	}
 
 	/* No nodes found? */
 	if (PQntuples(res) == 0)
+	{
+		PQclear(res);
 		elog(ERROR, "the remote database is not configured as a spock node.\n");
+	}
 
 	if (PQntuples(res) > 1)
+	{
+		PQclear(res);
 		elog(ERROR, "the remote database has multiple nodes configured. That is not supported with current version of spock.\n");
+	}
 
 	node->id = atooid(PQgetvalue(res, 0, 0));
 	node->name = pstrdup(PQgetvalue(res, 0, 1));
