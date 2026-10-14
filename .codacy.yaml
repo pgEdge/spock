@@ -31,6 +31,7 @@ engines:
       - "src/spock_sequences.c"
       - "src/spock_sync.c"
       - "src/spock_worker.c"
+      - "src/spock_zodan.c"
   lizard:
     exclude_paths:
       - "src/spock_apply.c"
@@ -58,3 +59,4 @@ engines:
       - "src/spock_sequences.c"
       - "src/spock_sync.c"
       - "src/spock_worker.c"
+      - "src/spock_zodan.c"
