@@ -67,7 +67,7 @@ test: 049_wait_for_sync_dropped
 #
 
 # Group replication slots
-test: 105_group_slots
+test: 112_group_slots
 
 # Regression tests
 test: 103_manager_worker_dboid_race

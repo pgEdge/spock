@@ -198,7 +198,7 @@ int			spock_apply_change_logging = SPOCK_APPLY_CHANGE_LOG_NONE;
 
 /* Group slots (opt-in; conservative defaults) */
 bool		spock_group_slots_enabled = false;
-int			spock_group_slots_worker_interval = 5;		/* seconds */
+int			spock_group_slots_worker_interval = 5;	/* seconds */
 int			spock_group_slots_staleness_timeout = 60;	/* seconds */
 int			spock_group_slots_safety_mode = SPOCK_GROUP_SLOT_SAFETY_STRICT;
 

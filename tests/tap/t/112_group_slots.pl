@@ -6,7 +6,7 @@ use SpockTest qw(create_cluster destroy_cluster system_or_bail command_ok
                  get_test_config scalar_query psql_or_bail);
 
 # =============================================================================
-# Test: 105_group_slots.pl - Group replication slots (BDR/PGD-style)
+# Test: 112_group_slots.pl - Group replication slots (BDR/PGD-style)
 # =============================================================================
 # Verifies the group-slot subsystem:
 #   - deterministic naming (spock.local_group_slot_name)

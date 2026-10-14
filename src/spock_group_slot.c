@@ -28,7 +28,8 @@
 #include "storage/proc.h"
 #include "utils/builtins.h"
 #include "utils/guc.h"
-#include "utils/lsyscache.h"	/* get_database_name(): moved here from dbcommands.h in PG19 */
+/* get_database_name() moved here from dbcommands.h in PG19 */
+#include "utils/lsyscache.h"
 #include "utils/memutils.h"
 #include "utils/resowner.h"
 #include "utils/snapmgr.h"
@@ -125,9 +126,10 @@ spock_group_slot_init_local(Oid node_id)
 	}
 
 	/*
-	 * Version-skew guard: with the 6.1.0 binary loaded but the extension still
-	 * at 6.0.0, spock.group_slot_state does not exist yet.  Skip the seed
-	 * rather than aborting spock.create_node() with a missing-relation error.
+	 * Version-skew guard: with the 6.1.0 binary loaded but the extension
+	 * still at 6.0.0, spock.group_slot_state does not exist yet.  Skip the
+	 * seed rather than aborting spock.create_node() with a missing-relation
+	 * error.
 	 */
 	rc = SPI_execute("SELECT to_regclass('spock.group_slot_state') IS NOT NULL",
 					 true, 1);
@@ -146,9 +148,9 @@ spock_group_slot_init_local(Oid node_id)
 	}
 	else
 	{
-		bool	isnull;
-		Datum	present = SPI_getbinval(SPI_tuptable->vals[0],
-										SPI_tuptable->tupdesc, 1, &isnull);
+		bool		isnull;
+		Datum		present = SPI_getbinval(SPI_tuptable->vals[0],
+											SPI_tuptable->tupdesc, 1, &isnull);
 
 		if (isnull || !DatumGetBool(present))
 		{
@@ -168,10 +170,10 @@ spock_group_slot_init_local(Oid node_id)
 
 	/* User catalog table: no ON CONFLICT, so guard with NOT EXISTS. */
 	rc = SPI_execute_with_args(
-		"INSERT INTO spock.group_slot_state (node_id, dboid, slot_name) "
-		"SELECT $1, $2, $3 "
-		" WHERE NOT EXISTS (SELECT 1 FROM spock.group_slot_state WHERE node_id = $1)",
-		3, argtypes, values, NULL, false, 0);
+							   "INSERT INTO spock.group_slot_state (node_id, dboid, slot_name) "
+							   "SELECT $1, $2, $3 "
+							   " WHERE NOT EXISTS (SELECT 1 FROM spock.group_slot_state WHERE node_id = $1)",
+							   3, argtypes, values, NULL, false, 0);
 
 	if (rc != SPI_OK_INSERT && rc != SPI_OK_INSERT_RETURNING)
 		elog(WARNING, "spock group slot: metadata seed failed (rc=%d)", rc);
@@ -196,30 +198,30 @@ spock_group_slot_drop_local(void)
 	}
 
 	rc = SPI_execute(
-		"DO $$ "
-		"BEGIN "
-		"  IF to_regclass('spock.group_slot_state') IS NULL THEN RETURN; END IF; "
-		/* Drop only inactive group slots for this node. */
-		"  PERFORM pg_drop_replication_slot(s.slot_name) "
-		"     FROM pg_replication_slots s "
-		"     JOIN spock.group_slot_state g ON g.slot_name = s.slot_name "
-		"    WHERE g.node_id = (SELECT node_id FROM spock.local_node) "
-		"      AND NOT s.active; "
-		/* Warn about any still-active slot; its metadata is kept below. */
-		"  IF EXISTS (SELECT 1 FROM pg_replication_slots s "
-		"               JOIN spock.group_slot_state g ON g.slot_name = s.slot_name "
-		"              WHERE g.node_id = (SELECT node_id FROM spock.local_node) "
-		"                AND s.active) THEN "
-		"    RAISE WARNING 'spock group slot: active slot not dropped; "
-		"metadata retained for later cleanup'; "
-		"  END IF; "
-		/* Delete metadata only for slots that no longer exist (were dropped). */
-		"  DELETE FROM spock.group_slot_state g "
-		"   WHERE g.node_id = (SELECT node_id FROM spock.local_node) "
-		"     AND NOT EXISTS (SELECT 1 FROM pg_replication_slots s "
-		"                      WHERE s.slot_name = g.slot_name); "
-		"END $$;",
-		false, 0);
+					 "DO $$ "
+					 "BEGIN "
+					 "  IF to_regclass('spock.group_slot_state') IS NULL THEN RETURN; END IF; "
+	/* Drop only inactive group slots for this node. */
+					 "  PERFORM pg_drop_replication_slot(s.slot_name) "
+					 "     FROM pg_replication_slots s "
+					 "     JOIN spock.group_slot_state g ON g.slot_name = s.slot_name "
+					 "    WHERE g.node_id = (SELECT node_id FROM spock.local_node) "
+					 "      AND NOT s.active; "
+	/* Warn about any still-active slot; its metadata is kept below. */
+					 "  IF EXISTS (SELECT 1 FROM pg_replication_slots s "
+					 "               JOIN spock.group_slot_state g ON g.slot_name = s.slot_name "
+					 "              WHERE g.node_id = (SELECT node_id FROM spock.local_node) "
+					 "                AND s.active) THEN "
+					 "    RAISE WARNING 'spock group slot: active slot not dropped; "
+					 "metadata retained for later cleanup'; "
+					 "  END IF; "
+	/* Delete metadata only for slots that no longer exist (were dropped). */
+					 "  DELETE FROM spock.group_slot_state g "
+					 "   WHERE g.node_id = (SELECT node_id FROM spock.local_node) "
+					 "     AND NOT EXISTS (SELECT 1 FROM pg_replication_slots s "
+					 "                      WHERE s.slot_name = g.slot_name); "
+					 "END $$;",
+					 false, 0);
 
 	if (rc != SPI_OK_UTILITY && rc != SPI_OK_SELECT)
 		elog(WARNING, "spock group slot: teardown failed (rc=%d)", rc);
@@ -259,7 +261,7 @@ spock_group_slot_do_tick(void)
 	MemoryContext tickctx = CurrentMemoryContext;
 
 	/* Latched while the extension is behind, so the notice is logged once. */
-	static bool	skew_reported = false;
+	static bool skew_reported = false;
 
 	PG_TRY();
 	{

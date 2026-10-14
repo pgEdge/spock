@@ -25,8 +25,8 @@
 typedef enum SpockGroupSlotSafetyMode
 {
 	SPOCK_GROUP_SLOT_SAFETY_STRICT = 0, /* refuse any unsafe action */
-	SPOCK_GROUP_SLOT_SAFETY_REPAIR,		/* allow guarded repair actions */
-	SPOCK_GROUP_SLOT_SAFETY_OFF			/* advisory only (no advancement) */
+	SPOCK_GROUP_SLOT_SAFETY_REPAIR, /* allow guarded repair actions */
+	SPOCK_GROUP_SLOT_SAFETY_OFF /* advisory only (no advancement) */
 } SpockGroupSlotSafetyMode;
 
 /* GUCs (defined in spock.c) */

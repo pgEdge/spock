@@ -399,9 +399,9 @@ spock_drop_node(PG_FUNCTION_ARGS)
 
 			/*
 			 * Deliberately tear down the internally managed group slot for
-			 * this node.  This is the only place a group slot is dropped;
-			 * the generic "spk_.*" cleanup above never matches the
-			 * "spkgrp_" group-slot prefix.
+			 * this node.  This is the only place a group slot is dropped; the
+			 * generic "spk_.*" cleanup above never matches the "spkgrp_"
+			 * group-slot prefix.
 			 */
 			spock_group_slot_drop_local();
 
