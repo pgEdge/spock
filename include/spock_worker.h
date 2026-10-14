@@ -24,8 +24,9 @@ typedef enum
 	SPOCK_WORKER_NONE,			/* Unused slot. */
 	SPOCK_WORKER_MANAGER,		/* Manager. */
 	SPOCK_WORKER_APPLY,			/* Apply. */
-	SPOCK_WORKER_SYNC			/* Special type of Apply that synchronizes one
+	SPOCK_WORKER_SYNC,			/* Special type of Apply that synchronizes one
 								 * table. */
+	SPOCK_WORKER_GROUP_SLOT		/* Group-slot maintainer (one per database). */
 } SpockWorkerType;
 
 typedef enum
@@ -170,6 +171,7 @@ extern int	spock_worker_register(SpockWorker *worker);
 extern void spock_worker_attach(int slot, SpockWorkerType type);
 
 extern SpockWorker *spock_manager_find(Oid dboid);
+extern SpockWorker *spock_group_slot_find(Oid dboid);
 extern SpockWorker *spock_apply_find(Oid dboid, Oid subscriberid);
 extern List *spock_apply_find_all(Oid dboid);
 
