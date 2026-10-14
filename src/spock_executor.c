@@ -174,11 +174,12 @@ spock_ProcessUtility(PlannedStmt *pstmt, const char *queryString,
 {
 	Node	   *parsetree = pstmt->utilityStmt;
 	NodeTag		toplevel_stmt = nodeTag(parsetree);
+	bool		is_ddl = (GetCommandLogLevel(parsetree) == LOGSTMT_DDL);
 	bool		is_extension_drop;
 
 	dropping_spock_obj = false;
 
-	if (spock_deny_ddl && GetCommandLogLevel(parsetree) == LOGSTMT_DDL)
+	if (spock_deny_ddl && is_ddl)
 	{
 		ereport(ERROR,
 				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
@@ -238,8 +239,19 @@ spock_ProcessUtility(PlannedStmt *pstmt, const char *queryString,
 		spock_next_process_utility(pstmt, queryString, readOnlyTree,
 								   context, params, queryEnv, dest, qc);
 
-	/* Check for AutoDDL */
-	spock_autoddl_process(pstmt, queryString, context, toplevel_stmt);
+	/*
+	 * Check for AutoDDL.
+	 *
+	 * Only for DDL: for other statements pstmt may be freed by now.  A CALL
+	 * or DO that runs COMMIT or ROLLBACK inside, or a ROLLBACK, can release
+	 * the portal's cached plan, which owns pstmt (see the comment on
+	 * portal->stmts in PortalRunMulti()); if the plan was invalidated in the
+	 * meantime, it is freed.  None of those is DDL.  DDL that commits
+	 * internally, such as CREATE INDEX CONCURRENTLY, does not release the
+	 * plan: PreCommit_Portals() leaves an active portal alone.
+	 */
+	if (is_ddl)
+		spock_autoddl_process(pstmt, queryString, context, toplevel_stmt);
 }
 
 /*
