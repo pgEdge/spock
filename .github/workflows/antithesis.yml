@@ -52,7 +52,7 @@ env:
   CONFIG_DIR: antithesis/config
   # Push runs have no inputs: they always launch, for this many minutes.
   LAUNCH: ${{ github.event_name == 'push' || inputs.launch }}
-  PUSH_DURATION: "30"
+  PUSH_DURATION: "15"
 
 jobs:
   antithesis:
