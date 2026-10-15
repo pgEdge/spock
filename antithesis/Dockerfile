@@ -117,6 +117,12 @@ RUN useradd -m -u 1000 postgres
 # ------------------------------------------------------------------------------
 FROM runtime-base AS node
 
+# gdb for backtraces from the multiverse debugger.  PostgreSQL and spock.so
+# are built with -g, so frames resolve without debuginfo packages.
+RUN set -eux; \
+	dnf -y install --setopt=install_weak_deps=False gdb; \
+	dnf clean all
+
 # The unstripped spock.so carries its own debug info; Antithesis reads it
 # from /symbols.
 RUN set -eux; \

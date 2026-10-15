@@ -17,6 +17,9 @@ x-node: &node
     dockerfile: antithesis/Dockerfile
     target: node
   image: spock-node:latest
+  # Lets gdb attach to postgres processes from the multiverse debugger.
+  cap_add:
+    - SYS_PTRACE
   # Fast shutdown, so a graceful stop does not wait on client sessions.
   stop_signal: SIGINT
   # Fast shutdown still waits for walsenders to send pending WAL; with peers
