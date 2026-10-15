@@ -183,8 +183,25 @@ sub ensure_lolor {
 
     my $build = "/tmp/spock_lolor_build";
     my $log   = "$LOG_DIR/lolor_build.log";
+    my $repo  = 'https://github.com/pgEdge/lolor.git';
+
+    # Build the newest released lolor, not whatever main happens to be:
+    # main is a development branch and a bad commit there would break these
+    # tests for reasons that have nothing to do with spock.
+    #
+    # lolor publishes no GitHub releases, only tags, so the release is the
+    # highest vN.N.N tag.  Pre-release tags (v1.2.3-rc.1) carry a suffix and
+    # are excluded by the pattern; sort -V then orders the rest by version
+    # rather than lexically, so v1.2.10 would outrank v1.2.9.
+    my $tag = `git ls-remote --tags --refs $repo 2>> '$log' | awk -F/ '{print \$NF}' | grep -E '^v[0-9]+(\\.[0-9]+)*\$' | sort -V | tail -1`;
+    chomp $tag;
+
+    # No tag means no network, or the tagging scheme changed.  Report failure
+    # so the caller skips, rather than silently falling back to main.
+    return 0 unless $tag =~ /^v[0-9][0-9.]*$/;
+
     system('rm', '-rf', $build);
-    my $rc = system("git clone --depth 1 https://github.com/pgEdge/lolor.git $build >> '$log' 2>&1");
+    my $rc = system("git clone --depth 1 --branch $tag $repo $build >> '$log' 2>&1");
     return 0 if $rc != 0;
     $rc = system("make -C $build USE_PGXS=1 PG_CONFIG='$PG_BIN/pg_config' install >> '$log' 2>&1");
     return 0 if $rc != 0;
