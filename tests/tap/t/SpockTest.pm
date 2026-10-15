@@ -173,13 +173,20 @@ sub system_maybe {
     return $rc == 0;
 }
 
+# lolor refuses CREATE EXTENSION unless its library is preloaded, so once
+# ensure_lolor() succeeds every cluster created afterwards loads it.
+my $preload_lolor = 0;
+
 # Build and install the lolor extension if it is not already present.
 # Returns true when lolor is available. Callers should skip_all (rather
 # than fail) when this returns false, e.g. no network to clone the repo.
+# Must be called before create_cluster(), which adds lolor to
+# shared_preload_libraries.
 sub ensure_lolor {
     my $sharedir = `$PG_BIN/pg_config --sharedir`;
     chomp $sharedir;
-    return 1 if $sharedir && -f "$sharedir/extension/lolor.control";
+    return $preload_lolor = 1
+        if $sharedir && -f "$sharedir/extension/lolor.control";
 
     my $build = "/tmp/spock_lolor_build";
     my $log   = "$LOG_DIR/lolor_build.log";
@@ -188,7 +195,8 @@ sub ensure_lolor {
     return 0 if $rc != 0;
     $rc = system("make -C $build USE_PGXS=1 PG_CONFIG='$PG_BIN/pg_config' install >> '$log' 2>&1");
     return 0 if $rc != 0;
-    return ($sharedir && -f "$sharedir/extension/lolor.control") ? 1 : 0;
+    return $preload_lolor =
+        ($sharedir && -f "$sharedir/extension/lolor.control") ? 1 : 0;
 }
 
 # Return the output_plugin_libraries line a node needs, or '' if the server
@@ -232,7 +240,8 @@ sub create_postgresql_conf {
 
     open(my $conf, '>>', "$datadir/postgresql.conf") or die "Cannot open config file: $!";
     print $conf "shared_buffers=1GB\n";
-    print $conf "shared_preload_libraries='spock'\n";
+    print $conf "shared_preload_libraries='"
+              . ($preload_lolor ? 'spock, lolor' : 'spock') . "'\n";
     print $conf output_plugin_libraries_conf($PG_BIN);
     print $conf "wal_level=logical\n";
     print $conf "spock.enable_ddl_replication=on\n";
