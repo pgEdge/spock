@@ -418,9 +418,22 @@ FindReplTupleInLocalRel(ApplyExecutionData *edata, Relation localrel,
 #endif
 #endif
 
+#if PG_VERSION_NUM >= 190000
+
+		/*
+		 * Since PG 19 the caller tells whether the first index match can be
+		 * taken without comparing it to the search slot (upstream
+		 * 2f7bf51b7b). localidxoid is the replica identity index recorded in
+		 * the relation map, so it can.  Back branches kept the old signature.
+		 */
+		found = RelationFindReplTupleByIndex(localrel, localidxoid, true,
+											 LockTupleExclusive,
+											 remoteslot, *localslot);
+#else
 		found = RelationFindReplTupleByIndex(localrel, localidxoid,
 											 LockTupleExclusive,
 											 remoteslot, *localslot);
+#endif
 	}
 	else
 	{
