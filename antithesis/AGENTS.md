@@ -23,5 +23,6 @@ This directory contains test templates. A test template is a directory containin
 **Spock specifics**
 - `Dockerfile` builds three stages from the repo root: `build`, `node` (n1-n4) and `workload`. Spock is built with `make ANTITHESIS=1 ANTITHESIS_SDK_INCLUDE=...` (assertions plus coverage); a normal build is unaffected.
 - SUT-side assertions live in `include/spock_antithesis.h` (catalog) and `src/spock_antithesis.c` (fallback-SDK JSONL writer). See `scratchbook/setup-notes.md` for how to add one.
+- Node images include gdb and run with `SYS_PTRACE`. In the multiverse debugger, back-trace every apply worker on a node with `for p in $(pgrep -f '^postgres: spock apply'); do gdb -q -batch -ex bt -p $p; done`.
 - `node/node-entrypoint.sh` keeps postgres running under a restart loop; `workload/workload-entrypoint.sh` builds the n1-n3 mesh, prepares spare n4, then emits setup-complete.
 - The committed compose targets `linux/amd64`. On an ARM host, `local-validate.sh` builds native images under `:local` tags and runs `snouty validate`; build the amd64 `:latest` images on x86-64 (or with emulation) before launching; `compose build` of the committed config does not work on this aarch64 host as is.
