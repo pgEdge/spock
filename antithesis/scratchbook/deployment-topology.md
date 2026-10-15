@@ -102,10 +102,15 @@ Two nodes cannot reach those states, and a fourth always-on node adds state spac
 - `spock.pause_timeout = 1` (USERSET; each apply worker reads its own value).
   Needed to open the add_node pause window
   (`add-node-pause-held-until-progress-read`)
-- Large `checkpoint_timeout` **and** large `max_wal_size` (sustained writes
+- `checkpoint_timeout = '5min'` and large `max_wal_size` (sustained writes
   trigger checkpoints through `max_wal_size` too). The L1 properties need
   applied commits since the last checkpoint at kill time, and the workload
-  issues no manual CHECKPOINT
+  issues no manual CHECKPOINT. `checkpoint_timeout` was `1d` until
+  2026-10-15: WAL stayed under `max_wal_size`, so no checkpoint ran, no WAL
+  was removed, and run
+  9705b08734ec5df06d6637244b6466ed-63-13 filled the disk (spock-n1 PANIC on
+  a WAL write, then could not restart). Five minutes still leaves most kills
+  between checkpoints
 - `logging_collector = on`, fixed `log_directory` and `log_line_prefix`, and
   `lc_messages = 'C'`. The workload reads server logs as superuser with
   `pg_ls_logdir()` / `pg_read_file()` (Assert TRAP lines go to stderr, which

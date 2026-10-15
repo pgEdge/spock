@@ -31,7 +31,7 @@ def log(msg):
 def load_params():
     """The timeline's workload shape, or defaults if first_ has not
     written it (for example when a command is run by hand)."""
-    params = {"writer_nodes": MESH, "big_txn_weight": 0.3}
+    params = {"writer_nodes": MESH, "big_txn_weight": 0.15}
     try:
         with open(PARAMS_FILE) as f:
             params.update(json.load(f))

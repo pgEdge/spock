@@ -24,14 +24,14 @@ def main():
 
     # Swarm the writers per timeline: some timelines write on one node only
     # (the other channels stay idle, so only keepalives cross them), others
-    # on all three; some favor large transactions that are still in flight
-    # when a partition starts.
+    # on all three.  15% of transactions are large: enough to have one in
+    # flight when a partition starts, without filling the disk.
     writer_nodes = [n for n in MESH if random_choice([True, True, False])]
     if not writer_nodes:
         writer_nodes = [random_choice(MESH)]
     params = {
         "writer_nodes": writer_nodes,
-        "big_txn_weight": random_choice([0.0, 0.05, 0.3, 0.9]),
+        "big_txn_weight": 0.15,
     }
     save_params(params)
     log(f"timeline params: {params}")

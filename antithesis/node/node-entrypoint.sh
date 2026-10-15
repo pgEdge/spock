@@ -114,7 +114,10 @@ wal_sender_timeout = '${SPOCK_WAL_SENDER_TIMEOUT:-60s}'
 spock.apply_idle_timeout = ${SPOCK_APPLY_IDLE_TIMEOUT:-120}
 
 # Crash-recovery properties need applied commits since the last checkpoint.
-checkpoint_timeout = '1d'
+# With '1d', WAL stayed under max_wal_size, so no checkpoint ever ran, no WAL
+# was removed and a 30 minute run filled the disk.  5min still leaves most
+# kills landing between checkpoints.
+checkpoint_timeout = '5min'
 max_wal_size = '8GB'
 
 # Server log goes to a file the workload reads with pg_read_file(); the
