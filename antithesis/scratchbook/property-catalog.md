@@ -1,7 +1,7 @@
 ---
 sut_path: /home/msharp/dev/pgedgea/spock
-commit: f6382688fb99be86238ed37dc3a2325a355eab92
-updated: 2026-10-14
+commit: 46144e984c992c49e8f54f140debf0d1d1f92be3
+updated: 2026-10-15
 external_references: []
 ---
 
@@ -219,6 +219,7 @@ Priority: P0 · Topology: v1 · Faults: worker exit (test cmd), partition, node 
 Confidence: high · Surfaced by: F1 Data Integrity (also the data check behind F7's `mesh-barriers-complete-after-partition-heal`)
 Evidence: properties/committed-ledger-row-reaches-every-node.md
 Evaluation note (2026-10-13): cancel (57014) and `terminate_active_transactions` (40001) test commands run in a separate classifier template until L5 and the 40001 path are fixed or accepted, so in the main template a missing row points at a new cause. Workload-side `Sometimes("cancel or terminate reached an apply worker with backend_xid set")` shows the dangerous state was reached without SUT instrumentation.
+Partly implemented (2026-10-15): `test/v1/main/eventually_mesh_barriers.py`, after every ordered pair's sync barrier passes, reads the ledger on n1-n3 as `md5(l::text)` per row (all columns) sorted by `(origin, seq)` and compares the lists. One `Always("every mesh node holds the same ledger rows after sync barriers")`; details give rows per node, the number of differing rows, up to 20 sample keys with each node's hash or `missing`, and each node's count of `spock.exception_log` rows for `ledger`. Reach claim `Sometimes("ledger rows were compared on every mesh node after sync barriers")`. Skipped when any barrier missed or a subscription was disabled (reported by the barrier property), or when a writer session survived termination. Not yet: the client-side committed/unknown record (a row lost on every node, including its origin, is not caught), the explained/unexplained split by exception_log row, n4, and the SUT-side `Unreachable`.
 
 ### ledger-row-applied-exactly-once-per-peer — No transaction is applied twice on a peer
 
@@ -1498,7 +1499,7 @@ Priority: P1 · Topology: v1 · Faults: partition, one-way loss, pause
 Confidence: medium · Surfaced by: F7 Distributed
 Evidence: properties/mesh-barriers-complete-after-partition-heal.md
 Evaluation note (2026-10-13): with `wal_sender_timeout = 60s` and `spock.apply_idle_timeout = 120s` (raised from about 30 s so an idle link is not cut between walsender keepalives, which come about every `wal_sender_timeout / 2`), the bound is about 60 + 120 + 5 + 30 s plus catch-up margin, roughly 4-5 minutes per quiet period.
-Implemented (2026-10-14): `test/v1/main/eventually_mesh_barriers.py`, one `Always("sync barrier P->S completes within 5 minutes after faults stop")` evaluated per ordered pair (deadline on the workload's monotonic clock; a `false` from the wall-clock wait before the deadline waits again). Details carry each pair's backlog bytes when faults stopped. Writers cap payload at 25 MB per run so catch-up fits the bound. Reach claims: a slot inactive on its provider when faults stopped, every pair checked (no disabled subscription skipped), a barrier needing more than 30 s. Load from `parallel_driver_write_ledger.py` (swarmed writer nodes and transaction sizes). Not yet: n4 pairs (no add_node template), a mid-run check with `ANTITHESIS_STOP_FAULTS`.
+Implemented (2026-10-14): `test/v1/main/eventually_mesh_barriers.py`, one `Always("sync barrier P->S completes within 5 minutes after faults stop")` evaluated per ordered pair (deadline on the workload's monotonic clock; a `false` from the wall-clock wait before the deadline waits again). Details carry each pair's backlog bytes when faults stopped. Writers cap payload at 25 MB per run so catch-up fits the bound. Reach claims: a slot inactive on its provider when faults stopped, every pair checked (no disabled subscription skipped), a barrier needing more than 30 s. Load from `parallel_driver_write_ledger.py` (swarmed writer nodes; since 2026-10-15 about 15% of transactions are large). Before taking sync events the command terminates leftover writer sessions (`pg_terminate_backend`; a backend already committing finishes, one without COMMIT rolls back) and waits up to 10 s for them to go, so no ledger commit lands after the barrier LSN. Not yet: n4 pairs (no add_node template), a mid-run check with `ANTITHESIS_STOP_FAULTS`.
 
 ### apply-worker-restarted-within-bound-after-exit — A dead apply worker comes back within a bound
 
@@ -2082,7 +2083,8 @@ Evidence: properties/cross-pg-major-links-replicate-identically.md
    read logs with `pg_read_file`; `spock.pause_timeout = 1`. Client sessions
    use `synchronous_commit=on`; apply sessions keep Spock's default
    `synchronous_commit=off` (or a run variant randomises it).
-   `checkpoint_timeout` and `max_wal_size` are both large and the workload
+   `checkpoint_timeout` is 5min (a day filled the disk; see
+   `deployment-topology.md`), `max_wal_size` is large and the workload
    issues no manual CHECKPOINT. `spock.exception_logging` stays at its
    default `all` (the explained-divergence oracle needs every row). These
    timeouts meet the rule `apply_idle_timeout >= wal_sender_timeout / 2 +

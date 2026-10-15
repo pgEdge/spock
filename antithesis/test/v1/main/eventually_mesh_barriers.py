@@ -28,6 +28,17 @@ a slow catch-up from a channel that never resumed.
 
 sub_show_status() is not used: 'replicating' only means a worker process
 exists, not that data arrives.
+
+Property committed-ledger-row-reaches-every-node.
+
+Once every pair has passed, the ledger is read on every mesh node as one
+md5 per row over all its columns, sorted by key, and the lists are
+compared.  The barrier only covers commits made before the sync event, and
+a backend whose client was killed after sending COMMIT can still commit
+later (the client's packets may be held up by a partition).  So before
+taking it the command terminates leftover writer sessions: one already
+committing finishes first, one that has not got COMMIT rolls back.  If a
+session is still there after that, the ledger is not compared.
 """
 
 import threading
@@ -43,6 +54,14 @@ BOUND = 300
 PAIRS = [(p, s) for p in MESH for s in MESH if p != s]
 
 RECHECK_SECS = 5
+
+# How long to wait for terminated writer sessions to go, and to read the
+# ledger once the barriers have passed.
+WRITERS_GONE_SECS = 10
+READ_SECS = 120
+
+# Rows named in the details when the ledgers differ.
+DIFF_SAMPLE = 20
 
 
 def snapshot_slots(deadline):
@@ -87,7 +106,33 @@ def snapshot_slots(deadline):
     return backlog
 
 
-def take_lsn(p, deadline, lsns):
+def end_writers(p, deadline):
+    """Terminate p's ledger writer sessions and wait for them to go.
+    Returns how many are left: 0 when they are gone, None when p could not
+    be asked."""
+    left = None
+    while True:
+        try:
+            with connect(p) as conn:
+                left = conn.execute(
+                    "SELECT count(pg_terminate_backend(pid))"
+                    " FROM pg_stat_activity"
+                    " WHERE application_name = 'parallel_driver_write_ledger.py'"
+                ).fetchone()[0]
+            if left == 0:
+                return 0
+            log(f"{p}: terminated {left} leftover writer session(s)")
+        except psycopg.Error as e:
+            log(f"writer sessions on {p}: {e.__class__.__name__}")
+        if time.monotonic() >= deadline:
+            return left
+        time.sleep(1)
+
+
+def take_lsn(p, deadline, lsns, writers_left):
+    writers_left[p] = end_writers(
+        p, min(deadline, time.monotonic() + WRITERS_GONE_SECS))
+
     def fn():
         with connect(p) as conn:
             return conn.execute("SELECT spock.sync_event()::text").fetchone()[0]
@@ -169,6 +214,58 @@ def run_pair(p, s, lsn, start, deadline, results):
                                     "last_error": f"workload: {e!r}"})
 
 
+def read_ledger(node, deadline):
+    """The node's ledger as a sorted list of (origin, seq, md5 of the whole
+    row), and its count of exception_log rows for the ledger."""
+    def fn():
+        with connect(node) as conn:
+            rows = conn.execute(
+                "SELECT origin, seq, md5(l::text) FROM ledger l"
+                " ORDER BY origin, seq").fetchall()
+            exceptions = conn.execute(
+                "SELECT count(*) FROM spock.exception_log"
+                " WHERE table_name = 'ledger'").fetchone()[0]
+        return rows, exceptions
+
+    return retry_until(deadline, f"read ledger on {node}", fn)
+
+
+def compare_ledgers():
+    deadline = time.monotonic() + READ_SECS
+    ledgers = {}
+    exceptions = {}
+    for node in MESH:
+        ok, val = read_ledger(node, deadline)
+        if not ok:
+            log(f"ledger not compared: could not read it on {node}")
+            return
+        ledgers[node], exceptions[node] = val
+
+    counts = {n: len(rows) for n, rows in ledgers.items()}
+    differing = []
+    sample = []
+    if any(ledgers[n] != ledgers[MESH[0]] for n in MESH[1:]):
+        hashes = {n: {(o, q): h for o, q, h in rows}
+                  for n, rows in ledgers.items()}
+        keys = sorted(set().union(*hashes.values()))
+        differing = [k for k in keys
+                     if len({hashes[n].get(k) for n in MESH}) > 1]
+        for o, q in differing[:DIFF_SAMPLE]:
+            row = {n: hashes[n].get((o, q), "missing") for n in MESH}
+            sample.append({"origin": o, "seq": q, **row})
+            log(f"ledger row {o}:{q}: {row}")
+    log(f"ledger rows per node: {counts}; {len(differing)} differ;"
+        f" ledger exception_log rows per node: {exceptions}")
+
+    always(not differing,
+           "every mesh node holds the same ledger rows after sync barriers",
+           {"rows_per_node": counts, "differing_rows": len(differing),
+            "sample": sample, "ledger_exception_log_rows": exceptions})
+    sometimes(min(counts.values()) > 0,
+              "ledger rows were compared on every mesh node after sync barriers",
+              {"rows_per_node": counts})
+
+
 def main():
     start = time.monotonic()
     deadline = start + BOUND
@@ -176,7 +273,9 @@ def main():
     backlog = snapshot_slots(start + 30)
 
     lsns = {}
-    threads = [threading.Thread(target=take_lsn, args=(p, deadline, lsns))
+    writers_left = {}
+    threads = [threading.Thread(target=take_lsn,
+                                args=(p, deadline, lsns, writers_left))
                for p in MESH]
     for t in threads:
         t.start()
@@ -199,6 +298,7 @@ def main():
 
     checked = 0
     slowest = 0.0
+    all_reached = True
     for p, s in PAIRS:
         r = results.get((p, s), {"outcome": "timeout",
                                  "last_error": "workload: no result"})
@@ -207,6 +307,7 @@ def main():
             continue
         checked += 1
         reached = r["outcome"] in ("reached", "reached_on_recheck")
+        all_reached = all_reached and reached
         if reached:
             slowest = max(slowest, r["elapsed_s"])
         always(reached,
@@ -223,6 +324,15 @@ def main():
     sometimes(slowest > 30,
               "a sync barrier needed more than 30 s after faults stopped",
               {"slowest_s": slowest})
+
+    # A missed or disabled barrier is reported above; comparing the ledger
+    # then would report rows that are only late, not lost.
+    if not (all_reached and checked == len(PAIRS)):
+        log("ledger not compared: not every sync barrier passed")
+    elif any(n != 0 for n in writers_left.values()):
+        log(f"ledger not compared: writer sessions left {writers_left}")
+    else:
+        compare_ledgers()
 
 
 if __name__ == "__main__":

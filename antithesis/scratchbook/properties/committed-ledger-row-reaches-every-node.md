@@ -116,6 +116,34 @@ Current catalog line: Priority: P0 · Topology: v1 · Faults: worker exit (test 
 - Evaluation note (2026-10-13): cancel (57014) and `terminate_active_transactions` (40001) test commands run in a separate classifier template until L5 and the 40001 path are fixed or accepted, so in the main template a missing row points at a new cause. Workload-side `Sometimes("cancel or terminate reached an apply worker with backend_xid set")` shows the dangerous state was reached without SUT instrumentation.
 - Missing-row message split into explained (recorded classifier error) and unexplained. The SUT-side `Unreachable("apply entered exception replay in a conflict-free run")` is guarded by a placeholder GUC such as `antithesis.conflict_free`, set per configuration.
 
+## Implementation (2026-10-15)
+
+`test/v1/main/eventually_mesh_barriers.py` runs the comparison after every
+ordered pair's sync barrier has passed:
+
+- Before taking each node's sync event, terminate the node's
+  `parallel_driver_write_ledger.py` sessions and wait up to 10 s for them to
+  go. Antithesis cancels drivers before an `eventually_` command, but a
+  backend whose client was killed after sending COMMIT can still commit
+  later (a partition can hold the client's packets), possibly after the
+  sync event LSN. A backend already committing finishes before it exits;
+  one that has not got COMMIT rolls back. If a session survives, the
+  ledger is not compared. Waiting for the sessions instead would eat into
+  the barrier's 5 minute bound.
+- Read `SELECT origin, seq, md5(l::text) FROM ledger l ORDER BY origin, seq`
+  on n1-n3 and compare the sorted lists; on a mismatch, build per-key maps
+  and list the keys whose hash differs or is missing on some node.
+- `Always("every mesh node holds the same ledger rows after sync barriers")`
+  with the counts, up to 20 sample keys and each node's `exception_log`
+  count for `ledger`.
+- `Sometimes("ledger rows were compared on every mesh node after sync
+  barriers")` as the reach claim.
+
+This is the "same on every node" half of the oracle. Still missing: the
+client-side record of committed and unknown outcomes (needed to catch a row
+lost everywhere, origin included), the explained/unexplained split per
+missing row, n4 scope, and the SUT-side `Unreachable`.
+
 ## Open questions
 
 - None open. Both earlier questions were settled by code reading; see the
