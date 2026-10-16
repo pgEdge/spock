@@ -309,7 +309,7 @@ static void clear_subscription_skip_lsn(XLogRecPtr finish_lsn);
 
 static void multi_insert_finish(void);
 
-static void handle_queued_message(HeapTuple msgtup);
+static void handle_queued_message(HeapTuple msgtup, bool tx_just_started);
 static void handle_startup_param(const char *key, const char *value);
 static bool parse_bool_param(const char *key, const char *value);
 static void process_syncing_tables(XLogRecPtr end_lsn);
@@ -1762,6 +1762,7 @@ handle_insert(StringInfo s)
 	SpockRelation *rel;
 	ErrorData  *edata = NULL;
 	MemoryContext	oldcontext;
+	bool		started_tx;
 	bool		failed = false;
 
 	/*
@@ -1772,7 +1773,7 @@ handle_insert(StringInfo s)
 
 	oldcontext = MemoryContextSwitchTo(ApplyOperationContext);
 
-	begin_replication_step();
+	started_tx = begin_replication_step();
 
 	rel = spock_read_insert(s, RowExclusiveLock, &newtup);
 	if (unlikely(rel == NULL))
@@ -1920,7 +1921,7 @@ handle_insert(StringInfo s)
 
 		apply_api.on_commit();
 
-		handle_queued_message(ht);
+		handle_queued_message(ht, started_tx);
 
 		heap_freetuple(ht);
 
@@ -2704,7 +2705,7 @@ handle_sequence(QueuedMessage *queued_message)
  * Handle SQL message comming via queue table.
  */
 static void
-handle_sql(QueuedMessage *queued_message, char **sql)
+handle_sql(QueuedMessage *queued_message, bool tx_just_started, char **sql)
 {
 	JsonbIterator *it;
 	JsonbValue	v;
@@ -2752,20 +2753,19 @@ handle_sql(QueuedMessage *queued_message, char **sql)
 			 MySubscription->name, r, WJB_DONE);
 
 	/*
-	 * Run the extracted SQL.  Never as a top-level statement: the apply
-	 * worker is always inside its own transaction, so a statement that
-	 * commits on its own, such as CLUSTER or VACUUM without a table, must be
-	 * refused by PostgreSQL's transaction-block check and reach exception
-	 * handling as an ordinary error, not tear down the worker's transaction.
+	 * Run the extracted SQL.  A statement that must commit on its own, such
+	 * as CREATE TABLESPACE, needs the caller's top-level state to be passed
+	 * through; spock_execute_sql_command() lowers it for the one shape that
+	 * cannot be replayed here at all (see reorganizes_every_relation()).
 	 */
-	spock_execute_sql_command(*sql, queued_message->role, false);
+	spock_execute_sql_command(*sql, queued_message->role, tx_just_started);
 }
 
 /*
  * Handle SQL message comming via queue table.
  */
 static void
-handle_sql_or_exception(QueuedMessage *queued_message)
+handle_sql_or_exception(QueuedMessage *queued_message, bool tx_just_started)
 {
 	bool		failed = false;
 	char	   *sql = NULL;
@@ -2789,7 +2789,7 @@ handle_sql_or_exception(QueuedMessage *queued_message)
 		{
 			exception_command_counter++;
 			BeginInternalSubTransaction(NULL);
-			handle_sql(queued_message, &sql);
+			handle_sql(queued_message, tx_just_started, &sql);
 		}
 		PG_CATCH();
 		{
@@ -2844,7 +2844,7 @@ handle_sql_or_exception(QueuedMessage *queued_message)
 	}
 	else
 	{
-		handle_sql(queued_message, &sql);
+		handle_sql(queued_message, tx_just_started, &sql);
 	}
 
 	end_replication_step();
@@ -2854,7 +2854,7 @@ handle_sql_or_exception(QueuedMessage *queued_message)
  * Handles messages comming from the queue.
  */
 static void
-handle_queued_message(HeapTuple msgtup)
+handle_queued_message(HeapTuple msgtup, bool tx_just_started)
 {
 	QueuedMessage *queued_message;
 	const char *old_action_name;
@@ -2871,7 +2871,7 @@ handle_queued_message(HeapTuple msgtup)
 			pg_fallthrough;
 		case QUEUE_COMMAND_TYPE_SQL:
 			errcallback_arg.action_name = "QUEUED_SQL";
-			handle_sql_or_exception(queued_message);
+			handle_sql_or_exception(queued_message, tx_just_started);
 			in_spock_queue_ddl_command = false;
 			break;
 		case QUEUE_COMMAND_TYPE_TABLESYNC:
@@ -4123,6 +4123,35 @@ clear_subscription_skip_lsn(XLogRecPtr finish_lsn)
 }
 
 /*
+ * Does this statement reorganize every table it can find, committing as it
+ * goes?
+ *
+ * CLUSTER with no relation commits after each table, which would take the
+ * apply worker's transaction apart underneath it.  The provider leaves such a
+ * statement out of the queue, so one only arrives from a provider too old to
+ * do that; run it below its caller's level so PostgreSQL's own
+ * transaction-block check refuses it and exception handling records an
+ * ordinary error.  A statement that names a relation commits once and is
+ * left alone.
+ */
+static bool
+reorganizes_every_relation(Node *stmt)
+{
+	switch (nodeTag(stmt))
+	{
+#if PG_VERSION_NUM >= 190000
+		case T_RepackStmt:		/* PG 19 folded CLUSTER into REPACK */
+			return castNode(RepackStmt, stmt)->relation == NULL;
+#else
+		case T_ClusterStmt:
+			return castNode(ClusterStmt, stmt)->relation == NULL;
+#endif
+		default:
+			return false;
+	}
+}
+
+/*
  * Execute an SQL command. This can be multiple multiple queries.
  */
 void
@@ -4237,7 +4266,7 @@ spock_execute_sql_command(char *cmdstr, char *role, bool isTopLevel)
 		receiver = CreateDestReceiver(DestNone);
 
 		(void) PortalRun(portal, FETCH_ALL,
-						 isTopLevel,
+						 isTopLevel && !reorganizes_every_relation(command->stmt),
 						 receiver, receiver,
 						 NULL);
 		(*receiver->rDestroy) (receiver);
