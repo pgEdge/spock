@@ -2752,7 +2752,12 @@ handle_sql(QueuedMessage *queued_message, bool tx_just_started, char **sql)
 			 "item type %d expected %d",
 			 MySubscription->name, r, WJB_DONE);
 
-	/* Run the extracted SQL. */
+	/*
+	 * Run the extracted SQL.  A statement that must commit on its own, such
+	 * as CREATE TABLESPACE, needs the caller's top-level state to be passed
+	 * through; spock_execute_sql_command() lowers it for the one shape that
+	 * cannot be replayed here at all (see reorganizes_every_relation()).
+	 */
 	spock_execute_sql_command(*sql, queued_message->role, tx_just_started);
 }
 
@@ -4118,6 +4123,35 @@ clear_subscription_skip_lsn(XLogRecPtr finish_lsn)
 }
 
 /*
+ * Does this statement reorganize every table it can find, committing as it
+ * goes?
+ *
+ * CLUSTER with no relation commits after each table, which would take the
+ * apply worker's transaction apart underneath it.  The provider leaves such a
+ * statement out of the queue, so one only arrives from a provider too old to
+ * do that; run it below its caller's level so PostgreSQL's own
+ * transaction-block check refuses it and exception handling records an
+ * ordinary error.  A statement that names a relation commits once and is
+ * left alone.
+ */
+static bool
+reorganizes_every_relation(Node *stmt)
+{
+	switch (nodeTag(stmt))
+	{
+#if PG_VERSION_NUM >= 190000
+		case T_RepackStmt:		/* PG 19 folded CLUSTER into REPACK */
+			return castNode(RepackStmt, stmt)->relation == NULL;
+#else
+		case T_ClusterStmt:
+			return castNode(ClusterStmt, stmt)->relation == NULL;
+#endif
+		default:
+			return false;
+	}
+}
+
+/*
  * Execute an SQL command. This can be multiple multiple queries.
  */
 void
@@ -4232,7 +4266,7 @@ spock_execute_sql_command(char *cmdstr, char *role, bool isTopLevel)
 		receiver = CreateDestReceiver(DestNone);
 
 		(void) PortalRun(portal, FETCH_ALL,
-						 isTopLevel,
+						 isTopLevel && !reorganizes_every_relation(command->stmt),
 						 receiver, receiver,
 						 NULL);
 		(*receiver->rDestroy) (receiver);
