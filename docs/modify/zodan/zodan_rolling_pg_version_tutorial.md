@@ -46,11 +46,13 @@ add/verify/remove per node.
       added or removed.
     - The `dblink` extension must be installed on the node from which
       `add_node` or `remove_node` is called.
-    - `output_plugin_libraries` must list `spock_output` on every
-      node, on the minimum patch versions described in [Checking
-      PostgreSQL Version Compatibility Before Each
+    - On a node whose PostgreSQL build has the `output_plugin_libraries`
+      parameter (the patch versions in [Checking PostgreSQL Version
+      Compatibility Before Each
       Step](#checking-postgresql-version-compatibility-before-each-step)
-      below; a node missing this cannot create a replication slot.
+      and later), it must list `spock_output`, or logical decoding with
+      Spock fails. On an older build the parameter does not exist and
+      must not be set.
     - If a step fails partway, do not immediately retry. Confirm every
       artifact the workflow created has been removed first, as
       described in [Troubleshooting](#troubleshooting) below.
@@ -71,6 +73,15 @@ add/verify/remove per node.
       Compatibility Before Each
       Step](#checking-postgresql-version-compatibility-before-each-step).
 
+!!! note
+
+    The examples run every instance on one host and use `127.0.0.1`.
+    When a node and its standby, or the nodes of the cluster, run on
+    separate hosts, use addresses each host can reach in connection
+    strings, `listen` and `connect_address`, and the etcd URLs, and
+    point every Patroni member of a scope at the same DCS. Replace the
+    `<...>` password placeholders with your own unique secrets.
+
 ## Checking PostgreSQL Version Compatibility Before Each Step
 
 Zodan's `check_spock_version_compatibility` procedure (invoked
@@ -81,21 +92,21 @@ number yourself against the source node:
 
 ```sql
 SELECT * FROM dblink(
-  'host=127.0.0.1 dbname=inventory port=5432 user=pgedge password=1safepassword',
+  'host=127.0.0.1 dbname=inventory port=5432 user=pgedge password=<pgedge-password>',
   'SHOW server_version_num'
 ) AS t(source_version int);
 
 SELECT * FROM dblink(
-  'host=127.0.0.1 dbname=inventory port=5442 user=pgedge password=1safepassword',
+  'host=127.0.0.1 dbname=inventory port=5442 user=pgedge password=<pgedge-password>',
   'SHOW server_version_num'
 ) AS t(replacement_version int);
 ```
 
 The replacement node's `server_version_num` must be the same as or
 greater than the source node's. The following table describes the
-minimum patch version each PostgreSQL major version needs for
-`output_plugin_libraries` support, required on every node before you
-begin:
+first patch version of each PostgreSQL major version that has the
+`output_plugin_libraries` parameter. On those versions and later it
+must list `spock_output`; on earlier ones leave it unset:
 
 | PostgreSQL major version | Minimum patch version |
 |---|---|
@@ -136,7 +147,8 @@ initdb -D /path/to/data/n1b --username=postgres
 Before starting the replacement node for the first time, edit the
 `postgresql.conf` file:
 
-- set `shared_preload_libraries` and `output_plugin_libraries`.
+- set the settings Spock requires, as in [Configuring
+  Spock](../../configuring.md), using the source node's values.
 - size replication origin tracking for the target version.
 
 !!! hint
@@ -151,12 +163,23 @@ PostgreSQL 15 through 17 track replication origins with the
 number of subscriptions required:
 
 ```ini
+wal_level = logical
+max_worker_processes = 20
+max_replication_slots = 10
+max_wal_senders = 10
 shared_preload_libraries = 'spock'
+track_commit_timestamp = on
 output_plugin_libraries = 'pgoutput, test_decoding, spock_output'
 
 # PostgreSQL 18 and later only:
 max_active_replication_origins = 10
 ```
+
+Copy any `spock.*` settings the existing nodes use, such as the
+conflict resolution settings, so the replacement behaves the same.
+Without `wal_level = logical`, `add_node` cannot create the slots it
+needs on the replacement, and it does not stop: it reports the failure
+only as a notice, and only when called with `verb := true`.
 
 Start Postgres on the replacement node's port, then connect with
 `psql` to confirm the settings took effect:
@@ -174,7 +197,7 @@ Create the database and user, matching the source node exactly:
 
 ```bash
 psql -p 5442 -c "CREATE DATABASE inventory;"
-psql -p 5442 -c "CREATE USER pgedge WITH PASSWORD '1safepassword';"
+psql -p 5442 -c "CREATE USER pgedge WITH PASSWORD '<pgedge-password>';"
 psql -p 5442 -c "GRANT ALL ON DATABASE inventory TO pgedge;"
 ```
 
@@ -197,8 +220,8 @@ once, on the replacement node, before choosing a path:
 
 ```bash
 psql -p 5442 -c \
-  "CREATE ROLE replicator WITH REPLICATION LOGIN PASSWORD 'replpassword';"
-psql -p 5442 -c "ALTER ROLE postgres WITH PASSWORD 'superpassword';"
+  "CREATE ROLE replicator WITH REPLICATION LOGIN PASSWORD '<replicator-password>';"
+psql -p 5442 -c "ALTER ROLE postgres WITH PASSWORD '<postgres-password>';"
 ```
 
 Add entries to `/path/to/data/n1b/pg_hba.conf` permitting the standby
@@ -292,9 +315,9 @@ next.
     ```sql
     CALL spock.add_node(
         src_node_name := 'n1',
-        src_dsn := 'host=127.0.0.1 dbname=inventory port=5432 user=pgedge password=1safepassword',
+        src_dsn := 'host=127.0.0.1 dbname=inventory port=5432 user=pgedge password=<pgedge-password>',
         new_node_name := 'n1b',
-        new_node_dsn := 'host=127.0.0.1 dbname=inventory port=5442 user=pgedge password=1safepassword',
+        new_node_dsn := 'host=127.0.0.1 dbname=inventory port=5442 user=pgedge password=<pgedge-password>',
         verb := true,
         new_node_location := 'Los Angeles',
         new_node_country := 'USA',
@@ -307,7 +330,7 @@ next.
 
     ```sql
     CALL spock.show_all_subscription_status(
-      'host=127.0.0.1 dbname=inventory port=5442 user=pgedge password=1safepassword',
+      'host=127.0.0.1 dbname=inventory port=5442 user=pgedge password=<pgedge-password>',
       true
     );
     ```
@@ -395,10 +418,10 @@ next.
       authentication:
         replication:
           username: replicator
-          password: replpassword
+          password: <replicator-password>
         superuser:
           username: postgres
-          password: superpassword
+          password: <postgres-password>
     ```
 
     `sync_replication_slots` and `hot_standby_feedback` are the two
@@ -452,10 +475,10 @@ next.
       authentication:
         replication:
           username: replicator
-          password: replpassword
+          password: <replicator-password>
         superuser:
           username: postgres
-          password: superpassword
+          password: <postgres-password>
     ```
 
     ```bash
@@ -545,19 +568,17 @@ next.
     each subscription by hand after a promotion, from any node whose
     subscription still points at the old address:
 
-    `node_add_interface` writes to the node catalog, which replicates
-    to the rest of the mesh like any other table, so run it once,
-    connected directly to any single reachable node (`n2` or `n3`, not
-    `n1b` itself if it is down):
+    `node_add_interface` writes only to the local node catalog; it is
+    not replicated. Run it on every node whose subscription you will
+    repoint, here `n2` and `n3`, since `sub_alter_interface` looks the
+    interface up locally:
 
     ```sql
     SELECT spock.node_add_interface('n1b', 'n1b_standby_interface',
-      'host=127.0.0.1 dbname=inventory port=5452 user=pgedge password=1safepassword');
+      'host=127.0.0.1 dbname=inventory port=5452 user=pgedge password=<pgedge-password>');
     ```
 
-    Subscriptions are not replicated between nodes, so run
-    `sub_alter_interface` locally on each node whose subscription has
-    `n1b` as its provider - on this pair, that is `n2` and `n3`:
+    Then run `sub_alter_interface` on each of those nodes:
 
     ```sql
     SELECT spock.sub_alter_interface('sub_n1b_n2', 'n1b_standby_interface');
@@ -569,8 +590,27 @@ next.
     `SELECT sub_name FROM spock.subscription;` on each node before
     repointing them.
 
-4. Load the removal workflow on the node being retired, and remove it
-   from the cluster:
+4. Move application traffic from `n1` to `n1b`, and confirm no new
+   connections are arriving at `n1`. `remove_node` drops every
+   subscription to and from `n1` at once and does not wait for
+   anything, so any write on `n1` that has not reached the other nodes
+   by then is lost. Once `n1` takes no writes, emit a sync event on it:
+
+    ```sql
+    -- On n1
+    SELECT spock.sync_event();
+    ```
+
+    Wait for it on every other node, passing the LSN it returned. The
+    `result` column must come back `t`:
+
+    ```sql
+    -- On n1b, n2 and n3
+    CALL spock.wait_for_sync_event(NULL, 'n1'::name, '<lsn-from-sync_event>'::pg_lsn, 600);
+    ```
+
+    Then load the removal workflow on the node being retired, and
+    remove it from the cluster:
 
     ```sql
     \i /path/to/zodremove.sql
@@ -579,7 +619,7 @@ next.
     ```sql
     CALL spock.remove_node(
       'n1',
-      'host=127.0.0.1 dbname=inventory port=5432 user=pgedge password=1safepassword',
+      'host=127.0.0.1 dbname=inventory port=5432 user=pgedge password=<pgedge-password>',
       true
     );
     ```
@@ -600,15 +640,24 @@ target PostgreSQL version and reports a clean replication topology:
 
 ```sql
 SELECT * FROM dblink(
-  'host=127.0.0.1 dbname=inventory port=5442 user=pgedge password=1safepassword',
+  'host=127.0.0.1 dbname=inventory port=5442 user=pgedge password=<pgedge-password>',
   'SHOW server_version'
 ) AS t(pg_version text);
 
 CALL spock.show_all_nodes(
-  'host=127.0.0.1 dbname=inventory port=5442 user=pgedge password=1safepassword',
+  'host=127.0.0.1 dbname=inventory port=5442 user=pgedge password=<pgedge-password>',
+  true
+);
+
+CALL spock.show_all_subscription_status(
+  'host=127.0.0.1 dbname=inventory port=5442 user=pgedge password=<pgedge-password>',
   true
 );
 ```
+
+Run the `dblink` query once per node, changing the port.
+`show_all_nodes` lists the nodes; `show_all_subscription_status`
+reports each subscription's status.
 
 The following table describes what to check in the output before
 considering the rollout complete:
@@ -621,23 +670,29 @@ considering the rollout complete:
 
 ## Troubleshooting
 
-- **A replacement node's replication worker crashes with `cannot
-  synchronize structure from upstream server version`.** The
-  replacement node's `pg_dump` cannot dump from a PostgreSQL version
-  newer than itself. The node named as the source runs a newer
+- **`add_node` fails with `cannot synchronize structure from provider
+  running PostgreSQL`, or the replacement node's apply worker exits
+  with `cannot synchronize structure from upstream server version`.**
+  The replacement node's `pg_dump` cannot dump from a PostgreSQL
+  version newer than itself. The node named as the source runs a newer
   PostgreSQL major version than the replacement node. Rebuild the
   replacement node on an equal or newer PostgreSQL major version, or
   source it from a different node that is not newer than the
   replacement, and retry.
 
-- **A replacement node fails to create its replication slot.** The
-  replacement node's `output_plugin_libraries` does not list
-  `spock_output`, or its PostgreSQL build is older than the minimum
-  patch version listed in [Checking PostgreSQL Version Compatibility
-  Before Each
-  Step](#checking-postgresql-version-compatibility-before-each-step).
-  Correct `postgresql.conf` and restart the replacement node before
-  retrying.
+- **Logical decoding fails with `library "spock_output" may not be
+  used as an output plugin`.** The node's build has the
+  `output_plugin_libraries` parameter and it does not list
+  `spock_output`. Add it to `postgresql.conf` and run
+  `SELECT pg_reload_conf();`; no restart is needed. Do not set the
+  parameter on a build that does not have it: an unrecognized
+  parameter stops the server from starting.
+
+- **`add_node` reports that it could not create a replication slot.**
+  Check `wal_level = logical` and `max_replication_slots` on the
+  replacement node. `add_node` reports a failed slot creation only as
+  a notice, only with `verb := true`, and carries on; the
+  subscriptions it then creates do not replicate.
 
 - **`add_node` times out waiting for a sync event on a large
   database.** Raise the wait budget for the session with
