@@ -253,7 +253,13 @@ get_tuple_origin(SpockRelation *rel, HeapTuple local_tuple, ItemPointer tid,
 	*local_origin = InvalidRepOriginId;
 	*local_ts = 0;
 
-	*xmin = HeapTupleHeaderGetXmin(local_tuple->t_data);
+	/*
+	 * Use the raw xmin.  HeapTupleHeaderGetXmin() returns FrozenTransactionId
+	 * for a frozen row, which would hide its commit timestamp and let any
+	 * remote change win.  Freezing keeps the original xid in the header, and
+	 * its commit timestamp stays readable until commit_ts is truncated.
+	 */
+	*xmin = HeapTupleHeaderGetRawXmin(local_tuple->t_data);
 
 	if (!track_commit_timestamp)
 	{
@@ -269,7 +275,9 @@ get_tuple_origin(SpockRelation *rel, HeapTuple local_tuple, ItemPointer tid,
 		 * BootstrapTransactionId (1) to TransactionIdGetCommitTsData, per
 		 * RT#46983 . This seems like an oversight in the core function, but
 		 * we can work around it here by setting it to the same thing we'd get
-		 * if the xid's commit timestamp was trimmed already.
+		 * if the xid's commit timestamp was trimmed already.  Rows frozen
+		 * before 9.4 and carried over by pg_upgrade still have a raw xmin of
+		 * FrozenTransactionId.
 		 */
 		*local_origin = InvalidRepOriginId;
 		*local_ts = 0;
