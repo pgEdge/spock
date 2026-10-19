@@ -42,6 +42,16 @@
  *                                   Requires --enable-injection-points.
  *   neither defined              – all compile to nothing.
  *
+ *   SPOCK_APPLY_UPDATE_STALL() – subscriber side, at the start of applying a
+ *                                remote UPDATE, before the target relation
+ *                                is opened and locked
+ *                                ('spock-apply-update-stall'). A test holds
+ *                                the worker there while it changes the
+ *                                table's synchronization state, which is the
+ *                                window a concurrent resync produces for
+ *                                real.  Like the INSERT point it is a no-op
+ *                                under SPOCK_RANDOM_DELAYS.
+ *
  * A third, independent point is a boolean check rather than a fire site:
  *
  *   SPOCK_CONFLICT_TIE_FORCED()  – true once a test attaches to
@@ -72,6 +82,7 @@ extern void spock_random_delay(void);
 #define SPOCK_OUTPUT_TXN_STALL()	spock_random_delay()
 /* Per-row: delaying here would take the suite hours.  See above. */
 #define SPOCK_INSERT_CONFLICT_STALL()	((void) 0)
+#define SPOCK_APPLY_UPDATE_STALL()	((void) 0)
 
 #elif defined(USE_INJECTION_POINTS)
 
@@ -82,11 +93,13 @@ extern void spock_random_delay(void);
 #define SPOCK_OUTPUT_TXN_STALL()	INJECTION_POINT("spock-output-txn-stall", NULL)
 #define SPOCK_INSERT_CONFLICT_STALL()	\
 	INJECTION_POINT("spock-insert-conflict-stall", NULL)
+#define SPOCK_APPLY_UPDATE_STALL()	INJECTION_POINT("spock-apply-update-stall", NULL)
 #else
 #define SPOCK_WORKER_DELAY()		INJECTION_POINT("spock-worker-delay")
 #define SPOCK_OUTPUT_TXN_STALL()	INJECTION_POINT("spock-output-txn-stall")
 #define SPOCK_INSERT_CONFLICT_STALL()	\
 	INJECTION_POINT("spock-insert-conflict-stall")
+#define SPOCK_APPLY_UPDATE_STALL()	INJECTION_POINT("spock-apply-update-stall")
 #endif
 
 #else
@@ -94,6 +107,7 @@ extern void spock_random_delay(void);
 #define SPOCK_WORKER_DELAY()		((void) 0)
 #define SPOCK_OUTPUT_TXN_STALL()	((void) 0)
 #define SPOCK_INSERT_CONFLICT_STALL()	((void) 0)
+#define SPOCK_APPLY_UPDATE_STALL()	((void) 0)
 
 #endif							/* SPOCK_RANDOM_DELAYS / USE_INJECTION_POINTS */
 

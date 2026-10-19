@@ -271,6 +271,7 @@ static void handle_queued_message(HeapTuple msgtup, bool tx_just_started);
 static void handle_startup_param(const char *key, const char *value);
 static bool parse_bool_param(const char *key, const char *value);
 static void process_syncing_tables(XLogRecPtr end_lsn);
+static void reread_unsynced_tables(Oid subid);
 static void start_sync_worker(Name nspname, Name relname);
 static void spock_apply_worker_shmem_exit(int code, Datum arg);
 static void spock_apply_worker_on_exit(int code, Datum arg);
@@ -474,6 +475,22 @@ prepare_transient_error_retry(ErrorData *edata, const char *what)
 static bool
 should_apply_changes_for_rel(const char *nspname, const char *relname)
 {
+	/*
+	 * A change to the synchronization state is signalled at commit, before
+	 * the committing backend releases its locks.  The caller holds the lock
+	 * on the relation by now, so a resync that emptied it has committed and
+	 * its signal is already visible.  Don't act on the cached list in that
+	 * case: the table was just truncated and its contents will arrive from
+	 * the sync worker.
+	 */
+	if (MyApplyWorker->sync_pending)
+	{
+		/* See the commit that raised the flag, not a snapshot from before. */
+		InvalidateCatalogSnapshot();
+		MyApplyWorker->sync_pending = false;
+		reread_unsynced_tables(MyApplyWorker->subid);
+	}
+
 	if (list_length(SyncingTables) > 0)
 	{
 		ListCell   *lc;
@@ -1819,6 +1836,8 @@ handle_update(StringInfo s)
 
 	errcallback_arg.action_name = "UPDATE";
 	xact_action_counter++;
+
+	SPOCK_APPLY_UPDATE_STALL();
 
 	rel = spock_read_update(s, RowExclusiveLock, &hasoldtup, &oldtup, &newtup);
 	if (unlikely(rel == NULL))
