@@ -3181,8 +3181,16 @@ handle_message(StringInfo s)
 		elog(FATAL, "incorrect spock message");
 
 	sz = pq_getmsgint(s, sizeof(int32));
+
+	/* Every message body starts with its type; guard the reads below. */
+	if (sz < sizeof(SpockWalMessageSimple))
+		elog(ERROR, "SPOCK %s: spock message too short (%zu bytes)",
+			 MySubscription->name, sz);
+
 	temp = (char *) pq_getmsgbytes(s, sz);
-	mtype = ((SpockWalMessageSimple *) temp)->mtype;
+
+	/* The body follows a byte-packed header, so it isn't int32-aligned. */
+	memcpy(&mtype, temp, sizeof(mtype));
 
 	switch (mtype)
 	{
