@@ -5,7 +5,7 @@
 use strict;
 use warnings;
 use Data::Dumper;
-use Test::More tests => 10;
+use Test::More;
 use Time::HiRes;
 use Carp;
 use IPC::Run;
@@ -188,6 +188,7 @@ do {
             elsif (!$running)
             {
                 fail("$tbl didn't sync on iteration $i, sync worker exited (running=$running) while sync state was '$status' (elapsed " . Time::HiRes::tv_interval($resync_start) . ")" );
+                last;
             }
         }
     }
@@ -195,7 +196,7 @@ do {
     $i++;
 
     # and repeat until pgbench exits
-    my $pgbench_active = `$pg_bin/psql -p $provider_port -d $dbname -t -c "SELECT 1 FROM pg_stat_activity WHERE application_name = 'pgbench'"`;
+    $pgbench_active = `$pg_bin/psql -p $provider_port -d $dbname -t -c "SELECT 1 FROM pg_stat_activity WHERE application_name = 'pgbench'"`;
     chomp($pgbench_active);
     $pgbench_active =~ s/\s+//g;
 } while ($pgbench_active);
