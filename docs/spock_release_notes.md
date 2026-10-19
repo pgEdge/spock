@@ -33,7 +33,9 @@ will be removed at general availability.
      For any slot still showing `false`, pause the subscriber that holds it
      and run `SELECT spock.slot_enable_failover();` on the primary.
 
-  The first command adds the objects beta 2 needs, removes
+  The first command adds the objects beta 2 needs (the
+  `spock.reserved_object` catalog and its functions, and the node metadata
+  functions and the trigger on `spock.node`), removes
   `spock.wait_for_apply_worker()`, and sets the `failover` flag on existing
   slots.  The second only sets the version name back to `6.0.0`.
 
@@ -48,7 +50,9 @@ will be removed at general availability.
 
   Until a database has been updated, AutoDDL, adding tables to a replication
   set and structure sync fail there with `catalog "spock.reserved_object"
-  does not exist`.  Running the commands on a node that already has beta 2's
+  does not exist`, and its apply workers fail when a peer changes its
+  location, country or info, because `spock.node_info_apply()` is missing.
+  Running the commands on a node that already has beta 2's
   catalog changes nothing.  These two update steps will be removed at general
   availability.
 * The upgrade from 5.0.x now starts at 5.0.12.  A 5.0.11 node still
@@ -71,6 +75,9 @@ will be removed at general availability.
   values with units such as `'5s'`.
 * `spock.restart_delay_default` now applies to every apply-worker restart,
   including after a lost connection or a temporary error.
+* New `spock.non_conflicting_inserts` (bool, default `off`, `POSTMASTER`):
+  asserts that a replicated `INSERT` can never collide with a local row, so
+  the apply worker skips the conflict lookup and the speculative insertion.
 
 ### SQL function and catalog changes
 
@@ -84,6 +91,16 @@ will be removed at general availability.
 * New `spock.slot_enable_failover() RETURNS integer`, called by the 5.x
   upgrade.
 * Removed `spock.wait_for_apply_worker(p_subbid bigint, timeout int)`.
+* New `spock.node_alter(p_location text, p_country text, p_info_patch
+  jsonb)`, which changes the local node's metadata and validates a
+  `tiebreaker` value.
+* New `spock.node_refresh_info(p_node_name name DEFAULT NULL)`, which
+  fetches the metadata of one peer, or of every peer, again.
+* New internal functions `spock.node_info_emit()`,
+  `spock.node_info_apply()`, `spock.node_info_broadcast()` and
+  `spock.node_refresh_info_one()`, and the `node_info_broadcast_trigger`
+  trigger on `spock.node`.  EXECUTE on the first two and on
+  `node_refresh_info_one()` is revoked from PUBLIC.
 * `spock.repset_add_all_tables()` now skips a table it cannot add, with a
   warning, instead of failing the whole call.
 
@@ -101,8 +118,31 @@ will be removed at general availability.
   as a deadlock or lock timeout, instead of treating it as a data exception.
 * `pg_upgrade` of a Spock node on PostgreSQL 17 and later no longer fails
   with `resource manager with ID 144 not registered`.
+* A node's location, country and info, including its `tiebreaker`, are sent
+  to its direct subscribers when they change.  `spock.sub_resync_table()`
+  warns when the provider's row differs from the local copy.
+* A replicated `INSERT` that collides with a row committed locally at the
+  same moment goes to conflict resolution instead of failing with a
+  duplicate key error.  Each `INSERT` into a table with a unique index now
+  takes a speculative insertion; see `spock.non_conflicting_inserts` above.
+* With three or more nodes, a conflict between two changes with the same
+  commit timestamp is decided by the existing row's real origin, so every
+  node picks the same winner.  The `CONFLICT: ... wins over ... by
+  tiebreaker` log messages now name the existing row's origin and the
+  incoming change's origin instead of the current and remote node.
+* A physical standby of a subscriber, once promoted, no longer asks the
+  provider to resend transactions the subscriber had already applied.  They
+  showed up as conflicts, or as duplicate rows in tables without a primary
+  key.
+* `spock.sub_wait_for_sync()` no longer crashes the server when the
+  subscription is dropped while it waits.
+* Table sync no longer fails with `SET TRANSACTION SNAPSHOT must be called
+  before any query` when an extension such as pg_duckdb runs a query on
+  `SET`.
+* Documentation on running logical slot failover under Patroni, with the
+  sample `samples/set_synchronized_standby_slots.sh`.
 * Bug fixes from 5.0.11 and 5.0.12.
-* Builds against PostgreSQL 19 beta 3 and 4.
+* Builds against PostgreSQL 19 beta 3, beta 4 and RC1.
 
 ## Spock 6.0.0
 
@@ -147,9 +187,9 @@ see *Upgrading* below before running `ALTER EXTENSION spock UPDATE`.
   version-specific API changes (replication-origin session state folded into
   `replorigin_xact_state`, `CLUSTER` folded into `REPACK`, the `pgstat` and
   recovery-conflict signalling changes, and the `RepOriginId` rename).
-  Spock builds against PostgreSQL 19 beta 3 and 4. This support is preliminary:
-  PostgreSQL 19 is still in beta, and Spock on 19 is not supported for
-  production use.
+  Spock builds against PostgreSQL 19 beta 3, beta 4 and RC1. This support is
+  preliminary: PostgreSQL 19 has not been released, and Spock on 19 is not
+  supported for production use.
 
 ### Catastrophic node failure recovery
 
@@ -586,6 +626,38 @@ or `NOTHING` is also rejected.
 * **Sync worker lost the original error** — a failure while creating the
   slot during table sync was reported as `errstart was not called` instead
   of the real error.
+* **Replicated `INSERT` racing a local insert** — the apply worker looked
+  for a conflicting row and, finding none, inserted.  A row committed
+  locally in between was missed, and the insert failed with a duplicate key
+  error instead of going to conflict resolution.  The row is now inserted
+  speculatively with every immediate unique index as an arbiter, and a
+  reported duplicate is looked up and resolved.  This adds a speculative
+  insertion to each `INSERT` into a table with a unique index;
+  `spock.non_conflicting_inserts` turns it off where collisions cannot
+  happen.  A collision on a unique index other than the one used to find
+  the row still raises a duplicate key error unless
+  `spock.check_all_uc_indexes` is on.
+* **Equal-timestamp ties in a mesh of three or more nodes** — the
+  tiebreaker compared the applying node with the origin of the incoming
+  change.  When a node resolved a conflict between writes from two other
+  nodes, it could pick a different winner than they did.  The tie is now
+  decided between the existing row's recorded origin and the incoming
+  change's origin, falling back to the applying node when the row's origin
+  is unknown.
+* **Promoted standby of a subscriber replayed transactions** — the apply
+  worker's commits record the origin node's progress, not the
+  subscription's, so crash recovery and a physical standby left the
+  subscription's replication origin where the last checkpoint or base
+  backup put it.  A promoted standby asked the provider to resend
+  everything after that point.  The subscription's progress is now written
+  to WAL after each applied transaction.
+* **`spock.sub_wait_for_sync()` crashed the server** if the subscription
+  was dropped while it waited.  It now reports that the subscription does
+  not exist.
+* **Table sync with pg_duckdb** — the session `SET`s were sent inside the
+  COPY transaction, so an extension that runs a query on `SET` made the
+  snapshot import fail with `SET TRANSACTION SNAPSHOT must be called before
+  any query`.  They are now sent before the transaction starts.
 
 ### Security
 
@@ -615,7 +687,11 @@ or `NOTHING` is also rejected.
 * **Documentation** — a new guide on sizing PostgreSQL resources for Spock
   by node and database count (see [Sizing](sizing.md)), a `SECURITY.md`
   explaining how to report vulnerabilities, and the `output_plugin_libraries`
-  requirement in the README.
+  requirement in the README and the configuration, installation and
+  troubleshooting guides.  The guide to running logical slot failover under
+  Patroni, with the sample `samples/set_synchronized_standby_slots.sh`, is
+  carried over from 5.0.12 (see
+  [Logical Slot Failover](logical_slot_failover.md)).
 
 ### GUC changes
 
@@ -669,6 +745,13 @@ or `NOTHING` is also rejected.
   WAL a slot needs.  Both failover-slots settings matter only where Spock's
   own worker runs: PostgreSQL 15 and 16, and 17 when
   `sync_replication_slots` is off.
+* `spock.non_conflicting_inserts` (bool, default `off`, `POSTMASTER`) —
+  asserts that a replicated `INSERT` can never collide with a local row,
+  for example because each node generates keys from its own range.  The
+  apply worker then skips the conflict lookup and the speculative
+  insertion and inserts the row directly.  Nothing checks the assertion: a
+  collision raises a duplicate key error, handled by
+  `spock.exception_behaviour` rather than by conflict resolution.
 
 **Removed**
 
@@ -737,11 +820,17 @@ or `NOTHING` is also rejected.
   — validated way to change the local node's own location/country/info
   (merging info, validating a `tiebreaker` patch); see *Automatic node
   metadata propagation* above.
+* `spock.node_refresh_info(p_node_name name DEFAULT NULL) RETURNS boolean`
+  — fetches a peer's location, country and info again from the peer
+  itself, or every peer's when called without a name, for a cached row
+  that missed a change.  Returns `false` if any peer could not be
+  refreshed.
 * `spock.node_info_emit()` / `spock.node_info_apply()` /
   `spock.node_info_broadcast()` (trigger function, backing the new
-  `node_info_broadcast_trigger` on `spock.node`) — internal plumbing
-  behind automatic node metadata propagation; not intended to be called
-  directly (`EXECUTE` revoked from `PUBLIC`).
+  `node_info_broadcast_trigger` on `spock.node`) /
+  `spock.node_refresh_info_one()` — internal plumbing behind node metadata
+  propagation and refresh; not intended to be called directly (`EXECUTE`
+  revoked from `PUBLIC`, except on the trigger function).
 
 ### Removed functions
 
