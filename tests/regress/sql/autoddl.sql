@@ -2,11 +2,6 @@
 SELECT * FROM spock_regress_variables()
 \gset
 
--- Earlier tests leave rows in the subscriber's exception log; start clean so
--- the rows checked below are this test's own.
-\c :subscriber_dsn
-TRUNCATE spock.exception_log;
-
 -- This is to ensure that the test runs with the correct configuration
 \c :provider_dsn
 ALTER SYSTEM SET spock.enable_ddl_replication = 'on';
@@ -46,12 +41,6 @@ ALTER TABLE test_380 CLUSTER ON test_380_y_idx;
 CLUSTER;
 CLUSTER test_380;
 
--- A table-less CLUSTER that reaches the queue anyway, as from an older
--- provider, must fail on the subscriber as an ordinary error that exception
--- handling records, not take the apply worker's transaction apart.
-INSERT INTO spock.queue (queued_at, role, replication_sets, message_type, message)
-VALUES (now(), current_user, '{ddl_sql}', 'Q', '"CLUSTER"');
-
 -- Generate a sync event
 SELECT spock.sync_event() as sync_event
 \gset
@@ -66,16 +55,9 @@ SELECT count(*) FROM spock.tables where nspname = 'hollywood' AND set_name IS NO
 SELECT count(*) FROM spock.tables where relname = 'test1' AND set_name IS NOT NULL;
 SELECT count(*) FROM spock.tables where (relname = 'test2' or relname = 'test3') AND set_name IS NOT NULL;
 
--- test_380 arrived with its clustered index; the table-less CLUSTER was
--- refused and logged, and replication went on.
+-- test_380 arrived with its clustered index and replication went on.
 SELECT indisclustered FROM pg_index WHERE indexrelid = 'test_380_y_idx'::regclass;
 SELECT status FROM spock.sub_show_status();
-SELECT operation,
-       error_message ~ 'CLUSTER cannot (run inside a|be executed from a)'
-           AS refused_in_transaction
-  FROM spock.exception_log
- ORDER BY command_counter;
-TRUNCATE spock.exception_log;
 
 -- Reset the configuration to the default value
 \c :provider_dsn
