@@ -49,7 +49,7 @@ The following user functions are available via the Spock extension:
 | spock.get_channel_stats | Returns tuple traffic statistics. |
 | spock.get_country | Returns the country code if explicitly set; returns `??` if not set. |
 | spock.lag_tracker | Returns a list of slots, with commit_lsn and commit_timestamp for each. |
-| spock.repair_mode | Used to manage the state of replication - If set to `true`, stops replicating statements; when `false`, resumes replication. |
+| spock.repair_mode | Used to manage the state of replication - If set to `true`, stops replicating statements, including DDL; when `false`, resumes replication. |
 | spock.replicate_ddl | Replicate a specific statement. |
 | spock.reset_channel_stats | Reset the channel statistics. |
 | spock_max_proto_version | The highest Spock native protocol supported by the current binary/build. Defined in the public schema so invoked without the `spock.` prefix. |
