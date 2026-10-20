@@ -17,6 +17,7 @@ my $PGBENCH_CLIENTS = $ENV{PGBENCH_CLIENTS} // 5;
 my $PGBENCH_JOBS = $ENV{PGBENCH_JOBS} // 1;
 my $PGBENCH_TIME = $ENV{PGBENCH_TIME} // 30;
 my $WALSENDER_TIMEOUT = $ENV{PGBENCH_TIMEOUT} // '5s';
+my $SYNC_TIMEOUT = $ENV{SYNC_TIMEOUT} // 300;
 
 $SIG{__DIE__} = sub { Carp::confess @_ };
 $SIG{INT}  = sub { die("interupted by SIGINT"); };
@@ -161,7 +162,25 @@ do {
 
         while (1)
         {
-            Time::HiRes::usleep(100);
+            Time::HiRes::usleep(100_000);
+
+            my $elapsed = Time::HiRes::tv_interval($resync_start);
+            if ($elapsed > $SYNC_TIMEOUT)
+            {
+                fail("$tbl didn't sync on iteration $i within ${SYNC_TIMEOUT}s");
+                last;
+            }
+
+            # With exception_behaviour = sub_disable a failed change disables
+            # the subscription, and no sync worker will ever finish the table.
+            my $sub_status = `$pg_bin/psql -p $subscriber_port -d $dbname -t -c "SELECT status FROM spock.sub_show_status() WHERE subscription_name = 'test_subscription'"`;
+            chomp($sub_status);
+            $sub_status =~ s/\s+//g;
+            if ($sub_status eq 'disabled')
+            {
+                fail("$tbl didn't sync on iteration $i, subscription was disabled (elapsed $elapsed)");
+                last;
+            }
 
             my $running = `$pg_bin/psql -p $subscriber_port -d $dbname -t -c "SELECT pid FROM pg_stat_activity WHERE application_name LIKE '%sync%'"`;
             chomp($running);

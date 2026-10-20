@@ -15,14 +15,17 @@
 #include "access/reloptions.h"
 
 #include "catalog/namespace.h"
+#include "catalog/partition.h"
 #include "catalog/pg_trigger.h"
 
+#include "nodes/makefuncs.h"
 #include "utils/attoptcache.h"
 #include "utils/builtins.h"
 #include "utils/catcache.h"
 #include "utils/hsearch.h"
 #include "utils/fmgroids.h"
 #include "utils/inval.h"
+#include "utils/lsyscache.h"
 #include "utils/rel.h"
 #include "utils/varlena.h"
 
@@ -36,6 +39,9 @@ static HTAB *SpockRelationHash = NULL;
 
 
 static void spock_relcache_init(void);
+static void relcache_build_ancestors(Relation rel, List **oids,
+									 List **names);
+static void relcache_free_ancestor_names(List *names);
 static int	tupdesc_get_att_by_name(TupleDesc desc, const char *attname);
 
 /*
@@ -85,10 +91,60 @@ relcache_free_entry(SpockRelation *entry)
 		entry->arbiterIndexes = NIL;
 	}
 
+	list_free(entry->ancestorOids);
+	entry->ancestorOids = NIL;
+	relcache_free_ancestor_names(entry->ancestorNames);
+	entry->ancestorNames = NIL;
+
 	entry->natts = 0;
 	entry->reloid = InvalidOid;
 	entry->rel = NULL;
 	entry->has_delta_columns = false;
+}
+
+/*
+ * OIDs and qualified names of the partition ancestors of "rel", nearest
+ * first, in CacheMemoryContext.
+ */
+static void
+relcache_build_ancestors(Relation rel, List **oids, List **names)
+{
+	MemoryContext oldcontext;
+	ListCell   *lc;
+
+	*oids = NIL;
+	*names = NIL;
+
+	if (!rel->rd_rel->relispartition)
+		return;
+
+	oldcontext = MemoryContextSwitchTo(CacheMemoryContext);
+	*oids = get_partition_ancestors(RelationGetRelid(rel));
+	foreach(lc, *oids)
+	{
+		Oid			ancestor = lfirst_oid(lc);
+
+		*names = lappend(*names,
+						 makeRangeVar(get_namespace_name(get_rel_namespace(ancestor)),
+									  get_rel_name(ancestor), -1));
+	}
+	MemoryContextSwitchTo(oldcontext);
+}
+
+static void
+relcache_free_ancestor_names(List *names)
+{
+	ListCell   *lc;
+
+	foreach(lc, names)
+	{
+		RangeVar   *rv = (RangeVar *) lfirst(lc);
+
+		pfree(rv->schemaname);
+		pfree(rv->relname);
+		pfree(rv);
+	}
+	list_free(names);
 }
 
 
@@ -275,6 +331,24 @@ spock_relation_open(uint32 remoteid, LOCKMODE lockmode)
 			entry->arbiterIndexes = arbiters;
 		}
 
+		/*
+		 * Cache the partition ancestors.  A partition attached to or detached
+		 * from its parent invalidates its own relcache entry, and a rename of
+		 * an ancestor invalidates only the ancestor's, which
+		 * spock_relcache_invalidate_callback() maps back to this entry.
+		 */
+		{
+			List	   *oids;
+			List	   *names;
+
+			relcache_build_ancestors(entry->rel, &oids, &names);
+
+			list_free(entry->ancestorOids);
+			relcache_free_ancestor_names(entry->ancestorNames);
+			entry->ancestorOids = oids;
+			entry->ancestorNames = names;
+		}
+
 		/* Cache trigger info. */
 		entry->hasTriggers = false;
 		if (entry->rel->trigdesc != NULL)
@@ -349,6 +423,8 @@ spock_relation_cache_update(uint32 remoteid, char *schemaname,
 
 	/* Filled in by spock_relation_open() along with the rest of the mapping. */
 	entry->arbiterIndexes = NIL;
+	entry->ancestorOids = NIL;
+	entry->ancestorNames = NIL;
 
 	/*
 	 * Local-schema validation requires the lock taken by
@@ -397,6 +473,8 @@ spock_relation_cache_updater(SpockRemoteRel *remoterel)
 
 	/* Filled in by spock_relation_open() along with the rest of the mapping. */
 	entry->arbiterIndexes = NIL;
+	entry->ancestorOids = NIL;
+	entry->ancestorNames = NIL;
 
 	/*
 	 * Local-schema validation requires the lock taken by
@@ -449,7 +527,8 @@ spock_relcache_invalidate_callback(Datum arg, Oid reloid)
 		/* TODO, use inverse lookup hashtable */
 		while ((entry = (SpockRelation *) hash_seq_search(&status)) != NULL)
 		{
-			if (entry->reloid == reloid)
+			if (entry->reloid == reloid ||
+				list_member_oid(entry->ancestorOids, reloid))
 				entry->reloid = InvalidOid;
 		}
 	}
