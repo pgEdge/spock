@@ -60,6 +60,8 @@
 #include "libpq/auth.h"
 #include "libpq/libpq.h"
 
+#include "spock_common.h"
+
 /* Defaults (milliseconds) for the tunable worker intervals below. */
 #define WORKER_NAP_TIME_DEFAULT 1000
 #define WORKER_WAIT_FEEDBACK_DEFAULT 10000
@@ -295,19 +297,16 @@ remote_get_primary_slot_info(PGconn *conn, List *slot_filter)
 		switch (filter->key)
 		{
 			case FAILOVERSLOT_FILTER_NAME:
-				appendStringInfo(
-								 &query, " %s slot_name OPERATOR(pg_catalog.=) %s", op,
-								 PQescapeLiteral(conn, filter->val, strlen(filter->val)));
+				appendStringInfo(&query, " %s slot_name OPERATOR(pg_catalog.=) ", op);
+				append_escaped_literal(&query, conn, filter->val);
 				break;
 			case FAILOVERSLOT_FILTER_NAME_LIKE:
-				appendStringInfo(
-								 &query, " %s slot_name LIKE %s", op,
-								 PQescapeLiteral(conn, filter->val, strlen(filter->val)));
+				appendStringInfo(&query, " %s slot_name LIKE ", op);
+				append_escaped_literal(&query, conn, filter->val);
 				break;
 			case FAILOVERSLOT_FILTER_PLUGIN:
-				appendStringInfo(
-								 &query, " %s plugin OPERATOR(pg_catalog.=) %s", op,
-								 PQescapeLiteral(conn, filter->val, strlen(filter->val)));
+				appendStringInfo(&query, " %s plugin OPERATOR(pg_catalog.=) ", op);
+				append_escaped_literal(&query, conn, filter->val);
 				break;
 			default:
 				Assert(0);
@@ -364,11 +363,11 @@ remote_get_physical_slot_lsn(PGconn *conn, const char *slot_name)
 	StringInfoData query;
 
 	initStringInfo(&query);
-	appendStringInfo(&query,
-					 "SELECT restart_lsn"
-					 "  FROM pg_catalog.pg_replication_slots"
-					 " WHERE slot_name OPERATOR(pg_catalog.=) %s",
-					 PQescapeLiteral(conn, slot_name, strlen(slot_name)));
+	appendStringInfoString(&query,
+						   "SELECT restart_lsn"
+						   "  FROM pg_catalog.pg_replication_slots"
+						   " WHERE slot_name OPERATOR(pg_catalog.=) ");
+	append_escaped_literal(&query, conn, slot_name);
 	res = PQexec(conn, query.data);
 
 	if (PQresultStatus(res) != PGRES_TUPLES_OK)

@@ -886,6 +886,22 @@ append_escaped_identifier(StringInfo buf, PGconn *conn, const char *ident)
 	PQfreemem(quoted);
 }
 
+/*
+ * Append "str", quoted as a string literal for the server behind "conn", to
+ * "buf".
+ */
+void
+append_escaped_literal(StringInfo buf, PGconn *conn, const char *str)
+{
+	char	   *quoted = PQescapeLiteral(conn, str, strlen(str));
+
+	if (quoted == NULL)
+		elog(ERROR, "could not escape literal \"%s\": %s",
+			 str, PQerrorMessage(conn));
+	appendStringInfoString(buf, quoted);
+	PQfreemem(quoted);
+}
+
 /* Append the schema-qualified, quoted name of a table to "buf". */
 void
 append_escaped_qualified_name(StringInfo buf, PGconn *conn,

@@ -889,7 +889,6 @@ static void
 start_copy_origin_tx(PGconn *conn, const char *snapshot)
 {
 	PGresult   *res;
-	char	   *s;
 	const char *session_setup =
 		"SET DATESTYLE = ISO;\n"
 		"SET INTERVALSTYLE = POSTGRES;\n"
@@ -917,12 +916,9 @@ start_copy_origin_tx(PGconn *conn, const char *snapshot)
 
 	if (snapshot)
 	{
-		s = PQescapeLiteral(conn, snapshot, strlen(snapshot));
-		if (s == NULL)
-			elog(ERROR, "could not escape snapshot name: %s",
-				 PQerrorMessage(conn));
-		appendStringInfo(&query, "SET TRANSACTION SNAPSHOT %s;\n", s);
-		PQfreemem(s);
+		appendStringInfoString(&query, "SET TRANSACTION SNAPSHOT ");
+		append_escaped_literal(&query, conn, snapshot);
+		appendStringInfoString(&query, ";\n");
 	}
 
 	res = PQexec(conn, query.data);
@@ -937,7 +933,6 @@ static void
 start_copy_target_tx(PGconn *conn, const char *origin_name)
 {
 	PGresult   *res;
-	char	   *s;
 	const char *setup_query =
 		"BEGIN TRANSACTION ISOLATION LEVEL READ COMMITTED;\n"
 		"SET session_replication_role = 'replica';\n"
@@ -957,14 +952,10 @@ start_copy_target_tx(PGconn *conn, const char *origin_name)
 	 */
 	if (PQserverVersion(conn) >= 90500)
 	{
-		s = PQescapeLiteral(conn, origin_name, strlen(origin_name));
-		if (s == NULL)
-			elog(ERROR, "could not escape origin name: %s",
-				 PQerrorMessage(conn));
-		appendStringInfo(&query,
-						 "SELECT pg_catalog.pg_replication_origin_session_setup(%s);\n",
-						 s);
-		PQfreemem(s);
+		appendStringInfoString(&query,
+							   "SELECT pg_catalog.pg_replication_origin_session_setup(");
+		append_escaped_literal(&query, conn, origin_name);
+		appendStringInfoString(&query, ");\n");
 		appendStringInfo(&query,
 						 "SELECT pg_catalog.pg_replication_origin_xact_setup('0/0', 'epoch');");
 	}
@@ -1124,7 +1115,7 @@ copy_table_data(PGconn *origin_conn, PGconn *target_conn,
 	{
 		StringInfoData relname;
 		StringInfoData repsetarr;
-		char	   *literal;
+		StringInfoData relnamelit;
 
 		initStringInfo(&relname);
 		append_escaped_qualified_name(&relname, origin_conn,
@@ -1141,26 +1132,17 @@ copy_table_data(PGconn *origin_conn, PGconn *target_conn,
 			else
 				appendStringInfoChar(&repsetarr, ',');
 
-			literal = PQescapeLiteral(origin_conn, repset_name,
-									  strlen(repset_name));
-			if (literal == NULL)
-				elog(ERROR, "could not escape replication set name: %s",
-					 PQerrorMessage(origin_conn));
-			appendStringInfoString(&repsetarr, literal);
-			PQfreemem(literal);
+			append_escaped_literal(&repsetarr, origin_conn, repset_name);
 		}
 
-		literal = PQescapeLiteral(origin_conn, relname.data, relname.len);
-		if (literal == NULL)
-			elog(ERROR, "could not escape relation name: %s",
-				 PQerrorMessage(origin_conn));
+		initStringInfo(&relnamelit);
+		append_escaped_literal(&relnamelit, origin_conn, relname.data);
 		appendStringInfo(&query,
 						 "(SELECT %s FROM spock.table_data_filtered(NULL::%s, %s::regclass, ARRAY[%s])) ",
 						 list_length(attnamelist) ? attlist.data : "*",
 						 relname.data,
-						 literal,
+						 relnamelit.data,
 						 repsetarr.data);
-		PQfreemem(literal);
 	}
 	else
 	{

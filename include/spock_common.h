@@ -89,6 +89,8 @@ extern XLogRecPtr str_to_lsn(const char *s);
 extern void spock_raise_pqresult_error(PGresult *res, const char *what);
 extern void append_escaped_identifier(StringInfo buf, PGconn *conn,
 									  const char *ident);
+extern void append_escaped_literal(StringInfo buf, PGconn *conn,
+								   const char *str);
 extern void append_escaped_qualified_name(StringInfo buf, PGconn *conn,
 										  const char *nspname,
 										  const char *relname);
