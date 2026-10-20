@@ -19,13 +19,13 @@ because the other nodes in the cluster keep serving traffic during
 that window; it is not zero-downtime for the node itself.
 
 This tutorial upgrades a three-node cluster (`n1`, `n2`, `n3`) running
-PostgreSQL 16 to PostgreSQL 18, one node at a time, without a second
-full copy of any node's data. `pg_upgrade` still needs a new, empty
-data directory for each node, but in link mode it holds hard links to
-the old files rather than copies of them. When a node also carries a physical
-standby for high availability, rebuilding that standby and bringing
-it under Patroni folds into the same per-node loop, so high
-availability is preserved before you move on to the next node.
+PostgreSQL 16 to PostgreSQL 18, one node at a time, without a second full copy
+of any node's data. `pg_upgrade` still needs a new, empty data directory for
+each node, but in link mode it holds hard links to the old files rather than
+copies of them. When a node also carries a physical standby for high
+availability, rebuilding that standby and bringing it under Patroni folds into
+the same per-node loop, so high availability is preserved before you move on to
+the next node.
 
 ## Prerequisites and Warnings
 
@@ -49,7 +49,7 @@ availability is preserved before you move on to the next node.
       link between old and new data directories`; it does not fall back
       to copying.
     - `--link` mode ties the old and new clusters' data files
-      together. Once you start the new cluster, you cannot go back to
+      together. After you start the new cluster, you cannot go back to
       running the old one; treat the old `postgresql.conf`,
       `pg_hba.conf`, and any other node-specific configuration as
       reference material to port forward, not something you can
@@ -160,9 +160,9 @@ our example. Finish all steps for one node before starting the next.
 
     While `n1` is still running, drop every other node's subscription
     to it. `sub_drop` removes the subscription's slot on `n1` only
-    when it can reach `n1`; dropped later, the slot is left behind and
-    `pg_upgrade` has to deal with it. Nothing is lost: step 2 made
-    sure every node had applied all of `n1`'s changes:
+    when it can reach `n1`; a subscription dropped later leaves its slot
+    behind on `n1`. No data is lost, because step 2 confirmed that every
+    node had applied all of `n1`'s changes:
 
     ```sql
     -- On n2, then the matching subscription on n3
@@ -210,8 +210,8 @@ our example. Finish all steps for one node before starting the next.
    `pg_upgrade` migrates data into an already-initialized cluster; it
    does not create one. The new cluster must match the old cluster's
    encoding, locale and checksum setting exactly, or
-   `pg_upgrade --check` fails. Use the encoding you recorded in step 3, and read the
-   checksum setting from the stopped data directory:
+   `pg_upgrade --check` fails. Use the encoding you recorded in step 3,
+   and read the checksum setting from the stopped data directory:
 
     ```bash
     pg_controldata /path/to/data/n1 | grep "checksum version"
@@ -661,6 +661,8 @@ our example. Finish all steps for one node before starting the next.
     SELECT spock.sub_enable('sub_n3_n1', true);
     ```
 
+    Then check the status of every subscription in the cluster:
+
     ```sql
     CALL spock.show_all_subscription_status(
       'host=127.0.0.1 dbname=inventory port=5432 user=pgedge password=<pgedge-password>',
@@ -697,7 +699,7 @@ every node's Patroni scope, so long as each scope's name is unique.
 
 ## Verifying the Rollout
 
-Once every node has been upgraded, confirm the whole cluster runs the
+When every node has been upgraded, confirm the whole cluster runs the
 target PostgreSQL version and reports a clean replication topology:
 
 ```sql
