@@ -11,13 +11,13 @@ you:
 - confirm it is replicating.
 - remove the node it replaces.
 
-Since the replacement node is fully live and replicating before the
-node it replaces is removed, the cluster never drops below its
-optimal node count and the application sees no interruption - a true
-zero-downtime rolling upgrade of the PostgreSQL version. When a node also carries a physical standby
-for high availability, bootstrapping that standby and bringing it
-under Patroni folds into the same per-node loop, so high availability
-is preserved, before you move on to the next node.
+Since the replacement node is fully live and replicating before the node it
+replaces is removed, the cluster never drops below its optimal node count and
+the application sees no interruption - a true zero-downtime rolling upgrade of
+the PostgreSQL version. When a node also carries a physical standby for high
+availability, bootstrapping that standby and bringing it under Patroni folds
+into the same per-node loop, so high availability is preserved, before you move
+on to the next node.
 
 In this tutorial, a three-node cluster running PostgreSQL 16 (`n1`,
 `n2`, `n3`) rolls forward to PostgreSQL 18, becoming `n1b`, `n2b`, and
@@ -594,7 +594,7 @@ next.
    connections are arriving at `n1`. `remove_node` drops every
    subscription to and from `n1` at once and does not wait for
    anything, so any write on `n1` that has not reached the other nodes
-   by then is lost. Once `n1` takes no writes, emit a sync event on it:
+   by then is lost. When `n1` takes no writes, emit a sync event on it:
 
     ```sql
     -- On n1
