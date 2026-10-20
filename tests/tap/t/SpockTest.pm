@@ -173,22 +173,47 @@ sub system_maybe {
     return $rc == 0;
 }
 
+# lolor refuses CREATE EXTENSION unless its library is preloaded, so once
+# ensure_lolor() succeeds every cluster created afterwards loads it.
+my $preload_lolor = 0;
+
 # Build and install the lolor extension if it is not already present.
 # Returns true when lolor is available. Callers should skip_all (rather
 # than fail) when this returns false, e.g. no network to clone the repo.
+# Must be called before create_cluster(), which adds lolor to
+# shared_preload_libraries.
 sub ensure_lolor {
     my $sharedir = `$PG_BIN/pg_config --sharedir`;
     chomp $sharedir;
-    return 1 if $sharedir && -f "$sharedir/extension/lolor.control";
+    return $preload_lolor = 1
+        if $sharedir && -f "$sharedir/extension/lolor.control";
 
     my $build = "/tmp/spock_lolor_build";
     my $log   = "$LOG_DIR/lolor_build.log";
+    my $repo  = 'https://github.com/pgEdge/lolor.git';
+
+    # Build the newest released lolor, not whatever main happens to be:
+    # main is a development branch and a bad commit there would break these
+    # tests for reasons that have nothing to do with spock.
+    #
+    # lolor publishes no GitHub releases, only tags, so the release is the
+    # highest vN.N.N tag.  Pre-release tags (v1.2.3-rc.1) carry a suffix and
+    # are excluded by the pattern; sort -V then orders the rest by version
+    # rather than lexically, so v1.2.10 would outrank v1.2.9.
+    my $tag = `git ls-remote --tags --refs $repo 2>> '$log' | awk -F/ '{print \$NF}' | grep -E '^v[0-9]+(\\.[0-9]+)*\$' | sort -V | tail -1`;
+    chomp $tag;
+
+    # No tag means no network, or the tagging scheme changed.  Report failure
+    # so the caller skips, rather than silently falling back to main.
+    return 0 unless $tag =~ /^v[0-9][0-9.]*$/;
+
     system('rm', '-rf', $build);
-    my $rc = system("git clone --depth 1 https://github.com/pgEdge/lolor.git $build >> '$log' 2>&1");
+    my $rc = system("git clone --depth 1 --branch $tag $repo $build >> '$log' 2>&1");
     return 0 if $rc != 0;
     $rc = system("make -C $build USE_PGXS=1 PG_CONFIG='$PG_BIN/pg_config' install >> '$log' 2>&1");
     return 0 if $rc != 0;
-    return ($sharedir && -f "$sharedir/extension/lolor.control") ? 1 : 0;
+    return $preload_lolor =
+        ($sharedir && -f "$sharedir/extension/lolor.control") ? 1 : 0;
 }
 
 # Return the output_plugin_libraries line a node needs, or '' if the server
@@ -232,7 +257,8 @@ sub create_postgresql_conf {
 
     open(my $conf, '>>', "$datadir/postgresql.conf") or die "Cannot open config file: $!";
     print $conf "shared_buffers=1GB\n";
-    print $conf "shared_preload_libraries='spock'\n";
+    print $conf "shared_preload_libraries='"
+              . ($preload_lolor ? 'spock, lolor' : 'spock') . "'\n";
     print $conf output_plugin_libraries_conf($PG_BIN);
     print $conf "wal_level=logical\n";
     print $conf "spock.enable_ddl_replication=on\n";
