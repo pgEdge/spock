@@ -666,6 +666,7 @@ spock_create_slot_and_read_progress(PGconn *conn, PGconn *repl_conn,
 	int			nrows;
 	int			rno;
 	bool		have_read_peer_progress = false;
+	bool		can_pause_apply_workers;
 
 	initStringInfo(&query);
 
@@ -707,12 +708,29 @@ spock_create_slot_and_read_progress(PGconn *conn, PGconn *repl_conn,
 	/*
 	 * Pause apply workers so ros.remote_lsn reflects only fully committed
 	 * state when we read it below.
+	 *
+	 * pause_apply_workers() was added in 5.0.7; check for it first so an
+	 * older origin (a supported rolling-upgrade pairing) gets one clear log
+	 * line instead of a raw "does not exist" error.  Sync proceeds unpaused
+	 * if it's missing, reopening the race above.
 	 */
-	res = PQexec(conn, "SELECT spock.pause_apply_workers()");
-	if (PQresultStatus(res) != PGRES_TUPLES_OK)
-		elog(ERROR, "could not pause apply workers on origin: %s",
-			 PQerrorMessage(conn));
-	PQclear(res);
+	can_pause_apply_workers =
+		spock_remote_function_exists(conn, "spock", "pause_apply_workers",
+									 0, NULL);
+	if (!can_pause_apply_workers)
+		elog(LOG, "SPOCK: origin does not support spock.pause_apply_workers() "
+			 "(Spock older than 5.0.7); proceeding without it. A "
+			 "concurrent write load on the origin during this sync "
+			 "could leave the subscriber missing rows; upgrade the "
+			 "origin to close this window.");
+	else
+	{
+		res = PQexec(conn, "SELECT spock.pause_apply_workers()");
+		if (PQresultStatus(res) != PGRES_TUPLES_OK)
+			elog(ERROR, "could not pause apply workers on origin: %s",
+				 PQerrorMessage(conn));
+		PQclear(res);
+	}
 
 	/*
 	 * Create the slot via the replication protocol.  This returns a snapshot
@@ -859,13 +877,17 @@ spock_create_slot_and_read_progress(PGconn *conn, PGconn *repl_conn,
 	/*
 	 * Resume apply workers now that slot and progress are captured. The
 	 * REPEATABLE READ transaction (and its snapshot) remain open for the COPY
-	 * phase; the workers can resume safely.
+	 * phase; the workers can resume safely.  Nothing was paused on an origin
+	 * that lacks the function, so there is nothing to resume there either.
 	 */
-	res = PQexec(conn, "SELECT spock.resume_apply_workers()");
-	if (PQresultStatus(res) != PGRES_TUPLES_OK)
-		elog(WARNING, "could not resume apply workers on origin: %s",
-			 PQerrorMessage(conn));
-	PQclear(res);
+	if (can_pause_apply_workers)
+	{
+		res = PQexec(conn, "SELECT spock.resume_apply_workers()");
+		if (PQresultStatus(res) != PGRES_TUPLES_OK)
+			elog(WARNING, "could not resume apply workers on origin: %s",
+				 PQerrorMessage(conn));
+		PQclear(res);
+	}
 
 	pfree(query.data);
 
