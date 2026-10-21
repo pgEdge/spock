@@ -2973,20 +2973,33 @@ cluster_commits_on_its_own(Node *stmt)
 #if PG_VERSION_NUM >= 190000
 	RepackStmt *repack = castNode(RepackStmt, stmt);
 	ListCell   *lc;
+	bool		analyze = false;
+	bool		concurrently = false;
 
 	if (repack->relation == NULL)
 		return true;
 
+	/*
+	 * Read the options the way ExecRepack() does: each one assigns, so where
+	 * an option is given more than once the last value is the effective one.
+	 * Deciding on the first occurrence would leave "REPACK (ANALYZE, ANALYZE
+	 * FALSE) t" out of the queue, though it runs without the analyze and is
+	 * replicable.  Any other option name, and any malformed value, is for
+	 * REPACK itself to reject; it has already run by the time AutoDDL looks.
+	 */
 	foreach(lc, repack->params)
 	{
 		DefElem    *opt = lfirst_node(DefElem, lc);
 
-		if ((strcmp(opt->defname, "analyze") == 0 ||
-			 strcmp(opt->defname, "analyse") == 0 ||
-			 strcmp(opt->defname, "concurrently") == 0) &&
-			defGetBoolean(opt))
-			return true;
+		if (strcmp(opt->defname, "analyze") == 0 ||
+			strcmp(opt->defname, "analyse") == 0)
+			analyze = defGetBoolean(opt);
+		else if (strcmp(opt->defname, "concurrently") == 0)
+			concurrently = defGetBoolean(opt);
 	}
+
+	if (analyze || concurrently)
+		return true;
 
 	rv = repack->relation->relation;
 #else
@@ -3169,9 +3182,9 @@ spock_auto_replicate_ddl(const char *query, List *replication_sets,
 			break;
 
 #if PG_VERSION_NUM >= 190000
-		case T_RepackStmt:				/* CLUSTER, REPACK */
+		case T_RepackStmt:		/* CLUSTER, REPACK */
 #else
-		case T_ClusterStmt:				/* CLUSTER */
+		case T_ClusterStmt:		/* CLUSTER */
 #endif
 			if (cluster_commits_on_its_own(stmt))
 				goto skip_ddl;
