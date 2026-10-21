@@ -2952,6 +2952,59 @@ spock_guard_extension_owned_ddl(Node *stmt)
 }
 
 /*
+ * Does this CLUSTER or REPACK commit, or wait, on its own as it runs?
+ *
+ * With no table it reorganizes every table it can find, committing after
+ * each one, and a partitioned table takes that same path one partition at
+ * a time.  On PostgreSQL 19, REPACK (ANALYZE) commits between the rewrite
+ * and the analyze even for a single table, and REPACK (CONCURRENTLY) sets
+ * up logical decoding that waits for the running transaction to end.
+ *
+ * None of these can run inside the apply worker's transaction: the commits
+ * leave the worker with a finished transaction under its feet and it
+ * crashes, and the wait is on the worker itself, so it never returns.  Such
+ * a statement is run locally and left out of the queue.
+ */
+static bool
+cluster_commits_on_its_own(Node *stmt)
+{
+	RangeVar   *rv;
+	Oid			relid;
+#if PG_VERSION_NUM >= 190000
+	RepackStmt *repack = castNode(RepackStmt, stmt);
+	ListCell   *lc;
+
+	if (repack->relation == NULL)
+		return true;
+
+	foreach(lc, repack->params)
+	{
+		DefElem    *opt = lfirst_node(DefElem, lc);
+
+		if ((strcmp(opt->defname, "analyze") == 0 ||
+			 strcmp(opt->defname, "analyse") == 0 ||
+			 strcmp(opt->defname, "concurrently") == 0) &&
+			defGetBoolean(opt))
+			return true;
+	}
+
+	rv = repack->relation->relation;
+#else
+	ClusterStmt *cluster = castNode(ClusterStmt, stmt);
+
+	if (cluster->relation == NULL)
+		return true;
+
+	rv = cluster->relation;
+#endif
+
+	relid = RangeVarGetRelid(rv, NoLock, true);
+
+	return OidIsValid(relid) &&
+		get_rel_relkind(relid) == RELKIND_PARTITIONED_TABLE;
+}
+
+/*
  * spock_auto_replicate_ddl
  *
  * Add the DDL statement to the spock.queue table so it can
@@ -3116,47 +3169,13 @@ spock_auto_replicate_ddl(const char *query, List *replication_sets,
 			break;
 
 #if PG_VERSION_NUM >= 190000
-
-			/*
-			 * PostgreSQL 19 folded CLUSTER into the new REPACK command, so a
-			 * CLUSTER statement now parses into a RepackStmt whose target is
-			 * a VacuumRelation rather than a bare RangeVar.
-			 */
-		case T_RepackStmt:
-			{
-				RepackStmt *cstmt = (RepackStmt *) stmt;
-				RangeVar   *cluster_rel = cstmt->relation ? cstmt->relation->relation : NULL;
+		case T_RepackStmt:				/* CLUSTER, REPACK */
 #else
-		case T_ClusterStmt:
-			{
-				ClusterStmt *cstmt = (ClusterStmt *) stmt;
-				RangeVar   *cluster_rel = cstmt->relation;
+		case T_ClusterStmt:				/* CLUSTER */
 #endif
-				bool		skip_cluster = true;
-
-				if (cluster_rel != NULL)
-				{
-					Relation	rel;
-					Oid			tableOid;
-
-					/*
-					 * Single relation case may be allowed if it is not a
-					 * partitioned table. Don't care about errors - if we
-					 * replicate this command it means everything must be ok,
-					 * or we are in trouble and deserve an ERROR.
-					 */
-					tableOid = RangeVarGetRelidExtended(cluster_rel,
-														AccessShareLock, 0, NULL, NULL);
-					rel = table_open(tableOid, NoLock);
-					skip_cluster = (rel->rd_rel->relkind == RELKIND_PARTITIONED_TABLE);
-					table_close(rel, AccessShareLock);
-				}
-
-				if (skip_cluster)
-					goto skip_ddl;
-
-				add_search_path = false;
-			}
+			if (cluster_commits_on_its_own(stmt))
+				goto skip_ddl;
+			add_search_path = false;
 			break;
 
 		case T_AlterTableSpaceOptionsStmt:
