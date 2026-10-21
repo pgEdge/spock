@@ -810,6 +810,37 @@ invalidated_warning_due(const char *name, bool left_alone)
 }
 
 /*
+ * Forget warned slots the primary no longer has, so a name does not stay
+ * on the list for the life of the worker.
+ */
+static void
+invalidated_warned_prune(List *remote_slots)
+{
+	ListCell   *lc;
+
+	foreach(lc, invalidated_warned)
+	{
+		char	   *warned = (char *) lfirst(lc);
+		ListCell   *rc;
+		bool		present = false;
+
+		foreach(rc, remote_slots)
+		{
+			if (strcmp(((RemoteSlot *) lfirst(rc))->name, warned) == 0)
+			{
+				present = true;
+				break;
+			}
+		}
+		if (!present)
+		{
+			invalidated_warned = foreach_delete_current(invalidated_warned, lc);
+			pfree(warned);
+		}
+	}
+}
+
+/*
  * Synchronize one logical replication slot's state from the master to this
  * standby, creating it if necessary.
  *
@@ -925,7 +956,8 @@ synchronize_one_slot(RemoteSlot *remote_slot)
 	if (found)
 	{
 #if PG_VERSION_NUM >= 180000
-		ReplicationSlotAcquire(remote_slot->name, true, true);
+		/* Not error_if_invalid: the recheck below handles an invalidated copy. */
+		ReplicationSlotAcquire(remote_slot->name, true, false);
 #else
 		ReplicationSlotAcquire(remote_slot->name, true);
 #endif
@@ -1436,6 +1468,8 @@ synchronize_failover_slots(long sleep_time)
 
 			synchronize_one_slot(remote_slot);
 		}
+
+		invalidated_warned_prune(slots);
 	}
 
 	PQfinish(conn);
