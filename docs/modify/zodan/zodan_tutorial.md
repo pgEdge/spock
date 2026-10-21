@@ -23,8 +23,10 @@ node), `n2`, `n3`, and the new node is `n4`.
     - All nodes in your cluster must be available to Spock for the duration
       of the node addition.
     - The procedure should be performed on the new node being added.
-    - The `dblink` extension must be installed on the node from which
-      commands like `SELECT spock.add_node()` are being run.
+    - `spock.attach_node` and `spock.detach_node` are built into the Spock
+      extension. They reach the other nodes over libpq, so the `dblink`
+      extension is not required. (`dblink` is only needed if you choose to
+      follow the optional manual walkthrough later in this tutorial.)
     - Prepare the new node to meet all of the prerequisites described here.
     - If the process fails, do not immediately retry a command until you
       ensure that all artifacts created by the workflow have been removed.
@@ -85,36 +87,27 @@ psql -c "CREATE DATABASE inventory;"
 psql -c "CREATE USER pgedge WITH PASSWORD '1safepassword';"
 psql -c "GRANT ALL ON DATABASE inventory TO pgedge;"
 
-# Install Spock extension
+# Install Spock extension (provides attach_node and detach_node)
 psql -d inventory -c "CREATE EXTENSION spock;"
 psql -d inventory -c "CREATE EXTENSION dblink;"
 ```
 
 ## Using the Zodan Procedure to Add a Node
 
-After creating the node, you can use [Zodan scripts](zodan_readme.md) to
-simplify adding a node to a cluster.
-
-To use the SQL script, connect to the new node that you wish to add to the
-pgEdge cluster. In the following example, the `psql` command connects to the
-new node:
+`spock.attach_node` is built into the extension, so there is nothing to load.
+Connect to the new node that you wish to add to the pgEdge cluster. In the
+following example, the `psql` command connects to the new node:
 
 ```bash
 psql -h 127.0.0.1 -p 5435 -d inventory -U pgedge
 ```
 
-Load the Zodan procedures with the following command:
+Then, use `spock.attach_node()` from the new node to add it to the cluster. In
+the following example, the `spock.attach_node` procedure adds node `n4` to the
+cluster:
 
 ```sql
-\i /path/to/zodan.sql
-```
-
-Then, use `spock.add_node()` from the new node to create the node
-definition. In the following example, the `spock.add_node` procedure adds node `n4` to
-the cluster:
-
-```sql
-CALL spock.add_node(
+CALL spock.attach_node(
     src_node_name := 'n1',
     src_dsn := 'host=127.0.0.1 dbname=inventory port=5432 user=pgedge password=1safepassword',
     new_node_name := 'n4',
@@ -126,13 +119,41 @@ CALL spock.add_node(
 );
 ```
 
-The `spock.add_node` function executes the steps required to add a node to
+The `spock.attach_node` function executes the steps required to add a node to
 the cluster; a detailed explanation of the steps performed follows below.
 
-Should a problem occur during this process, you can source the
-`zodremove.sql` script and call the `spock.remove_node` procedure to
-remove the node or reverse partially completed steps. The
-`spock.remove_node` procedure should be called on the node being removed.
+Should a problem occur during this process, you can call the
+`spock.detach_node` procedure to remove the node or reverse partially
+completed steps. The `spock.detach_node` procedure should be called on the
+node being removed.
+
+### Setting the Synchronisation Timeout
+
+`spock.add_node()` waits at several points for the nodes to synchronise -
+for a sync event to arrive on a peer, for the new node to catch up, and
+for a subscription to start replicating. Each of those waits is allowed
+180 seconds (3 minutes) by default, which is sized for a small cluster
+where a node joins in seconds. On a large database, catchup can
+legitimately take minutes or hours, and the procedure fails with a timeout
+long before the work is done.
+
+To raise the budget, set
+[`spock.sync_timeout`](../../configuring.md#spock-sync_timeout) in the
+same session, before calling the add_node procedure:
+
+```sql
+SET spock.sync_timeout = '2h';
+```
+
+The new value applies to every synchronisation wait the procedure
+performs, and it reverts when the session ends, so a long-running node
+addition does not need a cluster-wide configuration change. To raise the
+limit for every session, set the parameter in `postgresql.conf` instead.
+
+The setting bounds a whole wait, not an individual probe of a remote node;
+steps that also bound each remote probe - so that one unresponsive peer
+cannot consume the entire budget - keep their own, much smaller limit for
+that purpose.
 
 ### Setting the Synchronisation Timeout
 
