@@ -415,12 +415,32 @@ ensure_replication_origin(char *slot_name)
 static void
 adjust_progress_info(PGconn *origin_conn, PGconn *target_conn)
 {
+	/*
+	 * spock.progress.remote_lsn is flushed at most once a second, so it can
+	 * name a position behind what the provider has actually applied.  Seeding
+	 * the new node from it lets START REPLICATION skip transactions the COPY
+	 * snapshot did not contain, and those changes are then never applied
+	 * here -- the data loss this read exists to prevent.
+	 *
+	 * Take the resume LSN from pg_replication_origin_status instead, which
+	 * the apply worker writes at commit and is therefore exact while the
+	 * workers are paused (see the pause in spock_sync_subscription()).  The
+	 * other columns still come from the table: they seed lag tracking only
+	 * and are replaced by the first replicated message, so trailing by up to
+	 * a second is acceptable.  remote_insert_lsn is clamped to the resume LSN
+	 * so it never reads as behind a commit we know has been applied.
+	 */
 	const char	   *originQuery =
-		"SELECT node_id, remote_node_id, remote_commit_ts, "
-		"       remote_lsn, remote_insert_lsn, "
-		"       last_updated_ts, updated_by_decode "
-		"FROM spock.progress "
-		"WHERE node_id = %u AND remote_node_id <> %u";
+		"SELECT sub.sub_target AS node_id, p.remote_node_id, p.remote_commit_ts, "
+		"       COALESCE(ros.remote_lsn, '0/0'::pg_lsn) AS remote_lsn, "
+		"       GREATEST(p.remote_insert_lsn, COALESCE(ros.remote_lsn, '0/0'::pg_lsn)) AS remote_insert_lsn, "
+		"       p.last_updated_ts, p.updated_by_decode "
+		"FROM spock.subscription sub "
+		"JOIN spock.progress p ON p.remote_node_id = sub.sub_origin "
+		"                     AND p.node_id = sub.sub_target "
+		"JOIN pg_replication_origin o ON o.roname = sub.sub_slot_name "
+		"LEFT JOIN pg_replication_origin_status ros ON ros.local_id = o.roident "
+		"WHERE sub.sub_target = %u AND sub.sub_origin <> %u";
 	const char     *upsertQuery =
 		"INSERT INTO spock.progress "
 		"    (node_id, remote_node_id, remote_commit_ts, "
