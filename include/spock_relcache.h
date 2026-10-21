@@ -56,6 +56,16 @@ typedef struct SpockRelation
 	 * the relation's index set, so it is rebuilt whenever the mapping is.
 	 */
 	List	   *arbiterIndexes;
+
+	/*
+	 * OIDs and RangeVars of the partition ancestors, nearest first; NIL
+	 * unless the relation is a partition.  The apply worker consults the
+	 * names to tell that a synchronization of a partitioned table covers this
+	 * partition.  An invalidation of any ancestor invalidates the mapping, so
+	 * that a renamed ancestor is not matched by its old name.
+	 */
+	List	   *ancestorOids;
+	List	   *ancestorNames;
 } SpockRelation;
 
 extern void spock_relation_cache_update(uint32 remoteid,

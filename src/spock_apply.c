@@ -271,6 +271,7 @@ static void handle_queued_message(HeapTuple msgtup, bool tx_just_started);
 static void handle_startup_param(const char *key, const char *value);
 static bool parse_bool_param(const char *key, const char *value);
 static void process_syncing_tables(XLogRecPtr end_lsn);
+static void reread_unsynced_tables(Oid subid);
 static void start_sync_worker(Name nspname, Name relname);
 static void spock_apply_worker_shmem_exit(int code, Datum arg);
 static void spock_apply_worker_on_exit(int code, Datum arg);
@@ -467,28 +468,88 @@ prepare_transient_error_retry(ErrorData *edata, const char *what)
 }
 
 /*
- * Check if given relation is in process of being synchronized.
- *
- * TODO: performance
+ * Are changes to the table skipped at this sync status?  Its contents arrive
+ * from the sync worker until the table is ready.
  */
 static bool
-should_apply_changes_for_rel(const char *nspname, const char *relname)
+sync_status_skips_changes(SpockSyncStatus *sync)
 {
-	if (list_length(SyncingTables) > 0)
+	return sync->status != SYNC_STATUS_READY &&
+		!(sync->status == SYNC_STATUS_SYNCDONE &&
+		  sync->statuslsn <= replorigin_session_origin_lsn);
+}
+
+/*
+ * Are changes to the named table skipped because of its cached sync status?
+ */
+static bool
+table_sync_skips_changes(const char *nspname, const char *relname)
+{
+	ListCell   *lc;
+
+	foreach(lc, SyncingTables)
 	{
-		ListCell   *lc;
+		SpockSyncStatus *sync = (SpockSyncStatus *) lfirst(lc);
 
-		foreach(lc, SyncingTables)
+		if (namestrcmp(&sync->nspname, nspname) == 0 &&
+			namestrcmp(&sync->relname, relname) == 0 &&
+			sync_status_skips_changes(sync))
 		{
-			SpockSyncStatus *sync = (SpockSyncStatus *) lfirst(lc);
-
-			if (namestrcmp(&sync->nspname, nspname) == 0 &&
-				namestrcmp(&sync->relname, relname) == 0 &&
-				(sync->status != SYNC_STATUS_READY &&
-				 !(sync->status == SYNC_STATUS_SYNCDONE &&
-				   sync->statuslsn <= replorigin_session_origin_lsn)))
-				return false;
+			elog(DEBUG1, "SPOCK %s: skipping change to %s.%s at %X/%X, "
+				 "table sync status is '%c'",
+				 MySubscription->name, nspname, relname,
+				 LSN_FORMAT_ARGS(replorigin_session_origin_lsn),
+				 sync->status);
+			return true;
 		}
+	}
+
+	return false;
+}
+
+/*
+ * Check if given relation is in process of being synchronized.
+ *
+ * Only a partitioned table is synchronized, as a whole, so the status of any
+ * of its ancestors applies to a partition as well.
+ */
+static bool
+should_apply_changes_for_rel(SpockRelation *rel)
+{
+	ListCell   *lc;
+
+	/*
+	 * A change to the synchronization state is signalled at commit, before
+	 * the committing backend releases its locks.  A resync that truncates the
+	 * table holds AccessExclusiveLock on it until then, and the caller holds
+	 * RowExclusiveLock on the relation by now, so such a resync has committed
+	 * and its signal is already visible.  Don't act on the cached list in
+	 * that case: the table was just emptied and its contents will arrive from
+	 * the sync worker.
+	 *
+	 * A resync without truncate takes no conflicting lock, so there is no
+	 * such ordering, but nothing was removed and the change still applies.
+	 */
+	if (MyApplyWorker->sync_pending)
+	{
+		/* See the commit that raised the flag, not a snapshot from before. */
+		InvalidateCatalogSnapshot();
+		MyApplyWorker->sync_pending = false;
+		reread_unsynced_tables(MyApplyWorker->subid);
+	}
+
+	if (SyncingTables == NIL)
+		return true;
+
+	if (table_sync_skips_changes(rel->nspname, rel->relname))
+		return false;
+
+	foreach(lc, rel->ancestorNames)
+	{
+		RangeVar   *ancestor = (RangeVar *) lfirst(lc);
+
+		if (table_sync_skips_changes(ancestor->schemaname, ancestor->relname))
+			return false;
 	}
 
 	return true;
@@ -1665,7 +1726,7 @@ handle_insert(StringInfo s)
 	errcallback_arg.rel = rel;
 
 	/* If in list of relations which are being synchronized, skip. */
-	if (!should_apply_changes_for_rel(rel->nspname, rel->relname))
+	if (!should_apply_changes_for_rel(rel))
 	{
 		spock_relation_close(rel, NoLock);
 		MemoryContextSwitchTo(oldcontext);
@@ -1820,6 +1881,8 @@ handle_update(StringInfo s)
 	errcallback_arg.action_name = "UPDATE";
 	xact_action_counter++;
 
+	SPOCK_APPLY_UPDATE_STALL();
+
 	rel = spock_read_update(s, RowExclusiveLock, &hasoldtup, &oldtup, &newtup);
 	if (unlikely(rel == NULL))
 	{
@@ -1848,7 +1911,7 @@ handle_update(StringInfo s)
 	errcallback_arg.rel = rel;
 
 	/* If in list of relations which are being synchronized, skip. */
-	if (!should_apply_changes_for_rel(rel->nspname, rel->relname))
+	if (!should_apply_changes_for_rel(rel))
 	{
 		spock_relation_close(rel, NoLock);
 		end_replication_step();
@@ -1981,7 +2044,7 @@ handle_delete(StringInfo s)
 	errcallback_arg.rel = rel;
 
 	/* If in list of relations which are being synchronized, skip. */
-	if (!should_apply_changes_for_rel(rel->nspname, rel->relname))
+	if (!should_apply_changes_for_rel(rel))
 	{
 		spock_relation_close(rel, NoLock);
 		end_replication_step();
@@ -2099,7 +2162,7 @@ apply_truncate(List *remote_relids, bool restart_seqs)
 		errcallback_arg.rel = rel;
 
 		/* If in list of relations which are being synchronized, skip. */
-		if (!should_apply_changes_for_rel(rel->nspname, rel->relname))
+		if (!should_apply_changes_for_rel(rel))
 		{
 			spock_relation_close(rel, NoLock);
 			continue;
@@ -2596,9 +2659,8 @@ static void
 handle_table_sync(QueuedMessage *queued_message)
 {
 	RangeVar   *rv;
-	MemoryContext oldcontext;
 	SpockSyncStatus *oldsync;
-	SpockSyncStatus *newsync;
+	SpockSyncStatus newsync;
 
 	rv = parse_relation_message(queued_message->message);
 
@@ -2615,20 +2677,21 @@ handle_table_sync(QueuedMessage *queued_message)
 		return;
 	}
 
-	/* Keep the lists persistent. */
-	oldcontext = MemoryContextSwitchTo(TopMemoryContext);
-	newsync = palloc0(sizeof(SpockSyncStatus));
-	MemoryContextSwitchTo(oldcontext);
+	memset(&newsync, 0, sizeof(newsync));
+	newsync.kind = SYNC_KIND_DATA;
+	newsync.subid = MyApplyWorker->subid;
+	newsync.status = SYNC_STATUS_INIT;
+	namestrcpy(&newsync.nspname, rv->schemaname);
+	namestrcpy(&newsync.relname, rv->relname);
+	create_local_sync_status(&newsync);
 
-	newsync->kind = SYNC_KIND_DATA;
-	newsync->subid = MyApplyWorker->subid;
-	newsync->status = SYNC_STATUS_INIT;
-	namestrcpy(&newsync->nspname, rv->schemaname);
-	namestrcpy(&newsync->relname, rv->relname);
-	create_local_sync_status(newsync);
-
-	oldcontext = MemoryContextSwitchTo(TopMemoryContext);
-	MemoryContextSwitchTo(oldcontext);
+	/*
+	 * Make the new row visible to the rest of this transaction.  A later
+	 * change in the same remote transaction rereads the sync status in
+	 * should_apply_changes_for_rel() and clears sync_pending; without this
+	 * the reread misses the table and no sync worker is started for it.
+	 */
+	CommandCounterIncrement();
 
 	MyApplyWorker->sync_pending = true;
 }

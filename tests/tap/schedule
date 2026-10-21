@@ -13,7 +13,7 @@ test: 004_non_default_repset
 
 # Advanced functionality tests
 # test: 005_daylight_savings
-# test: 006_sync_during_write
+test: 006_sync_during_write
 test: 008_rmgr
 test: 009_zodan_add_remove_nodes
 
@@ -76,3 +76,5 @@ test: 107_node_refresh_info
 test: 108_apply_unknown_column_exception
 test: 109_node_info_propagation
 test: 110_resync_node_info_warning
+test: 112_resync_apply_race
+test: 113_tablesync_same_txn
