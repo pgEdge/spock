@@ -918,7 +918,6 @@ static void
 start_copy_origin_tx(PGconn *conn, const char *snapshot)
 {
 	PGresult   *res;
-	char	   *s;
 	const char *session_setup =
 		"SET DATESTYLE = ISO;\n"
 		"SET INTERVALSTYLE = POSTGRES;\n"
@@ -937,8 +936,7 @@ start_copy_origin_tx(PGconn *conn, const char *snapshot)
 	 */
 	res = PQexec(conn, session_setup);
 	if (PQresultStatus(res) != PGRES_COMMAND_OK)
-		elog(ERROR, "session setup on origin node failed: %s",
-			 PQresultErrorMessage(res));
+		spock_raise_pqresult_error(res, "session setup on origin node failed");
 	PQclear(res);
 
 	initStringInfo(&query);
@@ -947,15 +945,14 @@ start_copy_origin_tx(PGconn *conn, const char *snapshot)
 
 	if (snapshot)
 	{
-		s = PQescapeLiteral(conn, snapshot, strlen(snapshot));
-		appendStringInfo(&query, "SET TRANSACTION SNAPSHOT %s;\n", s);
-		PQfreemem(s);
+		appendStringInfoString(&query, "SET TRANSACTION SNAPSHOT ");
+		append_escaped_literal(&query, conn, snapshot);
+		appendStringInfoString(&query, ";\n");
 	}
 
 	res = PQexec(conn, query.data);
 	if (PQresultStatus(res) != PGRES_COMMAND_OK)
-		elog(ERROR, "BEGIN on origin node failed: %s",
-			 PQresultErrorMessage(res));
+		spock_raise_pqresult_error(res, "BEGIN on origin node failed");
 	PQclear(res);
 
 	pfree(query.data);
@@ -965,7 +962,6 @@ static void
 start_copy_target_tx(PGconn *conn, const char *origin_name)
 {
 	PGresult   *res;
-	char	   *s;
 	const char *setup_query =
 		"BEGIN TRANSACTION ISOLATION LEVEL READ COMMITTED;\n"
 		"SET session_replication_role = 'replica';\n"
@@ -985,11 +981,10 @@ start_copy_target_tx(PGconn *conn, const char *origin_name)
 	 */
 	if (PQserverVersion(conn) >= 90500)
 	{
-		s = PQescapeLiteral(conn, origin_name, strlen(origin_name));
-		appendStringInfo(&query,
-						 "SELECT pg_catalog.pg_replication_origin_session_setup(%s);\n",
-						 s);
-		PQfreemem(s);
+		appendStringInfoString(&query,
+							   "SELECT pg_catalog.pg_replication_origin_session_setup(");
+		append_escaped_literal(&query, conn, origin_name);
+		appendStringInfoString(&query, ");\n");
 		appendStringInfo(&query,
 						 "SELECT pg_catalog.pg_replication_origin_xact_setup('0/0', 'epoch');");
 	}
@@ -998,9 +993,10 @@ start_copy_target_tx(PGconn *conn, const char *origin_name)
 
 	res = PQexec(conn, query.data);
 	if (PQresultStatus(res) != PGRES_COMMAND_OK)
-		elog(ERROR, "BEGIN on target node failed: %s",
-			 PQresultErrorMessage(res));
+		spock_raise_pqresult_error(res, "BEGIN on target node failed");
 	PQclear(res);
+
+	pfree(query.data);
 }
 
 static void
@@ -1130,9 +1126,7 @@ copy_table_data(PGconn *origin_conn, PGconn *target_conn,
 			first = false;
 		else
 			appendStringInfoString(&attlist, ",");
-		appendStringInfoString(&attlist,
-							   PQescapeIdentifier(origin_conn, attname,
-												  strlen(attname)));
+		append_escaped_identifier(&attlist, origin_conn, attname);
 	}
 	MemoryContextSwitchTo(oldctx);
 	spock_relation_close(rel, AccessShareLock);
@@ -1150,13 +1144,11 @@ copy_table_data(PGconn *origin_conn, PGconn *target_conn,
 	{
 		StringInfoData relname;
 		StringInfoData repsetarr;
+		StringInfoData relnamelit;
 
 		initStringInfo(&relname);
-		appendStringInfo(&relname, "%s.%s",
-						 PQescapeIdentifier(origin_conn, remoterel->nspname,
-											strlen(remoterel->nspname)),
-						 PQescapeIdentifier(origin_conn, remoterel->relname,
-											strlen(remoterel->relname)));
+		append_escaped_qualified_name(&relname, origin_conn,
+									  remoterel->nspname, remoterel->relname);
 
 		initStringInfo(&repsetarr);
 		first = true;
@@ -1169,16 +1161,16 @@ copy_table_data(PGconn *origin_conn, PGconn *target_conn,
 			else
 				appendStringInfoChar(&repsetarr, ',');
 
-			appendStringInfo(&repsetarr, "%s",
-							 PQescapeLiteral(origin_conn, repset_name,
-											 strlen(repset_name)));
+			append_escaped_literal(&repsetarr, origin_conn, repset_name);
 		}
 
+		initStringInfo(&relnamelit);
+		append_escaped_literal(&relnamelit, origin_conn, relname.data);
 		appendStringInfo(&query,
 						 "(SELECT %s FROM spock.table_data_filtered(NULL::%s, %s::regclass, ARRAY[%s])) ",
 						 list_length(attnamelist) ? attlist.data : "*",
 						 relname.data,
-						 PQescapeLiteral(origin_conn, relname.data, relname.len),
+						 relnamelit.data,
 						 repsetarr.data);
 	}
 	else
@@ -1186,21 +1178,20 @@ copy_table_data(PGconn *origin_conn, PGconn *target_conn,
 		if (remoterel->relkind == RELKIND_PARTITIONED_TABLE)
 		{
 			/* use COPY(SELECT...) for partitioned tables. */
-			appendStringInfo(&query, "(SELECT %s FROM %s.%s) ",
-							 list_length(attnamelist) ? attlist.data : "*",
-							 PQescapeIdentifier(origin_conn, remoterel->nspname,
-												strlen(remoterel->nspname)),
-							 PQescapeIdentifier(origin_conn, remoterel->relname,
-												strlen(remoterel->relname)));
+			appendStringInfo(&query, "(SELECT %s FROM ",
+							 list_length(attnamelist) ? attlist.data : "*");
+			append_escaped_qualified_name(&query, origin_conn,
+										  remoterel->nspname,
+										  remoterel->relname);
+			appendStringInfoString(&query, ") ");
 		}
 		else
 		{
 			/* Otherwise just copy the table. */
-			appendStringInfo(&query, "%s.%s ",
-							 PQescapeIdentifier(origin_conn, remoterel->nspname,
-												strlen(remoterel->nspname)),
-							 PQescapeIdentifier(origin_conn, remoterel->relname,
-												strlen(remoterel->relname)));
+			append_escaped_qualified_name(&query, origin_conn,
+										  remoterel->nspname,
+										  remoterel->relname);
+			appendStringInfoChar(&query, ' ');
 
 			if (list_length(attnamelist))
 				appendStringInfo(&query, "(%s) ", attlist.data);
@@ -1221,11 +1212,10 @@ copy_table_data(PGconn *origin_conn, PGconn *target_conn,
 
 	/* Build COPY FROM query. */
 	resetStringInfo(&query);
-	appendStringInfo(&query, "COPY %s.%s ",
-					 PQescapeIdentifier(origin_conn, remoterel->nspname,
-										strlen(remoterel->nspname)),
-					 PQescapeIdentifier(origin_conn, remoterel->relname,
-										strlen(remoterel->relname)));
+	appendStringInfoString(&query, "COPY ");
+	append_escaped_qualified_name(&query, origin_conn,
+								  remoterel->nspname, remoterel->relname);
+	appendStringInfoChar(&query, ' ');
 	if (list_length(attnamelist))
 		appendStringInfo(&query, "(%s) ", attlist.data);
 	appendStringInfoString(&query, "FROM stdin");

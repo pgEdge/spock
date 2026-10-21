@@ -27,6 +27,7 @@
 #include "spock_repset.h"
 #include "spock_rpc.h"
 #include "spock.h"
+#include "spock_common.h"
 #include "spock_compat.h"
 
 #define atooid(x)  ((Oid) strtoul((x), NULL, 10))
@@ -55,8 +56,7 @@ spock_get_remote_repset_tables(PGconn *conn, List *replication_sets)
 		else
 			appendStringInfoChar(&repsetarr, ',');
 
-		appendStringInfo(&repsetarr, "%s",
-						 PQescapeLiteral(conn, repset_name, strlen(repset_name)));
+		append_escaped_literal(&repsetarr, conn, repset_name);
 	}
 
 	initStringInfo(&query);
@@ -122,11 +122,13 @@ spock_get_remote_repset_table(PGconn *conn, RangeVar *rv,
 	StringInfoData query;
 	StringInfoData repsetarr;
 	StringInfoData relname;
+	StringInfoData relnamelit;
 
 	initStringInfo(&relname);
-	appendStringInfo(&relname, "%s.%s",
-					 PQescapeIdentifier(conn, rv->schemaname, strlen(rv->schemaname)),
-					 PQescapeIdentifier(conn, rv->relname, strlen(rv->relname)));
+	append_escaped_qualified_name(&relname, conn, rv->schemaname, rv->relname);
+
+	initStringInfo(&relnamelit);
+	append_escaped_literal(&relnamelit, conn, relname.data);
 
 	initStringInfo(&repsetarr);
 	foreach(lc, replication_sets)
@@ -138,8 +140,7 @@ spock_get_remote_repset_table(PGconn *conn, RangeVar *rv,
 		else
 			appendStringInfoChar(&repsetarr, ',');
 
-		appendStringInfo(&repsetarr, "%s",
-						 PQescapeLiteral(conn, repset_name, strlen(repset_name)));
+		append_escaped_literal(&repsetarr, conn, repset_name);
 	}
 
 	initStringInfo(&query);
@@ -150,7 +151,7 @@ spock_get_remote_repset_table(PGconn *conn, RangeVar *rv,
 						 "SELECT i.relid, i.nspname, i.relname, i.att_list,"
 						 "       i.has_row_filter, i.relkind, i.relispartition"
 						 "  FROM spock.repset_show_table(%s::regclass, ARRAY[%s]) i",
-						 PQescapeLiteral(conn, relname.data, relname.len),
+						 relnamelit.data,
 						 repsetarr.data);
 	}
 	else
@@ -161,7 +162,7 @@ spock_get_remote_repset_table(PGconn *conn, RangeVar *rv,
 						 "       false AS has_row_filter, r.relkind, r.relispartition"
 						 "  FROM spock.tables t, pg_catalog.pg_class r, pg_catalog.pg_namespace n"
 						 " WHERE r.oid = %s::regclass AND t.set_name = ANY(ARRAY[%s]) AND r.relname = t.relname AND n.oid = r.relnamespace AND n.nspname = t.nspname",
-						 PQescapeLiteral(conn, relname.data, relname.len),
+						 relnamelit.data,
 						 repsetarr.data);
 	}
 
@@ -374,9 +375,11 @@ spock_remote_function_exists(PGconn *conn, const char *nspname,
 		appendStringInfo(&query,
 						 "   AND pronargs = '%d'", nargs);
 	if (argname != NULL)
-		appendStringInfo(&query,
-						 "   AND %s = ANY (proargnames)",
-						 PQescapeLiteral(conn, argname, strlen(argname)));
+	{
+		appendStringInfoString(&query, "   AND ");
+		append_escaped_literal(&query, conn, argname);
+		appendStringInfoString(&query, " = ANY (proargnames)");
+	}
 
 	res = PQexecParams(conn, query.data, 2, types, values, NULL, NULL, 0);
 

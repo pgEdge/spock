@@ -855,3 +855,59 @@ str_to_lsn(const char *s)
 {
 	return DatumGetLSN(DirectFunctionCall1(pg_lsn_in, CStringGetDatum(s)));
 }
+
+/*
+ * Raise an ERROR for a failed libpq command, releasing its result first.
+ *
+ * The message is copied before PQclear() because it points into the result.
+ */
+void
+spock_raise_pqresult_error(PGresult *res, const char *what)
+{
+	char	   *msg = pstrdup(PQresultErrorMessage(res));
+
+	PQclear(res);
+	elog(ERROR, "%s: %s", what, msg);
+}
+
+/*
+ * Append "ident", quoted as an identifier for the server behind "conn", to
+ * "buf".
+ */
+void
+append_escaped_identifier(StringInfo buf, PGconn *conn, const char *ident)
+{
+	char	   *quoted = PQescapeIdentifier(conn, ident, strlen(ident));
+
+	if (quoted == NULL)
+		elog(ERROR, "could not escape identifier \"%s\": %s",
+			 ident, PQerrorMessage(conn));
+	appendStringInfoString(buf, quoted);
+	PQfreemem(quoted);
+}
+
+/*
+ * Append "str", quoted as a string literal for the server behind "conn", to
+ * "buf".
+ */
+void
+append_escaped_literal(StringInfo buf, PGconn *conn, const char *str)
+{
+	char	   *quoted = PQescapeLiteral(conn, str, strlen(str));
+
+	if (quoted == NULL)
+		elog(ERROR, "could not escape literal \"%s\": %s",
+			 str, PQerrorMessage(conn));
+	appendStringInfoString(buf, quoted);
+	PQfreemem(quoted);
+}
+
+/* Append the schema-qualified, quoted name of a table to "buf". */
+void
+append_escaped_qualified_name(StringInfo buf, PGconn *conn,
+							  const char *nspname, const char *relname)
+{
+	append_escaped_identifier(buf, conn, nspname);
+	appendStringInfoChar(buf, '.');
+	append_escaped_identifier(buf, conn, relname);
+}

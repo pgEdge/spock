@@ -13,8 +13,11 @@
 #ifndef SPOCK_COMMON_H
 #define SPOCK_COMMON_H
 
+#include "libpq-fe.h"
+
 #include "access/amapi.h"
 #include "commands/trigger.h"
+#include "lib/stringinfo.h"
 
 extern void AfterTriggerBeginQuery(void);
 
@@ -83,5 +86,13 @@ extern void read_buf(int fd, void *buf, size_t nbytes, const char *filename);
 extern void write_buf(int fd, const void *buf, size_t nbytes, const char *filename);
 extern TimestampTz str_to_timestamptz(const char *s);
 extern XLogRecPtr str_to_lsn(const char *s);
+extern void spock_raise_pqresult_error(PGresult *res, const char *what);
+extern void append_escaped_identifier(StringInfo buf, PGconn *conn,
+									  const char *ident);
+extern void append_escaped_literal(StringInfo buf, PGconn *conn,
+								   const char *str);
+extern void append_escaped_qualified_name(StringInfo buf, PGconn *conn,
+										  const char *nspname,
+										  const char *relname);
 
 #endif							/* SPOCK_COMMON_H */

@@ -3657,14 +3657,25 @@ spock_wait_for_sync_complete(char *subscription_name, char *relnamespace, char *
 		 * dropped and created again.  Look it up afresh: a wait on a row that
 		 * is never coming back, or on a subscription id that no longer
 		 * exists, would never end.
+		 *
+		 * The same id with no status row should not happen, since both rows
+		 * are created and dropped in one transaction.  Don't wait forever if
+		 * the catalog is damaged.
 		 */
 		if (subsync == NULL)
 		{
+			Oid			subid = sub->id;
+
 			sub = get_subscription_by_name(subscription_name, true);
 			if (sub == NULL)
 				ereport(ERROR,
 						(errcode(ERRCODE_UNDEFINED_OBJECT),
 						 errmsg("subscription \"%s\" does not exist",
+								subscription_name)));
+			if (sub->id == subid)
+				ereport(ERROR,
+						(errcode(ERRCODE_INTERNAL_ERROR),
+						 errmsg("subscription \"%s\" has no synchronization status",
 								subscription_name)));
 		}
 
