@@ -106,8 +106,19 @@ ok(wait_for_sub_status(2, 'sub_n1_n2', 'replicating', 30),
     'P1: sub_n1_n2 returns to replicating state after recovery');
 
 psql_or_bail(1, "INSERT INTO test_missing_rel (val) VALUES ('post_recovery_row')");
-sleep(5);
-my $post_count = scalar_query(2, "SELECT count(*) FROM test_missing_rel");
+
+# Poll rather than sleep a fixed five seconds.  Every other wait in this file
+# is bounded and polled; this one assumed a duration, and on a loaded runner
+# the apply worker can take longer than that to catch up after the
+# subscription was re-enabled with a skip LSN, failing the check below while
+# replication is healthy.
+my $post_count = 0;
+for (1 .. 60)
+{
+    $post_count = scalar_query(2, "SELECT count(*) FROM test_missing_rel");
+    last if defined $post_count && $post_count >= 1;
+    sleep(1);
+}
 cmp_ok($post_count, '>=', '1', 'P1: post-recovery INSERT replicates to n2');
 
 sleep(3);
