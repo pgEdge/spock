@@ -89,15 +89,17 @@ INFO:  DDL statement replicated.
 -- Check this special use case.
 CREATE TABLE test_383 (a int) PARTITION BY RANGE (a);
 INFO:  DDL statement replicated.
-CREATE TABLE test_383_1 PARTITION OF clstrpart FOR VALUES FROM (1) TO (10);
-ERROR:  relation "clstrpart" does not exist
-CREATE TABLE test_383_2 PARTITION OF clstrpart1 FOR VALUES FROM (1) TO (5);
-ERROR:  relation "clstrpart1" does not exist
+CREATE TABLE test_383_1 PARTITION OF test_383 FOR VALUES FROM (1) TO (10);
+INFO:  DDL statement replicated.
+CREATE TABLE test_383_2 PARTITION OF test_383 FOR VALUES FROM (10) TO (20);
+INFO:  DDL statement replicated.
 CREATE INDEX test_383_y_idx ON test_383 (a);
 INFO:  DDL statement replicated.
 CLUSTER test_383 USING test_383_y_idx; -- Should not be replicated
 WARNING:  This DDL statement will not be replicated.
 DROP TABLE test_383 CASCADE;
+NOTICE:  drop cascades to table test_383_2 membership in replication set default_insert_only
+NOTICE:  drop cascades to table test_383_1 membership in replication set default_insert_only
 NOTICE:  drop cascades to table test_383 membership in replication set default_insert_only
 INFO:  DDL statement replicated.
 -- An empty search_path set via set_config() leaves a bare space in the GUC
