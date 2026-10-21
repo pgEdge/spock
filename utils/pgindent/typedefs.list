@@ -4517,6 +4517,9 @@ yy_size_t
 YYLTYPE
 yyscan_t
 YYSTYPE
+ZNode
+ZodanAddCtx
+ZPair
 z_stream
 z_streamp
 ZSTD_CCtx
