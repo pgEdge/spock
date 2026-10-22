@@ -969,11 +969,11 @@ synchronize_one_slot(RemoteSlot *remote_slot)
 #endif
 
 		/*
-		 * A restartpoint can invalidate the copy between the lookup above
-		 * and the acquire.  Leave it as it is: advancing it would give it a
-		 * valid restart_lsn again, and on PG15 that is what the lookup goes
-		 * by, so the next pass would no longer see the invalidation.  Left
-		 * alone, the next pass drops and recreates it.
+		 * A restartpoint can invalidate the copy between the lookup above and
+		 * the acquire.  Leave it as it is: advancing it would give it a valid
+		 * restart_lsn again, and on PG15 that is what the lookup goes by, so
+		 * the next pass would no longer see the invalidation.  Left alone,
+		 * the next pass drops and recreates it.
 		 */
 		SpinLockAcquire(&MyReplicationSlot->mutex);
 		invalidated = slot_is_invalidated(MyReplicationSlot);
@@ -1365,6 +1365,15 @@ synchronize_failover_slots(long sleep_time)
 			break;
 	}
 
+	/*
+	 * Prune here rather than after the synchronization below: when the
+	 * primary has dropped its last matching slot we return just below, and a
+	 * name left on the warned list would then suppress the warning if the
+	 * primary ever reused it.  An empty remote list correctly clears them
+	 * all.
+	 */
+	invalidated_warned_prune(slots);
+
 	if (!list_length(slots))
 	{
 		PQfinish(conn);
@@ -1474,8 +1483,6 @@ synchronize_failover_slots(long sleep_time)
 
 			synchronize_one_slot(remote_slot);
 		}
-
-		invalidated_warned_prune(slots);
 	}
 
 	PQfinish(conn);
