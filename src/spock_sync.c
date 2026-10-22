@@ -412,35 +412,100 @@ ensure_replication_origin(char *slot_name)
 }
 
 
-static void
-adjust_progress_info(PGconn *origin_conn, PGconn *target_conn)
+/*
+ * Read the origin's progress for every node it replicates from, to seed the
+ * new node's spock.progress with, so that START REPLICATION skips the
+ * transactions the COPY snapshot already contains.
+ *
+ * spock.progress.remote_lsn is flushed at most once a second, so it can name
+ * a position behind what the origin has actually applied.  Seeding from it
+ * lets START REPLICATION skip transactions the snapshot did not contain, and
+ * those changes are then never applied here.
+ *
+ * With the origin's apply workers paused, take the resume LSN from
+ * pg_replication_origin_status instead, which the apply worker writes at
+ * commit and is therefore exact.  The caller passes the LSN the slot reported
+ * as its consistent point: a paused worker cannot have committed past it, so
+ * a row that has means a worker was not paused after all (the pause times
+ * out), and the read is refused rather than trusted.  The other columns still
+ * come from the table: they seed lag tracking only and are replaced by the
+ * first replicated message.  remote_insert_lsn is clamped to the resume LSN
+ * so it never reads as behind a commit known to be applied.
+ *
+ * Without the pause (an origin older than 5.0.7, or a per-table resync) the
+ * origin status can be past the snapshot, so the table is used as before.
+ *
+ * The result is the caller's to PQclear(); NULL when it could not be read.
+ */
+static PGresult *
+read_progress_info(PGconn *origin_conn, bool workers_paused,
+				   XLogRecPtr snapshot_lsn)
 {
-	/*
-	 * spock.progress.remote_lsn is flushed at most once a second, so it can
-	 * name a position behind what the provider has actually applied.  Seeding
-	 * the new node from it lets START REPLICATION skip transactions the COPY
-	 * snapshot did not contain, and those changes are then never applied
-	 * here -- the data loss this read exists to prevent.
-	 *
-	 * Take the resume LSN from pg_replication_origin_status instead, which
-	 * the apply worker writes at commit and is therefore exact while the
-	 * workers are paused (see the pause in spock_sync_subscription()).  The
-	 * other columns still come from the table: they seed lag tracking only
-	 * and are replaced by the first replicated message, so trailing by up to
-	 * a second is acceptable.  remote_insert_lsn is clamped to the resume LSN
-	 * so it never reads as behind a commit we know has been applied.
-	 */
-	const char	   *originQuery =
+	const char	   *pausedQuery =
 		"SELECT sub.sub_target AS node_id, p.remote_node_id, p.remote_commit_ts, "
 		"       COALESCE(ros.remote_lsn, '0/0'::pg_lsn) AS remote_lsn, "
 		"       GREATEST(p.remote_insert_lsn, COALESCE(ros.remote_lsn, '0/0'::pg_lsn)) AS remote_insert_lsn, "
-		"       p.last_updated_ts, p.updated_by_decode "
+		"       p.last_updated_ts, p.updated_by_decode, "
+		"       ros.local_lsn "
 		"FROM spock.subscription sub "
 		"JOIN spock.progress p ON p.remote_node_id = sub.sub_origin "
 		"                     AND p.node_id = sub.sub_target "
 		"JOIN pg_replication_origin o ON o.roname = sub.sub_slot_name "
 		"LEFT JOIN pg_replication_origin_status ros ON ros.local_id = o.roident "
 		"WHERE sub.sub_target = %u AND sub.sub_origin <> %u";
+	const char	   *tableQuery =
+		"SELECT node_id, remote_node_id, remote_commit_ts, "
+		"       remote_lsn, remote_insert_lsn, "
+		"       last_updated_ts, updated_by_decode, NULL::pg_lsn "
+		"FROM spock.progress "
+		"WHERE node_id = %u AND remote_node_id <> %u";
+	StringInfoData	query;
+	PGresult	   *res;
+	int				rno;
+
+	initStringInfo(&query);
+	appendStringInfo(&query, workers_paused ? pausedQuery : tableQuery,
+					 MySubscription->origin->id, MySubscription->target->id);
+	res = PQexec(origin_conn, query.data);
+	pfree(query.data);
+
+	if (PQresultStatus(res) != PGRES_TUPLES_OK)
+	{
+		elog(WARNING, "SPOCK: Cannot adjust spock.progress - %s",
+			 PQresultErrorMessage(res));
+		PQclear(res);
+		return NULL;
+	}
+
+	for (rno = 0; workers_paused && rno < PQntuples(res); rno++)
+	{
+		XLogRecPtr	local_lsn;
+
+		if (PQgetisnull(res, rno, 7))
+			continue;
+		local_lsn = DatumGetLSN(DirectFunctionCall1Coll(pg_lsn_in, InvalidOid,
+								CStringGetDatum(PQgetvalue(res, rno, 7))));
+		if (local_lsn > snapshot_lsn)
+			ereport(ERROR,
+					(errmsg("SPOCK: apply worker on the origin committed at %X/%X, past the snapshot at %X/%X",
+							LSN_FORMAT_ARGS(local_lsn),
+							LSN_FORMAT_ARGS(snapshot_lsn)),
+					 errdetail("A paused apply worker resumed before the replication slot was created."),
+					 errhint("Increase spock.pause_timeout on the origin and retry.")));
+	}
+
+	return res;
+}
+
+/*
+ * Write the progress read by read_progress_info() into the target's
+ * spock.progress, so that START REPLICATION can ask the walsender to skip
+ * all transactions that have already been applied from other existing nodes
+ * and are therefore part of the snapshot we copied.
+ */
+static void
+adjust_progress_info(PGresult *originRes, PGconn *target_conn)
+{
 	const char     *upsertQuery =
 		"INSERT INTO spock.progress "
 		"    (node_id, remote_node_id, remote_commit_ts, "
@@ -453,94 +518,65 @@ adjust_progress_info(PGconn *origin_conn, PGconn *target_conn)
 		"    remote_insert_lsn = EXCLUDED.remote_insert_lsn, "
 		"    last_updated_ts = EXCLUDED.last_updated_ts, "
 		"    updated_by_decode = EXCLUDED.updated_by_decode";
-
 	StringInfoData	query;
-	PGresult	   *originRes;
 	PGresult	   *updateRes;
+	int				rno;
 
-	/*
-	 * Select the current content of the origin's spock.progress table
-	 * where the origin is the target and this node is not the origin.
-	 *
-	 * We use this information to update the target's spock.progress
-	 * table so that START REPLICATION can ask the walsender to skip
-	 * all transactions that have already been applied from other
-	 * existing nodes and are therefore part of the snapshot we are
-	 * copying.
-	 */
+	if (originRes == NULL)
+		return;
+
 	initStringInfo(&query);
-	appendStringInfo(&query, originQuery, MySubscription->origin->id,
-					 MySubscription->target->id);
-	originRes = PQexec(origin_conn, query.data);
-	if (PQresultStatus(originRes) == PGRES_TUPLES_OK)
+	for (rno = 0; rno < PQntuples(originRes); rno++)
 	{
-		int		rno;
-		for (rno = 0; rno < PQntuples(originRes); rno++)
+		char   *remote_node_id = PQgetvalue(originRes, rno, 1);
+		char   *remote_commit_ts = PQgetvalue(originRes, rno, 2);
+		char   *remote_lsn = PQgetvalue(originRes, rno, 3);
+		char   *remote_insert_lsn = PQgetvalue(originRes, rno, 4);
+		char   *last_updated_ts = PQgetvalue(originRes, rno, 5);
+		char   *updated_by_decode = PQgetvalue(originRes, rno, 6);
+
+		resetStringInfo(&query);
+		appendStringInfo(&query, upsertQuery,
+						 MySubscription->target->id,
+						 remote_node_id,
+						 PQescapeLiteral(target_conn, remote_commit_ts,
+										 strlen(remote_commit_ts)),
+						 PQescapeLiteral(target_conn, remote_lsn,
+										 strlen(remote_lsn)),
+						 PQescapeLiteral(target_conn, remote_insert_lsn,
+										 strlen(remote_insert_lsn)),
+						 PQescapeLiteral(target_conn, last_updated_ts,
+										 strlen(last_updated_ts)),
+						 PQescapeLiteral(target_conn, updated_by_decode,
+										 strnlen(updated_by_decode, 64)));
+		updateRes = PQexec(target_conn, query.data);
+		if (PQresultStatus(updateRes) != PGRES_COMMAND_OK)
 		{
-			/*
-			 * Upsert the remote node's progress entry to what our
-			 * sync provider has included in the COPY snapshot.
-			 */
-			char   *remote_node_id = PQgetvalue(originRes, rno, 1);
-			char   *remote_commit_ts = PQgetvalue(originRes, rno, 2);
-			char   *remote_lsn = PQgetvalue(originRes, rno, 3);
-			char   *remote_insert_lsn = PQgetvalue(originRes, rno, 4);
-			char   *last_updated_ts = PQgetvalue(originRes, rno, 5);
-			char   *updated_by_decode = PQgetvalue(originRes, rno, 6);
-
-			resetStringInfo(&query);
-			appendStringInfo(&query, upsertQuery,
-							 MySubscription->target->id,
-							 remote_node_id,
-							 PQescapeLiteral(target_conn, remote_commit_ts,
-											 strlen(remote_commit_ts)),
-							 PQescapeLiteral(target_conn, remote_lsn,
-											 strlen(remote_lsn)),
-							 PQescapeLiteral(target_conn, remote_insert_lsn,
-											 strlen(remote_insert_lsn)),
-							 PQescapeLiteral(target_conn, last_updated_ts,
-											 strlen(last_updated_ts)),
-							 PQescapeLiteral(target_conn, updated_by_decode,
-											 strnlen(updated_by_decode, 64)));
-			updateRes = PQexec(target_conn, query.data);
-
-			if (PQresultStatus(updateRes) != PGRES_COMMAND_OK)
-			{
-				elog(ERROR, "SPOCK: Cannot adjust spock.progress - %s",
-					 PQresultErrorMessage(updateRes));
-			}
-			else if (strcmp(PQcmdTuples(updateRes), "1") != 0)
-			{
-				elog(ERROR, "SPOCK: Cannot adjust spock.progress - "
-					 "tuples updated='%s' query=%s",
-					 PQcmdTuples(updateRes), query.data);
-			}
-			else
-			{
-				elog(LOG, "SPOCK: adjust spock.progress %s->%d to "
-					 "remote_commit_ts='%s' "
-					 "remote_lsn='%s' "
-					 "remote_insert_lsn='%s'",
-					 remote_node_id,
-					 MySubscription->target->id,
-					 remote_commit_ts,
-					 remote_lsn,
-					 remote_insert_lsn);
-			}
-			PQclear(updateRes);
+			elog(ERROR, "SPOCK: Cannot adjust spock.progress - %s",
+				 PQresultErrorMessage(updateRes));
 		}
+		else if (strcmp(PQcmdTuples(updateRes), "1") != 0)
+		{
+			elog(ERROR, "SPOCK: Cannot adjust spock.progress - "
+				 "tuples updated='%s' query=%s",
+				 PQcmdTuples(updateRes), query.data);
+		}
+		else
+		{
+			elog(LOG, "SPOCK: adjust spock.progress %s->%d to "
+				 "remote_commit_ts='%s' "
+				 "remote_lsn='%s' "
+				 "remote_insert_lsn='%s'",
+				 remote_node_id,
+				 MySubscription->target->id,
+				 remote_commit_ts,
+				 remote_lsn,
+				 remote_insert_lsn);
+		}
+		PQclear(updateRes);
 	}
-	else
-	{
-		elog(WARNING, "SPOCK: Cannot adjust spock.progress - %s",
-			 PQresultErrorMessage(originRes));
-	}
-	PQclear(originRes);
-
-	resetStringInfo(&query);
-
+	pfree(query.data);
 }
-
 
 /*
  * Transaction management for COPY.
@@ -902,6 +938,7 @@ copy_tables_data(SpockSubscription *sub, const char *origin_dsn,
 				 const char *origin_name)
 {
 	PGconn	   *origin_conn;
+	PGresult   *progress;
 	PGconn	   *target_conn;
 	ListCell   *lc;
 
@@ -933,7 +970,9 @@ copy_tables_data(SpockSubscription *sub, const char *origin_dsn,
 		CHECK_FOR_INTERRUPTS();
 	}
 
-	adjust_progress_info(origin_conn, target_conn);
+	progress = read_progress_info(origin_conn, false, InvalidXLogRecPtr);
+	adjust_progress_info(progress, target_conn);
+	PQclear(progress);
 
 	/* Finish the transactions and disconnect. */
 	finish_copy_origin_tx(origin_conn);
@@ -954,7 +993,7 @@ copy_replication_sets_data(SpockSubscription *sub, const char *origin_dsn,
 						   const char *target_dsn,
 						   const char *origin_snapshot,
 						   List *replication_sets, const char *origin_name,
-						   PGconn *resume_conn)
+						   PGresult *progress)
 {
 	PGconn	   *origin_conn;
 	PGconn	   *target_conn;
@@ -1035,22 +1074,7 @@ copy_replication_sets_data(SpockSubscription *sub, const char *origin_dsn,
 		CHECK_FOR_INTERRUPTS();
 	}
 
-	adjust_progress_info(origin_conn, target_conn);
-
-	/*
-	 * If apply workers were paused before slot creation (to prevent data loss
-	 * during add_node under write load), resume them now that progress has been
-	 * read consistently within the slot snapshot.
-	 */
-	if (resume_conn != NULL && PQstatus(resume_conn) == CONNECTION_OK)
-	{
-		PGresult *rres = PQexec(resume_conn,
-								"SELECT spock.resume_apply_workers()");
-		if (PQresultStatus(rres) != PGRES_TUPLES_OK)
-			elog(WARNING, "SPOCK: could not resume apply workers: %s",
-				 PQerrorMessage(resume_conn));
-		PQclear(rres);
-	}
+	adjust_progress_info(progress, target_conn);
 
 	/* Finish the transactions and disconnect. */
 	finish_copy_origin_tx(origin_conn);
@@ -1164,6 +1188,7 @@ spock_sync_subscription(SpockSubscription *sub)
 		char	   *snapshot;
 		bool		use_failover_slot;
 		bool		can_pause_apply_workers;
+		PGresult   *progress = NULL;
 
 		elog(INFO, "initializing subscriber %s", sub->name);
 
@@ -1187,9 +1212,10 @@ spock_sync_subscription(SpockSubscription *sub)
 		 * spock.progress, making the new node think it has already seen data
 		 * that was not included in the COPY snapshot.
 		 *
-		 * Workers are resumed inside copy_replication_sets_data after
-		 * adjust_progress_info completes.  If slot creation fails, the
-		 * PG_CATCH block below attempts a best-effort resume.
+		 * The progress is read right after the slot is created, while the
+		 * workers are still paused, and they are resumed before the copy
+		 * starts.  If slot creation fails, the PG_CATCH block below attempts
+		 * a best-effort resume.
 		 *
 		 * pause_apply_workers() was added in 5.0.7; check for it first so an
 		 * older origin (a supported rolling-upgrade pairing) gets one clear
@@ -1221,6 +1247,13 @@ spock_sync_subscription(SpockSubscription *sub)
 														origin_conn_repl,
 														sub->slot_name,
 														use_failover_slot, &lsn);
+
+			/*
+			 * Read the origin's progress now, while its apply workers are
+			 * still paused and before the copy, which can outlast the pause.
+			 */
+			progress = read_progress_info(origin_conn, can_pause_apply_workers,
+										  lsn);
 		}
 		PG_CATCH();
 		{
@@ -1238,17 +1271,19 @@ spock_sync_subscription(SpockSubscription *sub)
 		}
 		PG_END_TRY();
 
-		/*
-		 * Keep origin_conn open only if something was paused -- it's the
-		 * resume_conn passed to copy_replication_sets_data.  Otherwise
-		 * there's nothing to resume; close it now so nothing downstream
-		 * tries resume_apply_workers() on an origin that lacks it too.
-		 */
-		if (!can_pause_apply_workers)
+		/* The progress is read; let the origin's apply workers go on. */
+		if (can_pause_apply_workers)
 		{
-			PQfinish(origin_conn);
-			origin_conn = NULL;
+			PGresult *rres = PQexec(origin_conn,
+									"SELECT spock.resume_apply_workers()");
+
+			if (PQresultStatus(rres) != PGRES_TUPLES_OK)
+				elog(WARNING, "SPOCK: could not resume apply workers: %s",
+					 PQerrorMessage(origin_conn));
+			PQclear(rres);
 		}
+		PQfinish(origin_conn);
+		origin_conn = NULL;
 
 		PG_ENSURE_ERROR_CLEANUP(spock_sync_worker_cleanup_error_cb,
 								PointerGetDatum(sub));
@@ -1312,12 +1347,10 @@ spock_sync_subscription(SpockSubscription *sub)
 														snapshot,
 														sub->replication_sets,
 														sub->slot_name,
-														origin_conn);
+														progress);
 
-					/* origin_conn was kept open for the resume call inside
-					 * copy_replication_sets_data; close it now. */
-					PQfinish(origin_conn);
-					origin_conn = NULL;
+					PQclear(progress);
+					progress = NULL;
 
 					/* Store info about all the synchronized tables. */
 					StartTransactionCommand();
