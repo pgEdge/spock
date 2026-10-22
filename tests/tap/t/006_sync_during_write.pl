@@ -160,6 +160,7 @@ do {
             next EACH_TABLE;
         }
 
+        my $missed_worker = 0;
         while (1)
         {
             Time::HiRes::usleep(100_000);
@@ -182,13 +183,17 @@ do {
                 last;
             }
 
-            my $running = `$pg_bin/psql -p $subscriber_port -d $dbname -t -c "SELECT pid FROM pg_stat_activity WHERE application_name LIKE '%sync%'"`;
-            chomp($running);
-            $running =~ s/\s+//g;
-
-            my $status = `$pg_bin/psql -p $subscriber_port -d $dbname -t -c "SELECT sync_status FROM spock.local_sync_status WHERE sync_relname = '$tbl'"`;
-            chomp($status);
-            $status =~ s/\s+//g;
+            # Read the sync state and the worker in one statement.  The sync
+            # worker is visible in pg_stat_activity, with its name, from the
+            # moment it connects and sets the state only after that, so read
+            # in two statements the state can run ahead of the worker: 'p'
+            # with no worker is then the worker starting, not exiting.
+            my $state_and_worker = `$pg_bin/psql -p $subscriber_port -d $dbname -t -A -c "SELECT coalesce((SELECT sync_status::text FROM spock.local_sync_status WHERE sync_relname = '$tbl'), '') || '|' || (SELECT count(*)::text FROM pg_stat_activity WHERE application_name LIKE '%sync%')"`;
+            chomp($state_and_worker);
+            $state_and_worker =~ s/\s+//g;
+            my ($status, $workers) = split(/\|/, $state_and_worker, 2);
+            $status //= '';
+            my $running = ($workers // '0') eq '0' ? '' : $workers;
 
             if ($status eq 'r')
             {
@@ -206,8 +211,18 @@ do {
             }
             elsif (!$running)
             {
-                fail("$tbl didn't sync on iteration $i, sync worker exited (running=$running) while sync state was '$status' (elapsed " . Time::HiRes::tv_interval($resync_start) . ")" );
-                last;
+                # A worker is also absent for an instant between two sync
+                # workers for this table; only two polls in a row without
+                # one mean it is gone.
+                if ($missed_worker++ >= 1)
+                {
+                    fail("$tbl didn't sync on iteration $i, sync worker exited while sync state was '$status' (elapsed " . Time::HiRes::tv_interval($resync_start) . ")" );
+                    last;
+                }
+            }
+            else
+            {
+                $missed_worker = 0;
             }
         }
     }
