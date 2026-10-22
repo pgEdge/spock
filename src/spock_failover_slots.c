@@ -767,8 +767,14 @@ slot_is_invalidated(ReplicationSlot *s)
 #if PG_VERSION_NUM >= 160000
 	return s->data.invalidated != RS_INVAL_NONE;
 #else
-	return !XLogRecPtrIsInvalid(s->data.invalidated_at) &&
-		XLogRecPtrIsInvalid(s->data.restart_lsn);
+	/*
+	 * PG15 records the old restart_lsn in invalidated_at and clears
+	 * restart_lsn.  Only invalidated_at is tested: a worker without this fix
+	 * advanced such copies and gave them a valid restart_lsn again, and those
+	 * still need recreating.  Nothing clears invalidated_at short of dropping
+	 * the slot.
+	 */
+	return !XLogRecPtrIsInvalid(s->data.invalidated_at);
 #endif
 }
 
