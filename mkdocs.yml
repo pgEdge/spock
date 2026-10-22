@@ -68,6 +68,7 @@ nav:
     - Using Snowflake Sequences: managing/snowflake.md
     - Using Lolor to Manage Large Objects: managing/lolor.md
     - Using Automatic DDL Replication: managing/spock_autoddl.md
+    - Consulting a Quorum System: managing/quorum_layer.md
   - Adding or Removing Nodes:
     - Modifying a Cluster: modify/index.md
     - Using Z0DAN:
@@ -98,6 +99,8 @@ nav:
       - spock.node_drop(): spock_functions/functions/spock_node_drop.md
       - spock.node_drop_interface(): spock_functions/functions/spock_node_drop_interface.md
       - spock.node_info(): spock_functions/functions/spock_node_info.md
+      - spock.quorum_members(): spock_functions/functions/spock_quorum_members.md
+      - spock.quorum_status(): spock_functions/functions/spock_quorum_status.md
       - spock.replicate_ddl(): spock_functions/functions/spock_replicate_ddl.md
       - spock.repset_add_seq(): spock_functions/functions/spock_repset_add_seq.md
       - spock.repset_add_table(): spock_functions/functions/spock_repset_add_table.md

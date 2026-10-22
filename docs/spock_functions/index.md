@@ -6,6 +6,8 @@ The following user functions are available via the Spock extension:
 |----------|-------------|
 | **Node Management Functions** | You can add and remove nodes dynamically using Spock interfaces.|
 | spock.node_info | Returns information about the node on which the function is invoked. |
+| [spock.quorum_status](functions/spock_quorum_status.md) | Report what the configured quorum system says about this node. |
+| [spock.quorum_members](functions/spock_quorum_members.md) | List the cluster members the quorum system reports, filtered to Spock nodes. |
 | [spock.node_create](functions/spock_node_create.md) | Define a node for spock. |
 | [spock.node_drop](functions/spock_node_drop.md) | Remove a spock node. |
 | [node_add_interface](functions/spock_node_add_interface.md) | Add a new node interface. |
