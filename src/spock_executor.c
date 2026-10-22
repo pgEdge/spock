@@ -404,6 +404,7 @@ autoddl_can_proceed(ProcessUtilityContext context, NodeTag toplevel_stmt,
 
 /*
  * Quick precheck whether auto-ddl has any work to do for this statement.
+ * The caller only calls it for DDL.
  *
  * Must stay trivial, and must not call anything that may need a transaction:
  * it decides whether spock_ProcessUtility() establishes one, so it runs before
@@ -424,8 +425,7 @@ autoddl_precheck(Node *parsetree, ProcessUtilityContext context,
 	if (in_spock_replicate_ddl_command)
 		return false;
 
-	return GetCommandLogLevel(parsetree) == LOGSTMT_DDL &&
-		spock_enable_ddl_replication &&
+	return spock_enable_ddl_replication &&
 		autoddl_can_proceed(context, toplevel_stmt, nodeTag(parsetree));
 }
 
@@ -444,6 +444,7 @@ spock_ProcessUtility(
 						 QueryCompletion *qc)
 {
 	Node	   *parsetree = pstmt->utilityStmt;
+	bool		is_ddl = (GetCommandLogLevel(parsetree) == LOGSTMT_DDL);
 	static NodeTag toplevel_stmt = T_Invalid;
 #ifndef XCP
 	#define		sentToRemote NULL
@@ -456,7 +457,7 @@ spock_ProcessUtility(
 
 	dropping_spock_obj = false;
 
-	if (spock_deny_ddl && GetCommandLogLevel(parsetree) == LOGSTMT_DDL)
+	if (spock_deny_ddl && is_ddl)
 	{
 		ereport(ERROR,
 				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
@@ -507,6 +508,19 @@ spock_ProcessUtility(
 								   queryEnv, dest,
 								   sentToRemote,
 								   qc);
+
+	/*
+	 * Only DDL is of interest below.  For other statements pstmt and
+	 * parsetree may be freed by now: a CALL or DO that runs COMMIT or
+	 * ROLLBACK inside, or a ROLLBACK, can release the portal's cached plan,
+	 * which owns them (see the comment on portal->stmts in PortalRunMulti());
+	 * if the plan was invalidated in the meantime, it is freed.  None of
+	 * those is DDL.  DDL that commits internally, such as CREATE INDEX
+	 * CONCURRENTLY, does not release the plan: PreCommit_Portals() leaves an
+	 * active portal alone.
+	 */
+	if (!is_ddl)
+		return;
 
 	/*
 	 * Nothing below concerns this statement -- skip it before going to the
@@ -568,8 +582,7 @@ spock_ProcessUtility(
 		 * The action has already been taken, so no need for the duplication.
 		 */
 	}
-	else if (GetCommandLogLevel(parsetree) == LOGSTMT_DDL &&
-			 spock_enable_ddl_replication &&
+	else if (spock_enable_ddl_replication &&
 			 get_local_node(false, true))
 	{
 		if (autoddl_can_proceed(context, toplevel_stmt, nodeTag(parsetree)))
