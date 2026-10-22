@@ -761,6 +761,94 @@ wait_for_primary_slot_catchup(ReplicationSlot *slot, RemoteSlot *remote_slot)
 }
 
 /*
+ * Is the slot invalidated?  Caller must hold the slot's mutex.
+ */
+static bool
+slot_is_invalidated(ReplicationSlot *s)
+{
+#if PG_VERSION_NUM >= 160000
+	return s->data.invalidated != RS_INVAL_NONE;
+#else
+	/*
+	 * PG15 records the old restart_lsn in invalidated_at and clears
+	 * restart_lsn.  Only invalidated_at is tested: a worker without this fix
+	 * advanced such copies and gave them a valid restart_lsn again, and those
+	 * still need recreating.  Nothing clears invalidated_at short of dropping
+	 * the slot.
+	 */
+	return !XLogRecPtrIsInvalid(s->data.invalidated_at);
+#endif
+}
+
+/*
+ * Slots whose invalidated copy the worker has warned about and left alone.
+ * The warning is issued once, not on every pass: on PG17 a synced slot
+ * stays in that state until promotion.  Returns true when the warning for
+ * this slot is due; a slot no longer in that state is forgotten.
+ */
+static List *invalidated_warned = NIL;
+
+static bool
+invalidated_warning_due(const char *name, bool left_alone)
+{
+	ListCell   *lc;
+	MemoryContext oldcxt;
+
+	foreach(lc, invalidated_warned)
+	{
+		char	   *warned = (char *) lfirst(lc);
+
+		if (strcmp(warned, name) != 0)
+			continue;
+		if (!left_alone)
+		{
+			invalidated_warned = foreach_delete_current(invalidated_warned, lc);
+			pfree(warned);
+		}
+		return false;
+	}
+
+	if (!left_alone)
+		return false;
+
+	oldcxt = MemoryContextSwitchTo(TopMemoryContext);
+	invalidated_warned = lappend(invalidated_warned, pstrdup(name));
+	MemoryContextSwitchTo(oldcxt);
+	return true;
+}
+
+/*
+ * Forget warned slots the primary no longer has, so a name does not stay
+ * on the list for the life of the worker.
+ */
+static void
+invalidated_warned_prune(List *remote_slots)
+{
+	ListCell   *lc;
+
+	foreach(lc, invalidated_warned)
+	{
+		char	   *warned = (char *) lfirst(lc);
+		ListCell   *rc;
+		bool		present = false;
+
+		foreach(rc, remote_slots)
+		{
+			if (strcmp(((RemoteSlot *) lfirst(rc))->name, warned) == 0)
+			{
+				present = true;
+				break;
+			}
+		}
+		if (!present)
+		{
+			invalidated_warned = foreach_delete_current(invalidated_warned, lc);
+			pfree(warned);
+		}
+	}
+}
+
+/*
  * Synchronize one logical replication slot's state from the master to this
  * standby, creating it if necessary.
  *
@@ -778,6 +866,9 @@ synchronize_one_slot(RemoteSlot *remote_slot)
 {
 	int			i;
 	bool		found = false;
+	bool		invalidated = false;
+	bool		active = false;
+	bool		synced = false;
 
 	if (!RecoveryInProgress())
 	{
@@ -807,10 +898,60 @@ synchronize_one_slot(RemoteSlot *remote_slot)
 		if (strcmp(NameStr(s->data.name), remote_slot->name) == 0)
 		{
 			found = true;
+			active = SlotIsActive(s);
+			SpinLockAcquire(&s->mutex);
+			invalidated = slot_is_invalidated(s);
+#if PG_VERSION_NUM >= 170000
+			synced = s->data.synced;
+#endif
+			SpinLockRelease(&s->mutex);
 			break;
 		}
 	}
 	LWLockRelease(ReplicationSlotControlLock);
+
+	/*
+	 * The local copy was invalidated, for example because the primary removed
+	 * catalog rows it still needed.  Advancing its metadata would make it
+	 * look healthy while it can never be used after promotion, so drop it and
+	 * create it again from the primary below.
+	 *
+	 * Leave it alone while a walsender holds it, and on PG17 when it was
+	 * created by native slot sync, since ReplicationSlotDrop() refuses to
+	 * drop a synced slot on a standby.  A walsender can still take the slot
+	 * between the check and the drop; the drop then errors out and the
+	 * restarted worker tries again.
+	 */
+	if (found && invalidated && (active || synced))
+	{
+		if (invalidated_warning_due(remote_slot->name, true))
+			elog(WARNING,
+				 "replication slot \"%s\" is invalidated but %s, "
+				 "not synchronizing it",
+				 remote_slot->name,
+				 active ? "in use" : "owned by native slot sync");
+		PopActiveSnapshot();
+		CommitTransactionCommand();
+		return;
+	}
+	invalidated_warning_due(remote_slot->name, false);
+
+	/*
+	 * The new copy is created below like any other slot.  Its restart_lsn is
+	 * reserved at the standby's current WAL position, so while the primary's
+	 * slot is still behind that point the create path waits for it in
+	 * wait_for_primary_slot_catchup(), and no other slot is synchronized
+	 * until then (see the TODO there).
+	 */
+	if (found && invalidated)
+	{
+		elog(WARNING,
+			 "replication slot \"%s\" is invalidated on the standby, "
+			 "recreating it from the primary",
+			 remote_slot->name);
+		ReplicationSlotDrop(remote_slot->name, true);
+		found = false;
+	}
 
 	/*
 	 * Remote slot exists locally, acquire and move. There's a race here where
@@ -827,6 +968,24 @@ synchronize_one_slot(RemoteSlot *remote_slot)
 #else
 		ReplicationSlotAcquire(remote_slot->name, true);
 #endif
+
+		/*
+		 * A restartpoint can invalidate the copy between the lookup above and
+		 * the acquire.  Leave it as it is: advancing it would give it a valid
+		 * restart_lsn again, and on PG15 that is what the lookup goes by, so
+		 * the next pass would no longer see the invalidation.  Left alone,
+		 * the next pass drops and recreates it.
+		 */
+		SpinLockAcquire(&MyReplicationSlot->mutex);
+		invalidated = slot_is_invalidated(MyReplicationSlot);
+		SpinLockRelease(&MyReplicationSlot->mutex);
+		if (invalidated)
+		{
+			ReplicationSlotRelease();
+			PopActiveSnapshot();
+			CommitTransactionCommand();
+			return;
+		}
 
 		/*
 		 * We can't satisfy this remote slot's requirements with our
@@ -1198,6 +1357,15 @@ synchronize_failover_slots(long sleep_time)
 		else
 			break;
 	}
+
+	/*
+	 * Prune here rather than after the synchronization below: when the
+	 * primary has dropped its last matching slot we return just below, and a
+	 * name left on the warned list would then suppress the warning if the
+	 * primary ever reused it.  An empty remote list correctly clears them
+	 * all.
+	 */
+	invalidated_warned_prune(slots);
 
 	if (!list_length(slots))
 	{
