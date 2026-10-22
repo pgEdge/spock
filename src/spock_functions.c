@@ -3011,10 +3011,15 @@ cluster_commits_on_its_own(Node *stmt)
 	rv = cluster->relation;
 #endif
 
-	relid = RangeVarGetRelid(rv, NoLock, true);
+	/*
+	 * Look the table up the way this hook always did: locked, and an error if
+	 * it is gone.  ExecRepack() may have committed and released its locks
+	 * before the hook runs, so the table can have been dropped or renamed by
+	 * now, and an unresolved name must not pass as safe to replicate.
+	 */
+	relid = RangeVarGetRelid(rv, AccessShareLock, false);
 
-	return OidIsValid(relid) &&
-		get_rel_relkind(relid) == RELKIND_PARTITIONED_TABLE;
+	return get_rel_relkind(relid) == RELKIND_PARTITIONED_TABLE;
 }
 
 /*
