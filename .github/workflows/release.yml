@@ -283,9 +283,18 @@ jobs:
               run: |
                   set -euo pipefail
                   mkdir -p .github/actions
-                  git clone --depth 1 \
-                      "https://x-access-token:${TOKEN}@github.com/pgEdge/pgedge-builder-action.git" \
-                      ".github/actions/pgedge-builder-action"
+                  # Pinned to gated-release: it carries repo_client_crt/repo_client_key.
+                  # REVERT to the default branch once that is merged to main.
+                  # Pinned to an immutable commit of pgedge-builder-action's gated-release
+                  # branch, which carries repo_client_crt/repo_client_key. A branch ref can be
+                  # retargeted, and this checkout runs with the repo client certificate and key.
+                  # REVERT to a reviewed commit on main once gated-release is merged there.
+                  builder_action_sha=23ee5f525497ed7ea8c963eff83a275781476e89
+                  git init -q .github/actions/pgedge-builder-action
+                  git -C .github/actions/pgedge-builder-action remote add origin \
+                      "https://x-access-token:${TOKEN}@github.com/pgEdge/pgedge-builder-action.git"
+                  git -C .github/actions/pgedge-builder-action fetch -q --depth 1 origin "$builder_action_sha"
+                  git -C .github/actions/pgedge-builder-action checkout -q --detach FETCH_HEAD
 
             - name: Build RPM
               uses: ./.github/actions/pgedge-builder-action
@@ -301,6 +310,8 @@ jobs:
                   gpg_private_key: ${{ secrets.GPG_FIPS_RPM_PRIVATE_KEY }}
                   gpg_public_key: ${{ secrets.GPG_FIPS_RPM_PUBLIC_KEY }}
                   pgedge_builder_token: ${{ secrets.PGEDGE_BUILDER_TOKEN }}
+                  repo_client_crt: ${{ secrets.PGEDGE_REPO_CLIENT_CRT }}
+                  repo_client_key: ${{ secrets.PGEDGE_REPO_CLIENT_KEY }}
 
             - name: Upload RPM cell artifact
               uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
@@ -479,9 +490,18 @@ jobs:
               run: |
                   set -euo pipefail
                   mkdir -p .github/actions
-                  git clone --depth 1 \
-                      "https://x-access-token:${TOKEN}@github.com/pgEdge/pgedge-builder-action.git" \
-                      ".github/actions/pgedge-builder-action"
+                  # Pinned to gated-release: it carries repo_client_crt/repo_client_key.
+                  # REVERT to the default branch once that is merged to main.
+                  # Pinned to an immutable commit of pgedge-builder-action's gated-release
+                  # branch, which carries repo_client_crt/repo_client_key. A branch ref can be
+                  # retargeted, and this checkout runs with the repo client certificate and key.
+                  # REVERT to a reviewed commit on main once gated-release is merged there.
+                  builder_action_sha=23ee5f525497ed7ea8c963eff83a275781476e89
+                  git init -q .github/actions/pgedge-builder-action
+                  git -C .github/actions/pgedge-builder-action remote add origin \
+                      "https://x-access-token:${TOKEN}@github.com/pgEdge/pgedge-builder-action.git"
+                  git -C .github/actions/pgedge-builder-action fetch -q --depth 1 origin "$builder_action_sha"
+                  git -C .github/actions/pgedge-builder-action checkout -q --detach FETCH_HEAD
 
             - name: Build DEB
               uses: ./.github/actions/pgedge-builder-action
@@ -497,6 +517,8 @@ jobs:
                   gpg_private_key: ${{ secrets.GPG_FIPS_DEB_PRIVATE_KEY }}
                   gpg_public_key: ${{ secrets.GPG_FIPS_DEB_PUBLIC_KEY }}
                   pgedge_builder_token: ${{ secrets.PGEDGE_BUILDER_TOKEN }}
+                  repo_client_crt: ${{ secrets.PGEDGE_REPO_CLIENT_CRT }}
+                  repo_client_key: ${{ secrets.PGEDGE_REPO_CLIENT_KEY }}
 
             - name: Upload DEB cell artifact
               uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
