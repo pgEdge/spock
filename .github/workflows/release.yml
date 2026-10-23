@@ -283,7 +283,9 @@ jobs:
               run: |
                   set -euo pipefail
                   mkdir -p .github/actions
-                  git clone --depth 1 \
+                  # Pinned to gated-release: it carries repo_client_crt/repo_client_key.
+                  # REVERT to the default branch once that is merged to main.
+                  git clone --depth 1 --branch gated-release \
                       "https://x-access-token:${TOKEN}@github.com/pgEdge/pgedge-builder-action.git" \
                       ".github/actions/pgedge-builder-action"
 
@@ -301,6 +303,8 @@ jobs:
                   gpg_private_key: ${{ secrets.GPG_FIPS_RPM_PRIVATE_KEY }}
                   gpg_public_key: ${{ secrets.GPG_FIPS_RPM_PUBLIC_KEY }}
                   pgedge_builder_token: ${{ secrets.PGEDGE_BUILDER_TOKEN }}
+                  repo_client_crt: ${{ secrets.PGEDGE_REPO_CLIENT_CRT }}
+                  repo_client_key: ${{ secrets.PGEDGE_REPO_CLIENT_KEY }}
 
             - name: Upload RPM cell artifact
               uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
@@ -479,7 +483,9 @@ jobs:
               run: |
                   set -euo pipefail
                   mkdir -p .github/actions
-                  git clone --depth 1 \
+                  # Pinned to gated-release: it carries repo_client_crt/repo_client_key.
+                  # REVERT to the default branch once that is merged to main.
+                  git clone --depth 1 --branch gated-release \
                       "https://x-access-token:${TOKEN}@github.com/pgEdge/pgedge-builder-action.git" \
                       ".github/actions/pgedge-builder-action"
 
@@ -497,6 +503,8 @@ jobs:
                   gpg_private_key: ${{ secrets.GPG_FIPS_DEB_PRIVATE_KEY }}
                   gpg_public_key: ${{ secrets.GPG_FIPS_DEB_PUBLIC_KEY }}
                   pgedge_builder_token: ${{ secrets.PGEDGE_BUILDER_TOKEN }}
+                  repo_client_crt: ${{ secrets.PGEDGE_REPO_CLIENT_CRT }}
+                  repo_client_key: ${{ secrets.PGEDGE_REPO_CLIENT_KEY }}
 
             - name: Upload DEB cell artifact
               uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
