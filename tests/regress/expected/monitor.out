@@ -1,0 +1,1165 @@
+-- Monitoring views: node, workers, subscriptions, slots, events, counters
+SELECT * FROM spock_regress_variables()
+\gset
+\c :provider_dsn
+-- The node on one row
+SELECT node_name, extension_update_pending, apply_paused,
+       subscriptions, replication_slots, replication_slots_active,
+       apply_workers, workers_restart_pending,
+       wal_size_bytes > 0 AS has_wal,
+       max_retained_wal_bytes >= 0 AS retains_wal
+  FROM spock.node_status;
+   node_name   | extension_update_pending | apply_paused | subscriptions | replication_slots | replication_slots_active | apply_workers | workers_restart_pending | has_wal | retains_wal 
+---------------+--------------------------+--------------+---------------+-------------------+--------------------------+---------------+-------------------------+---------+-------------
+ test_provider | f                        | f            |             0 |                 1 |                        1 |             0 |                       0 | t       | t
+(1 row)
+
+-- The supervisor and the database manager are running.  The manager is
+-- started by the supervisor a moment after the node exists, so wait for it
+-- rather than depend on an earlier test having given it the time.
+DO $$
+BEGIN
+    FOR i IN 1..600 LOOP
+        IF EXISTS (SELECT 1 FROM spock.worker_status
+                    WHERE worker_type = 'manager'
+                      AND worker_status = 'running') THEN
+            RETURN;
+        END IF;
+        PERFORM pg_sleep(0.1);
+    END LOOP;
+END;
+$$;
+SELECT worker_type, worker_status, pid IS NOT NULL AS has_pid
+  FROM spock.worker_status
+ WHERE worker_type IN ('supervisor', 'manager')
+ ORDER BY worker_type;
+ worker_type | worker_status | has_pid 
+-------------+---------------+---------
+ manager     | running       | t
+ supervisor  | running       | t
+(2 rows)
+
+-- The provider side: an active slot served by a walsender
+SELECT active, state, client_name = slot_name AS client_is_subscriber,
+       retained_wal_bytes >= 0 AS retains_wal,
+       pending_wal_bytes >= 0 AS has_pending,
+       wal_status
+  FROM spock.slot_status;
+ active |   state   | client_is_subscriber | retains_wal | has_pending | wal_status 
+--------+-----------+----------------------+-------------+-------------+------------
+ t      | streaming | t                    | t           | t           | reserved
+(1 row)
+
+-- Events recorded on the provider
+SELECT DISTINCT event_type, severity
+  FROM spock.events
+ WHERE event_type IN ('node_created', 'slot_created', 'stream_started')
+ ORDER BY event_type;
+   event_type   | severity 
+----------------+----------
+ node_created   | info
+ slot_created   | info
+ stream_started | info
+(3 rows)
+
+\c :subscriber_dsn
+-- The subscription on one row
+SELECT subscription_name, enabled, status, provider_node,
+       provider_dsn NOT LIKE '%password%' OR provider_dsn LIKE '%********%'
+           AS password_hidden,
+       sync_status, worker_status, worker_pid IS NOT NULL AS has_worker,
+       in_exception_handling, worker_paused,
+       received_lsn >= remote_commit_lsn AS received_past_commit,
+       replication_lag_bytes >= 0 AS lag_known,
+       worker_starts >= 1 AS worker_started,
+       apply_errors, last_error_message
+  FROM spock.subscription_status;
+ subscription_name | enabled |   status    | provider_node | password_hidden | sync_status | worker_status | has_worker | in_exception_handling | worker_paused | received_past_commit | lag_known | worker_started | apply_errors | last_error_message 
+-------------------+---------+-------------+---------------+-----------------+-------------+---------------+------------+-----------------------+---------------+----------------------+-----------+----------------+--------------+--------------------
+ test_subscription | t       | replicating | test_provider | t               | ready       | running       | t          | f                     | f             | t                    | t         | t              |            0 | 
+(1 row)
+
+-- The apply worker as seen from the worker list
+SELECT worker_type, worker_status, subscription_name,
+       started_at IS NOT NULL AS has_backend
+  FROM spock.worker_status
+ WHERE worker_type = 'apply';
+ worker_type | worker_status | subscription_name | has_backend 
+-------------+---------------+-------------------+-------------
+ apply       | running       | test_subscription | t
+(1 row)
+
+-- Whole-subscription sync state
+SELECT subscription_name, schema_name, table_name, sync_kind, sync_status
+  FROM spock.table_sync_status
+ WHERE table_name IS NULL;
+ subscription_name | schema_name | table_name | sync_kind | sync_status 
+-------------------+-------------+------------+-----------+-------------
+ test_subscription |             |            | full      | ready
+(1 row)
+
+-- The worker has started and connected since the subscription was made
+SELECT subscription_name,
+       worker_starts >= 1 AS started,
+       provider_connects >= 1 AS connected,
+       xacts_applied > 0 AS applied_xacts,
+       stats_reset
+  FROM spock.subscription_stats;
+ subscription_name | started | connected | applied_xacts | stats_reset 
+-------------------+---------+-----------+---------------+-------------
+ test_subscription | t       | t         | t             | 
+(1 row)
+
+-- The test makes its own traffic, so it does not depend on what ran before
+-- it: a table, then from a clean slate three inserted rows in two
+-- transactions, two updated rows and one deleted row, one transaction each.
+\c :provider_dsn
+SELECT spock.replicate_ddl($$
+    CREATE TABLE public.monitor_dml (id integer PRIMARY KEY, data text);
+$$);
+ replicate_ddl 
+---------------
+ t
+(1 row)
+
+SELECT * FROM spock.repset_add_table('default', 'monitor_dml');
+ repset_add_table 
+------------------
+ t
+(1 row)
+
+SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
+ wait_slot_confirm_lsn 
+-----------------------
+ 
+(1 row)
+
+-- The provider counts the table as replicated
+SELECT replicated_tables >= 1 AS has_replicated_tables,
+       pending_exceptions
+  FROM spock.node_status;
+ has_replicated_tables | pending_exceptions 
+-----------------------+--------------------
+ t                     |                  0
+(1 row)
+
+\c :subscriber_dsn
+SELECT spock.reset_subscription_stats();
+ reset_subscription_stats 
+--------------------------
+ 
+(1 row)
+
+SELECT spock.reset_channel_stats();
+ reset_channel_stats 
+---------------------
+ 
+(1 row)
+
+\c :provider_dsn
+INSERT INTO monitor_dml VALUES (1, 'one');
+INSERT INTO monitor_dml VALUES (2, 'two'), (3, 'three');
+UPDATE monitor_dml SET data = data || '!' WHERE id IN (1, 2);
+DELETE FROM monitor_dml WHERE id = 3;
+SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
+ wait_slot_confirm_lsn 
+-----------------------
+ 
+(1 row)
+
+\c :subscriber_dsn
+SELECT id, data FROM monitor_dml ORDER BY id;
+ id | data 
+----+------
+  1 | one!
+  2 | two!
+(2 rows)
+
+-- Every counter moved by exactly that traffic.  Messages and bytes also
+-- carry keepalives, so those are only known to be positive.
+SELECT subscription_name,
+       xacts_applied, n_tup_ins, n_tup_upd, n_tup_del,
+       xacts_skipped, xacts_discarded, apply_errors, sync_errors,
+       messages_received > 0 AS received_messages,
+       bytes_received > 0 AS received_bytes,
+       last_xact_applied IS NOT NULL AS has_last_xact,
+       stats_reset IS NOT NULL AS was_reset
+  FROM spock.subscription_stats;
+ subscription_name | xacts_applied | n_tup_ins | n_tup_upd | n_tup_del | xacts_skipped | xacts_discarded | apply_errors | sync_errors | received_messages | received_bytes | has_last_xact | was_reset 
+-------------------+---------------+-----------+-----------+-----------+---------------+-----------------+--------------+-------------+-------------------+----------------+---------------+-----------
+ test_subscription |             4 |         3 |         2 |         1 |             0 |               0 |            0 |           0 | t                 | t              | t             | t
+(1 row)
+
+-- A reset of one subscription by its OID clears its counters and stamps the
+-- row; an invalid OID is refused.
+SELECT sub_id AS test_sub_id FROM spock.subscription
+ WHERE sub_name = 'test_subscription' \gset
+SELECT spock.reset_subscription_stats(:test_sub_id);
+ reset_subscription_stats 
+--------------------------
+ 
+(1 row)
+
+SELECT spock.reset_channel_stats();
+ reset_channel_stats 
+---------------------
+ 
+(1 row)
+
+SELECT xacts_applied, n_tup_ins, n_tup_upd, n_tup_del,
+       stats_reset IS NOT NULL AS was_reset
+  FROM spock.subscription_stats;
+ xacts_applied | n_tup_ins | n_tup_upd | n_tup_del | was_reset 
+---------------+-----------+-----------+-----------+-----------
+             0 |         0 |         0 |         0 | t
+(1 row)
+
+SELECT spock.reset_subscription_stats(0);
+ERROR:  invalid subscription OID 0
+-- Events recorded on the subscriber
+SELECT DISTINCT event_type, severity
+  FROM spock.events
+ WHERE event_type IN ('subscription_created', 'worker_started',
+                      'provider_connected')
+ ORDER BY event_type;
+      event_type      | severity 
+----------------------+----------
+ provider_connected   | info
+ subscription_created | info
+ worker_started       | info
+(3 rows)
+
+-- Disabling and enabling the subscription is recorded and restarts the worker
+SELECT spock.reset_events();
+ reset_events 
+--------------
+ 
+(1 row)
+
+SELECT spock.sub_disable('test_subscription');
+ sub_disable 
+-------------
+ t
+(1 row)
+
+SELECT spock.sub_enable('test_subscription');
+ sub_enable 
+------------
+ t
+(1 row)
+
+-- sub_disable()/sub_enable() return without waiting for the old apply worker
+-- to exit, and the subscription reads as replicating while it is still
+-- running.  Waiting on that alone would let the worker_stopped assertion
+-- below run before the restart had been recorded.  Wait for a worker_started
+-- that is newer than the worker_stopped instead, so the events this test
+-- checks are known to be in.
+DO $$
+DECLARE
+    stopped_id bigint;
+    started_id bigint;
+BEGIN
+    FOR i IN 1..600 LOOP
+        SELECT max(event_id) INTO stopped_id
+          FROM spock.events
+         WHERE event_type = 'worker_stopped';
+
+        SELECT max(event_id) INTO started_id
+          FROM spock.events
+         WHERE event_type = 'worker_started'
+           AND subscription_name = 'test_subscription';
+
+        IF stopped_id IS NOT NULL AND started_id IS NOT NULL
+           AND started_id > stopped_id
+           AND EXISTS (SELECT 1 FROM spock.subscription_status
+                        WHERE status = 'replicating') THEN
+            RETURN;
+        END IF;
+        PERFORM pg_sleep(0.1);
+    END LOOP;
+END;
+$$;
+SELECT status, worker_status FROM spock.subscription_status;
+   status    | worker_status 
+-------------+---------------
+ replicating | running
+(1 row)
+
+SELECT event_type, severity, subscription_name
+  FROM spock.events
+ WHERE event_type IN ('subscription_disabled', 'subscription_enabled')
+ ORDER BY event_id;
+      event_type       | severity | subscription_name 
+-----------------------+----------+-------------------
+ subscription_disabled | warning  | test_subscription
+ subscription_enabled  | info     | test_subscription
+(2 rows)
+
+SELECT count(*) >= 1 AS worker_stopped
+  FROM spock.events
+ WHERE event_type = 'worker_stopped';
+ worker_stopped 
+----------------
+ t
+(1 row)
+
+SELECT count(*) >= 1 AS worker_started
+  FROM spock.events
+ WHERE event_type = 'worker_started'
+   AND subscription_name = 'test_subscription';
+ worker_started 
+----------------
+ t
+(1 row)
+
+-- The restart shows up in the counters.  worker_failures is not asserted to
+-- be zero: sub_disable()/sub_enable() restart the worker by killing it, and
+-- the replacement can lose a race for the provider's slot ("replication slot
+-- ... is active for PID n") and exit once before succeeding.  That is a
+-- transient of restarting, not a fault, so only check it stays bounded by the
+-- number of starts.
+SELECT worker_starts >= 1 AS restarted, worker_failures <= worker_starts AS failures_bounded
+  FROM spock.subscription_stats;
+ restarted | failures_bounded 
+-----------+------------------
+ t         | t
+(1 row)
+
+-- Host, versions and capacity
+SELECT hostname IS NOT NULL AS has_hostname, os_name IS NOT NULL AS has_os,
+       postgres_version_num = current_setting('server_version_num')::int AS pg_version_matches,
+       spock_version = spock.spock_version() AS spock_version_matches,
+       protocol_version >= min_protocol_version AS protocol_ok,
+       postmaster_start_time <= now() AS started_before_now
+  FROM spock.get_system_info();
+ has_hostname | has_os | pg_version_matches | spock_version_matches | protocol_ok | started_before_now 
+--------------+--------+--------------------+-----------------------+-------------+--------------------
+ t            | t      | t                  | t                     | t           | t
+(1 row)
+
+SELECT hostname IS NOT NULL AS has_hostname, worker_slots > 0 AS has_slots,
+       worker_slots_used <= worker_slots AS slots_within_limit,
+       pending_exceptions
+  FROM spock.node_status;
+ has_hostname | has_slots | slots_within_limit | pending_exceptions 
+--------------+-----------+--------------------+--------------------
+ t            | t         | t                  |                  0
+(1 row)
+
+-- Host and instance health
+SELECT data_disk_free_bytes > 0 AS has_disk_free,
+       data_disk_free_bytes <= data_disk_total_bytes AS disk_within_total,
+       wal_disk_free_bytes > 0 AS has_wal_disk_free,
+       wal_size_bytes > 0 AS has_wal,
+       database_size_bytes > 0 AS has_database,
+       uptime > interval '0' AS has_uptime,
+       in_recovery,
+       connections >= 1 AND connections <= max_connections AS connections_sane,
+       longest_transaction IS NOT NULL AS has_transaction,
+       prepared_transactions,
+       oldest_xid_age > 0 AS has_xid_age,
+       xact_commit > 0 AS has_commits,
+       archive_mode
+  FROM spock.system_status;
+ has_disk_free | disk_within_total | has_wal_disk_free | has_wal | has_database | has_uptime | in_recovery | connections_sane | has_transaction | prepared_transactions | has_xid_age | has_commits | archive_mode 
+---------------+-------------------+-------------------+---------+--------------+------------+-------------+------------------+-----------------+-----------------------+-------------+-------------+--------------
+ t             | t                 | t                 | t       | t            | t          | f           | t                | t               |                     0 | t           | t           | off
+(1 row)
+
+-- Settings, peers and replication sets
+SELECT count(*) FILTER (WHERE name LIKE 'spock.%') > 0 AS has_spock_settings,
+       count(*) FILTER (WHERE name = 'wal_level') AS has_wal_level
+  FROM spock.settings;
+ has_spock_settings | has_wal_level 
+--------------------+---------------
+ t                  |             1
+(1 row)
+
+SELECT node_name, is_local, dsn IS NOT NULL AS has_dsn,
+       subscription_name, subscription_status
+  FROM spock.peer_status
+ ORDER BY node_name;
+    node_name    | is_local | has_dsn | subscription_name | subscription_status 
+-----------------+----------+---------+-------------------+---------------------
+ test_provider   | f        | t       | test_subscription | replicating
+ test_subscriber | t        | t       |                   | 
+(2 rows)
+
+SELECT set_name, replicate_insert, replicate_update, replicate_delete,
+       replicate_truncate, table_count > 0 AS has_tables, subscription_count
+  FROM spock.replication_set_status;
+      set_name       | replicate_insert | replicate_update | replicate_delete | replicate_truncate | has_tables | subscription_count 
+---------------------+------------------+------------------+------------------+--------------------+------------+--------------------
+ ddl_sql             | t                | f                | f                | f                  | f          |                  1
+ default             | t                | t                | t                | t                  | f          |                  1
+ default_insert_only | t                | f                | f                | t                  | f          |                  1
+(3 rows)
+
+-- No transaction is being retried
+SELECT count(*) AS pending_exceptions FROM spock.get_pending_exceptions();
+ pending_exceptions 
+--------------------
+                  0
+(1 row)
+
+-- The report lists every section and never fails as a whole
+SELECT line
+  FROM spock.spock_info(5) AS line
+ WHERE line LIKE '== % =='
+ ORDER BY line;
+                  line                   
+-----------------------------------------
+ == Installed extensions ==
+ == Lag by node pair ==
+ == Node status ==
+ == Peers ==
+ == Pending exceptions ==
+ == Recent conflict resolutions ==
+ == Recent events ==
+ == Recent exceptions ==
+ == Replication sets ==
+ == Replication slots ==
+ == Settings ==
+ == Subscription statistics ==
+ == Subscriptions ==
+ == System ==
+ == Table synchronization ==
+ == Tables not in any replication set ==
+ == Workers ==
+(17 rows)
+
+-- Values are rendered in PostgreSQL text form, tables are aligned
+SELECT line
+  FROM spock.report_section('Sample',
+       $q$ SELECT 't'::boolean AS flag, ARRAY['a','b'] AS items,
+                  '2026-01-02 03:04:05+00'::timestamptz AT TIME ZONE 'UTC' AS at,
+                  NULL::text AS missing, E'two\nlines' AS note $q$) AS line;
+                             line                              
+---------------------------------------------------------------
+ 
+ == Sample ==
+ flag | items | at                       | missing | note     
+ -----+-------+--------------------------+---------+----------
+ true | {a,b} | Fri Jan 02 03:04:05 2026 |         | two lines
+ (1 row)
+(6 rows)
+
+SELECT line
+  FROM spock.report_section('Sample', 'SELECT 1 AS one, 2 AS two', true) AS line;
+     line     
+--------------
+ 
+ == Sample ==
+ one | 1
+ two | 2
+(4 rows)
+
+SELECT line
+  FROM spock.report_section('Broken', 'SELECT * FROM spock.no_such_view') AS line;
+                         line                          
+-------------------------------------------------------
+ 
+ == Broken ==
+ (error: relation "spock.no_such_view" does not exist)
+(3 rows)
+
+SELECT count(*) > 30 AS has_content,
+       count(*) FILTER (WHERE line LIKE '(error:%') AS failed_sections
+  FROM spock.spock_info() AS line;
+ has_content | failed_sections 
+-------------+-----------------
+ t           |               0
+(1 row)
+
+-- A role without EXECUTE on the revoked functions still gets the report:
+-- the header shows the host as unknown and each such section is one
+-- error line rather than a failure of the whole call.
+CREATE ROLE monitor_reader;
+GRANT USAGE ON SCHEMA spock TO monitor_reader;
+SET ROLE monitor_reader;
+SELECT line LIKE 'Spock node report: database ' || current_database() ||
+       ' on (unknown) at %' AS header_without_host
+  FROM spock.spock_info(0) AS line
+ LIMIT 1;
+ header_without_host 
+---------------------
+ t
+(1 row)
+
+SELECT count(*) FILTER (WHERE line LIKE '== % ==') > 0 AS has_sections,
+       count(*) FILTER (WHERE line LIKE '(error: permission denied%') > 0
+         AS has_denied_sections
+  FROM spock.spock_info(0) AS line;
+ has_sections | has_denied_sections 
+--------------+---------------------
+ t            | t
+(1 row)
+
+RESET ROLE;
+REVOKE USAGE ON SCHEMA spock FROM monitor_reader;
+DROP ROLE monitor_reader;
+-- Nothing blocks the apply worker and data arrived recently
+SELECT blocked_by_pids, blocking_pid
+  FROM spock.worker_status WHERE worker_type = 'apply';
+ blocked_by_pids | blocking_pid 
+-----------------+--------------
+                 |             
+(1 row)
+
+-- last_error_* is deliberately not asserted empty here, for the reason given
+-- at the restart counters above; the dedicated apply-error section below is
+-- where those columns are checked against a known failure.
+SELECT time_since_last_message < interval '1 hour' AS recent_data,
+       worker_blocked_by_pids
+  FROM spock.subscription_status;
+ recent_data | worker_blocked_by_pids 
+-------------+------------------------
+ t           | 
+(1 row)
+
+-- A real apply error is captured with SQLSTATE, detail, time and pid
+\c :provider_dsn
+SELECT spock.replicate_ddl($$
+    CREATE TABLE public.monitor_errors (id integer PRIMARY KEY, amount integer);
+$$);
+ replicate_ddl 
+---------------
+ t
+(1 row)
+
+SELECT * FROM spock.repset_add_table('default', 'monitor_errors');
+ repset_add_table 
+------------------
+ t
+(1 row)
+
+SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
+ wait_slot_confirm_lsn 
+-----------------------
+ 
+(1 row)
+
+\c :subscriber_dsn
+ALTER TABLE public.monitor_errors
+    ADD CONSTRAINT monitor_errors_positive CHECK (amount > 0);
+TRUNCATE spock.exception_log;
+SELECT spock.reset_subscription_stats();
+ reset_subscription_stats 
+--------------------------
+ 
+(1 row)
+
+SELECT spock.reset_events();
+ reset_events 
+--------------
+ 
+(1 row)
+
+\c :provider_dsn
+INSERT INTO monitor_errors VALUES (1, -5);
+SELECT spock.sync_event() AS sync_lsn \gset
+\c :subscriber_dsn
+CALL spock.wait_for_sync_event(NULL, 'test_provider', :'sync_lsn', 30);
+ result 
+--------
+ t
+(1 row)
+
+-- The default exception behaviour discards the transaction and logs it
+SELECT count(*) AS rows_applied FROM monitor_errors;
+ rows_applied 
+--------------
+            0
+(1 row)
+
+SELECT operation, table_name FROM spock.exception_log ORDER BY command_counter;
+ operation |   table_name   
+-----------+----------------
+ INSERT    | monitor_errors
+(1 row)
+
+SELECT apply_errors >= 1 AS errors_counted,
+       constraint_violations >= 1 AS classified,
+       deadlocks, lock_timeouts, resource_errors, worker_failures,
+       xacts_discarded,
+       last_error_sqlstate,
+       last_error_pid IS NOT NULL AS has_pid,
+       last_apply_error IS NOT NULL AS has_time,
+       last_error_message LIKE '%violates check constraint%' AS has_message,
+       last_error_message LIKE '%DETAIL: Failing row contains%' AS has_detail
+  FROM spock.subscription_stats;
+ errors_counted | classified | deadlocks | lock_timeouts | resource_errors | worker_failures | xacts_discarded | last_error_sqlstate | has_pid | has_time | has_message | has_detail 
+----------------+------------+-----------+---------------+-----------------+-----------------+-----------------+---------------------+---------+----------+-------------+------------
+ t              | t          |         0 |             0 |               0 |               0 |               1 | 23514               | t       | t        | t           | t
+(1 row)
+
+SELECT status, pending_exception_lsn IS NULL AS nothing_pending,
+       last_error_sqlstate, last_error_pid = worker_pid AS error_from_worker
+  FROM spock.subscription_status;
+   status    | nothing_pending | last_error_sqlstate | error_from_worker 
+-------------+-----------------+---------------------+-------------------
+ replicating | t               | 23514               | t
+(1 row)
+
+SELECT DISTINCT event_type, severity, sqlstate, pid IS NOT NULL AS has_pid
+  FROM spock.events
+ WHERE event_type IN ('worker_error', 'transaction_discarded')
+ ORDER BY event_type;
+      event_type       | severity | sqlstate | has_pid 
+-----------------------+----------+----------+---------
+ transaction_discarded | warning  |          | t
+ worker_error          | error    | 23514    | t
+(2 rows)
+
+SELECT count(*) > 0 AS exception_reported
+  FROM spock.spock_info() AS line
+ WHERE line LIKE '%monitor_errors_positive%';
+ exception_reported 
+--------------------
+ t
+(1 row)
+
+TRUNCATE spock.exception_log;
+SELECT spock.reset_subscription_stats();
+ reset_subscription_stats 
+--------------------------
+ 
+(1 row)
+
+\c :provider_dsn
+SELECT spock.replicate_ddl($$ DROP TABLE public.monitor_errors CASCADE; $$);
+NOTICE:  drop cascades to table monitor_errors membership in replication set default
+ replicate_ddl 
+---------------
+ t
+(1 row)
+
+SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
+ wait_slot_confirm_lsn 
+-----------------------
+ 
+(1 row)
+
+\c :subscriber_dsn
+-- A provider that cannot be reached is a lost connection, not an apply error
+SELECT spock.reset_subscription_stats();
+ reset_subscription_stats 
+--------------------------
+ 
+(1 row)
+
+SELECT spock.reset_events();
+ reset_events 
+--------------
+ 
+(1 row)
+
+SELECT spock.node_add_interface('test_provider', 'unreachable',
+                                'host=127.0.0.1 port=1 dbname=regression connect_timeout=1');
+ node_add_interface 
+--------------------
+         3044448559
+(1 row)
+
+SELECT spock.sub_alter_interface('test_subscription', 'unreachable');
+ sub_alter_interface 
+---------------------
+ t
+(1 row)
+
+-- The disconnect is counted when the connection attempt fails; the worker
+-- failing and its worker_failed event are recorded separately, a moment
+-- later.  Waiting only for the disconnect leaves the two assertions below
+-- racing those, which is what fails under spock.random_delays.
+DO $$
+BEGIN
+    FOR i IN 1..600 LOOP
+        IF EXISTS (SELECT 1 FROM spock.subscription_stats
+                    WHERE provider_disconnects >= 1
+                      AND worker_failures >= 1)
+           AND EXISTS (SELECT 1 FROM spock.events
+                        WHERE event_type = 'worker_failed') THEN
+            RETURN;
+        END IF;
+        PERFORM pg_sleep(0.1);
+    END LOOP;
+END;
+$$;
+SELECT provider_disconnects >= 1 AS disconnects_counted,
+       apply_errors, worker_failures >= 1 AS worker_failed,
+       last_error_sqlstate,
+       last_error_message LIKE 'could not connect to the postgresql server%' AS has_message
+  FROM spock.subscription_stats;
+ disconnects_counted | apply_errors | worker_failed | last_error_sqlstate | has_message 
+---------------------+--------------+---------------+---------------------+-------------
+ t                   |            0 | t             | 08006               | t
+(1 row)
+
+SELECT DISTINCT event_type, severity, sqlstate,
+       detail LIKE '%could not connect%' AS names_cause
+  FROM spock.events
+ WHERE event_type IN ('provider_disconnected', 'worker_failed', 'worker_error')
+ ORDER BY event_type;
+      event_type       | severity | sqlstate | names_cause 
+-----------------------+----------+----------+-------------
+ provider_disconnected | warning  | 08006    | t
+ worker_failed         | error    |          | t
+(2 rows)
+
+SELECT spock.sub_alter_interface('test_subscription', 'test_provider');
+ sub_alter_interface 
+---------------------
+ t
+(1 row)
+
+SELECT spock.node_drop_interface('test_provider', 'unreachable');
+ node_drop_interface 
+---------------------
+ t
+(1 row)
+
+DO $$
+BEGIN
+    FOR i IN 1..600 LOOP
+        IF EXISTS (SELECT 1 FROM spock.subscription_status
+                    WHERE status = 'replicating') THEN
+            RETURN;
+        END IF;
+        PERFORM pg_sleep(0.1);
+    END LOOP;
+END;
+$$;
+SELECT status FROM spock.subscription_status;
+   status    
+-------------
+ replicating
+(1 row)
+
+-- Altering the subscription's interface was recorded as well
+SELECT count(*) >= 2 AS interface_changes_recorded
+  FROM spock.events
+ WHERE event_type = 'subscription_altered'
+   AND subscription_name = 'test_subscription';
+ interface_changes_recorded 
+----------------------------
+ t
+(1 row)
+
+-- A conflict is resolved, counted and, with save_resolutions on, logged,
+-- not treated as an error.  The row is inserted here first, then with the
+-- same key on the provider; the later commit wins under the default
+-- resolver.
+SELECT spock.reset_subscription_stats();
+ reset_subscription_stats 
+--------------------------
+ 
+(1 row)
+
+SELECT spock.reset_channel_stats();
+ reset_channel_stats 
+---------------------
+ 
+(1 row)
+
+TRUNCATE spock.resolutions;
+ALTER SYSTEM SET spock.save_resolutions = on;
+SELECT pg_reload_conf();
+ pg_reload_conf 
+----------------
+ t
+(1 row)
+
+INSERT INTO monitor_dml VALUES (10, 'subscriber first');
+\c :provider_dsn
+INSERT INTO monitor_dml VALUES (10, 'provider second');
+SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
+ wait_slot_confirm_lsn 
+-----------------------
+ 
+(1 row)
+
+\c :subscriber_dsn
+SELECT id, data FROM monitor_dml WHERE id = 10;
+ id |      data       
+----+-----------------
+ 10 | provider second
+(1 row)
+
+SELECT relname, conflict_type, conflict_resolution FROM spock.resolutions;
+      relname       | conflict_type | conflict_resolution 
+--------------------+---------------+---------------------
+ public.monitor_dml | insert_exists | apply_remote
+(1 row)
+
+-- The per-type counters are kept from PostgreSQL 18 on and are null before.
+SELECT n_conflict, apply_errors, xacts_applied,
+       confl_insert_exists IS NULL OR confl_insert_exists = 1
+           AS insert_exists_counted
+  FROM spock.subscription_stats;
+ n_conflict | apply_errors | xacts_applied | insert_exists_counted 
+------------+--------------+---------------+-----------------------
+          1 |            0 |             1 | t
+(1 row)
+
+ALTER SYSTEM RESET spock.save_resolutions;
+SELECT pg_reload_conf();
+ pg_reload_conf 
+----------------
+ t
+(1 row)
+
+TRUNCATE spock.resolutions;
+-- Pausing the apply workers shows on the node, and both the pause and the
+-- resume are recorded.  The worker's own paused flag is not asserted: an
+-- idle worker only sets it when it next handles a message, and
+-- pause_apply_workers() returns as soon as no worker has a transaction
+-- open.
+SELECT spock.reset_events();
+ reset_events 
+--------------
+ 
+(1 row)
+
+SELECT spock.pause_apply_workers();
+ pause_apply_workers 
+---------------------
+ 
+(1 row)
+
+SELECT apply_paused FROM spock.node_status;
+ apply_paused 
+--------------
+ t
+(1 row)
+
+SELECT spock.resume_apply_workers();
+ resume_apply_workers 
+----------------------
+ 
+(1 row)
+
+SELECT apply_paused FROM spock.node_status;
+ apply_paused 
+--------------
+ f
+(1 row)
+
+SELECT event_type, severity, subscription_name
+  FROM spock.events
+ WHERE event_type IN ('apply_paused', 'apply_resumed')
+ ORDER BY event_id;
+  event_type   | severity | subscription_name 
+---------------+----------+-------------------
+ apply_paused  | info     | 
+ apply_resumed | info     | 
+(2 rows)
+
+-- Repair mode is recorded with the pid of the session that switched it
+SELECT spock.repair_mode(true) IS NOT NULL AS enabled;
+ enabled 
+---------
+ t
+(1 row)
+
+SELECT spock.repair_mode(false) IS NOT NULL AS disabled;
+ disabled 
+----------
+ t
+(1 row)
+
+SELECT event_type, severity, pid = pg_backend_pid() AS from_this_session
+  FROM spock.events
+ WHERE event_type IN ('repair_mode_enabled', 'repair_mode_disabled')
+ ORDER BY event_id;
+      event_type      | severity | from_this_session 
+----------------------+----------+-------------------
+ repair_mode_enabled  | warning  | t
+ repair_mode_disabled | info     | t
+(2 rows)
+
+-- Resynchronising a table runs a sync worker, counts the table and records
+-- the start and the finish
+SELECT spock.reset_subscription_stats();
+ reset_subscription_stats 
+--------------------------
+ 
+(1 row)
+
+SELECT spock.reset_events();
+ reset_events 
+--------------
+ 
+(1 row)
+
+SELECT spock.sub_resync_table('test_subscription', 'monitor_dml', true);
+ sub_resync_table 
+------------------
+ t
+(1 row)
+
+SELECT spock.table_wait_for_sync('test_subscription', 'monitor_dml');
+ table_wait_for_sync 
+---------------------
+ 
+(1 row)
+
+SELECT id, data FROM monitor_dml ORDER BY id;
+ id |      data       
+----+-----------------
+  1 | one!
+  2 | two!
+ 10 | provider second
+(3 rows)
+
+-- The finish is recorded by the sync worker after the table is marked
+-- synced, so wait for it
+DO $$
+BEGIN
+    FOR i IN 1..600 LOOP
+        IF EXISTS (SELECT 1 FROM spock.events
+                    WHERE event_type = 'sync_finished') THEN
+            RETURN;
+        END IF;
+        PERFORM pg_sleep(0.1);
+    END LOOP;
+END;
+$$;
+SELECT tables_synced, sync_errors,
+       last_table_synced IS NOT NULL AS has_time
+  FROM spock.subscription_stats;
+ tables_synced | sync_errors | has_time 
+---------------+-------------+----------
+             1 |           0 | t
+(1 row)
+
+SELECT schema_name, table_name, sync_kind, sync_status
+  FROM spock.table_sync_status
+ WHERE table_name = 'monitor_dml';
+ schema_name | table_name  | sync_kind | sync_status 
+-------------+-------------+-----------+-------------
+ public      | monitor_dml | data      | ready
+(1 row)
+
+SELECT event_type, severity, subscription_name, detail
+  FROM spock.events
+ WHERE event_type IN ('sync_started', 'sync_finished', 'sync_failed')
+ ORDER BY event_id;
+  event_type   | severity | subscription_name |          detail          
+---------------+----------+-------------------+--------------------------
+ sync_started  | info     | test_subscription | table public.monitor_dml
+ sync_finished | info     | test_subscription | table public.monitor_dml
+(2 rows)
+
+-- With exception_behaviour = sub_disable a failing transaction disables the
+-- subscription, which the worker records; skipping that transaction and
+-- enabling the subscription again counts and records the skip
+TRUNCATE spock.exception_log;
+SELECT spock.reset_subscription_stats();
+ reset_subscription_stats 
+--------------------------
+ 
+(1 row)
+
+SELECT spock.reset_events();
+ reset_events 
+--------------
+ 
+(1 row)
+
+ALTER TABLE public.monitor_dml
+    ADD CONSTRAINT monitor_dml_small CHECK (id < 1000);
+ALTER SYSTEM SET spock.exception_behaviour = 'sub_disable';
+SELECT pg_reload_conf();
+ pg_reload_conf 
+----------------
+ t
+(1 row)
+
+\c :provider_dsn
+INSERT INTO monitor_dml VALUES (1000, 'rejected');
+SELECT fetch_last_xid('I') AS remote_xid \gset
+\c :subscriber_dsn
+DO $$
+BEGIN
+    FOR i IN 1..600 LOOP
+        IF EXISTS (SELECT 1 FROM spock.subscription_status
+                    WHERE NOT enabled)
+           AND EXISTS (SELECT 1 FROM spock.events
+                        WHERE event_type = 'subscription_disabled') THEN
+            RETURN;
+        END IF;
+        PERFORM pg_sleep(0.1);
+    END LOOP;
+END;
+$$;
+SELECT enabled, status FROM spock.subscription_status;
+ enabled |  status  
+---------+----------
+ f       | disabled
+(1 row)
+
+SELECT operation, table_name FROM spock.exception_log ORDER BY command_counter;
+  operation  | table_name  
+-------------+-------------
+ INSERT      | monitor_dml
+ SUB_DISABLE | 
+(2 rows)
+
+SELECT event_type, severity, subscription_name, sqlstate
+  FROM spock.events
+ WHERE event_type IN ('worker_error', 'subscription_disabled')
+ ORDER BY event_id;
+      event_type       | severity | subscription_name | sqlstate 
+-----------------------+----------+-------------------+----------
+ worker_error          | error    | test_subscription | 23514
+ subscription_disabled | warning  | test_subscription | 
+(2 rows)
+
+SELECT apply_errors, constraint_violations, xacts_discarded, xacts_skipped
+  FROM spock.subscription_stats;
+ apply_errors | constraint_violations | xacts_discarded | xacts_skipped 
+--------------+-----------------------+-----------------+---------------
+            1 |                     1 |               0 |             0
+(1 row)
+
+SELECT skiplsn_and_enable_sub('test_subscription', :remote_xid);
+ skiplsn_and_enable_sub 
+------------------------
+ 
+(1 row)
+
+DO $$
+BEGIN
+    FOR i IN 1..600 LOOP
+        IF EXISTS (SELECT 1 FROM spock.subscription_stats
+                    WHERE xacts_skipped >= 1)
+           AND EXISTS (SELECT 1 FROM spock.subscription_status
+                        WHERE status = 'replicating') THEN
+            RETURN;
+        END IF;
+        PERFORM pg_sleep(0.1);
+    END LOOP;
+END;
+$$;
+SELECT count(*) AS rejected_rows FROM monitor_dml WHERE id = 1000;
+ rejected_rows 
+---------------
+             0
+(1 row)
+
+SELECT xacts_skipped, apply_errors FROM spock.subscription_stats;
+ xacts_skipped | apply_errors 
+---------------+--------------
+             1 |            1
+(1 row)
+
+SELECT event_type, severity, subscription_name, detail
+  FROM spock.events
+ WHERE event_type IN ('subscription_enabled', 'transaction_skipped')
+ ORDER BY event_id;
+      event_type      | severity | subscription_name |                 detail                 
+----------------------+----------+-------------------+----------------------------------------
+ subscription_enabled | info     | test_subscription | subscription test_subscription enabled
+ transaction_skipped  | warning  | test_subscription | transaction skipped by sub_skip_lsn
+(2 rows)
+
+ALTER SYSTEM RESET spock.exception_behaviour;
+SELECT pg_reload_conf();
+ pg_reload_conf 
+----------------
+ t
+(1 row)
+
+ALTER TABLE public.monitor_dml DROP CONSTRAINT monitor_dml_small;
+TRUNCATE spock.exception_log;
+-- Resetting the events empties this database's history and keeps the count
+-- of everything ever recorded; the provider's history, checked below, is
+-- not touched
+SELECT database_id IS NULL AS node_wide, count(*) > 0 AS present
+  FROM spock.get_events() GROUP BY 1 ORDER BY 1;
+ node_wide | present 
+-----------+---------
+ f         | t
+(1 row)
+
+SELECT spock.reset_events();
+ reset_events 
+--------------
+ 
+(1 row)
+
+SELECT events_recorded > 0 AS kept_total
+  FROM spock.get_monitor_summary();
+ kept_total 
+------------
+ t
+(1 row)
+
+SELECT count(*) AS events FROM spock.events;
+ events 
+--------
+      0
+(1 row)
+
+SELECT database_id IS NULL AS node_wide, count(*) > 0 AS present
+  FROM spock.get_events() GROUP BY 1 ORDER BY 1;
+ node_wide | present 
+-----------+---------
+ f         | t
+(1 row)
+
+-- Shared memory summary
+SELECT worker_slots > 0 AS has_slots, worker_slots_used > 0 AS slots_in_use,
+       events_capacity, events_retained > 0 AS has_events,
+       events_recorded >= events_retained AS ids_monotonic,
+       subscription_stats_used >= 1 AS has_stats, channel_stats_full
+  FROM spock.get_monitor_summary();
+ has_slots | slots_in_use | events_capacity | has_events | ids_monotonic | has_stats | channel_stats_full 
+-----------+--------------+-----------------+------------+---------------+-----------+--------------------
+ t         | t            |            1024 | t          | t             | t         | f
+(1 row)
+
+\c :provider_dsn
+SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
+ wait_slot_confirm_lsn 
+-----------------------
+ 
+(1 row)
+
+-- The restarts of the apply worker ended and restarted the stream here, and
+-- the subscriber's reset of its events left this history alone.  The
+-- walsender records the stop as it exits, so wait for it.
+DO $$
+BEGIN
+    FOR i IN 1..600 LOOP
+        IF EXISTS (SELECT 1 FROM spock.events
+                    WHERE event_type = 'stream_stopped') THEN
+            RETURN;
+        END IF;
+        PERFORM pg_sleep(0.1);
+    END LOOP;
+END;
+$$;
+SELECT count(*) >= 1 AS stream_stopped,
+       count(*) FILTER (WHERE event_type = 'stream_started') >= 2
+           AS stream_restarted
+  FROM spock.events
+ WHERE event_type IN ('stream_stopped', 'stream_started');
+ stream_stopped | stream_restarted 
+----------------+------------------
+ t              | t
+(1 row)
+
+SELECT spock.replicate_ddl($$ DROP TABLE public.monitor_dml CASCADE; $$);
+NOTICE:  drop cascades to table monitor_dml membership in replication set default
+ replicate_ddl 
+---------------
+ t
+(1 row)
+
+SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
+ wait_slot_confirm_lsn 
+-----------------------
+ 
+(1 row)
+

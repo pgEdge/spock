@@ -124,36 +124,42 @@ DECLARE
     i INTEGER;
     slot TEXT;
 BEGIN
-    -- Wait up to 10 seconds (100 x 0.1s) for an inactive slot
+    -- Wait up to 10 seconds (100 x 0.1s) for an inactive slot.  A worker can
+    -- acquire the slot between that check and the peek below, which then
+    -- fails with "replication slot is active"; that only means waiting again.
     FOR i IN 1..100 LOOP
         IF EXISTS (SELECT 1 FROM pg_replication_slots WHERE active = false) THEN
-            EXIT;
+            -- Get slot name
+            SELECT slot_name INTO slot FROM pg_replication_slots LIMIT 1;
+
+            BEGIN
+                -- Fetch the remote xid of last UPDATE ('U') action
+                SELECT xid
+                INTO remote_xid
+                FROM pg_logical_slot_peek_changes(
+                        slot,
+                        NULL,
+                        10,
+                        'min_proto_version', '4',
+                        'max_proto_version', '5',
+                        'startup_params_format', '1',
+                        'proto_format', 'json',
+                        'spock.replication_set_names', 'default,ddl_sql'
+                    ) AS changes(lsn, xid, data)
+                WHERE data IS NOT NULL
+                  AND data <> ''
+                  AND data::json->>'action' = action
+                LIMIT 1;
+
+                RETURN remote_xid;
+            EXCEPTION WHEN object_in_use THEN
+                -- lost the race for the slot; wait for it to be released
+            END;
         END IF;
         PERFORM pg_sleep(0.1);
     END LOOP;
 
-    -- Get slot name
-    SELECT slot_name INTO slot FROM pg_replication_slots LIMIT 1;
-
-    -- Fetch the remote xid of last UPDATE ('U') action
-    SELECT xid
-    INTO remote_xid
-    FROM pg_logical_slot_peek_changes(
-            slot,
-            NULL,
-            10,
-            'min_proto_version', '4',
-            'max_proto_version', '5',
-            'startup_params_format', '1',
-            'proto_format', 'json',
-            'spock.replication_set_names', 'default,ddl_sql'
-        ) AS changes(lsn, xid, data)
-    WHERE data IS NOT NULL
-      AND data <> ''
-      AND data::json->>'action' = action
-    LIMIT 1;
-
-    RETURN remote_xid;
+    RAISE EXCEPTION 'no inactive replication slot within 10 seconds';
 END;
 $$;
 \c :subscriber_dsn
