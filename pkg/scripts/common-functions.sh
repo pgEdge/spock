@@ -93,6 +93,29 @@ install_repo_client_cert() {
     return 1
   fi
 
+  # Both files can be valid PEM and still not belong together. That mismatch
+  # would survive to the first package download and surface as a TLS error that
+  # never mentions the key, so compare the public keys now. Compared as TEXT
+  # with explicit non-empty checks: hashing the two openssl outputs would make
+  # two unreadable files hash equal and report a match.
+  if command -v openssl >/dev/null 2>&1; then
+    local crt_pub key_pub
+    crt_pub=$(openssl x509 -in "$crt_src" -noout -pubkey 2>/dev/null)
+    key_pub=$(openssl pkey -in "$key_src" -pubout 2>/dev/null)
+    if [ -z "$crt_pub" ] || [ -z "$key_pub" ]; then
+      echo "Error: could not read the public key from the certificate or the key." >&2
+      _cleanup_staged_client_cert "$staged" "$crt_src" "$key_src"
+      return 1
+    fi
+    if [ "$crt_pub" != "$key_pub" ]; then
+      echo "Error: the client key does not match the client certificate." >&2
+      _cleanup_staged_client_cert "$staged" "$crt_src" "$key_src"
+      return 1
+    fi
+  else
+    echo "Warning: openssl not found; cannot check that the key matches the certificate." >&2
+  fi
+
   # Build containers often run as root with no sudo installed. An array rather
   # than a string so the empty case expands to nothing instead of relying on
   # unquoted word splitting.
