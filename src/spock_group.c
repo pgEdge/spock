@@ -561,6 +561,16 @@ spock_group_resource_dump(void)
 	/* ensure directory exists */
 	(void) pg_mkdir_p(pathdir, S_IRWXU);
 
+	/*
+	 * One dump at a time.  Every caller writes the same temp file, so two
+	 * concurrent dumps (for example, two apply workers of the same database
+	 * finishing their table sync at once) would truncate each other's data
+	 * and the second rename would fail with ENOENT; the lock also keeps the
+	 * snapshot that lands in place the newest one.  It is held until the
+	 * rename below and released by error recovery on any failure.
+	 */
+	LWLockAcquire(SpockCtx->apply_group_master_lock, LW_EXCLUSIVE);
+
 	/* open temp file */
 	fd = OpenTransientFile(pathtmp, O_CREAT | O_WRONLY | O_TRUNC | PG_BINARY);
 	if (fd < 0)
@@ -573,9 +583,6 @@ spock_group_resource_dump(void)
 	hdr.system_identifier = GetSystemIdentifier();
 	hdr.flags = 0;
 
-	/* Acquire lock before reading hash table to ensure consistency */
-	LWLockAcquire(SpockCtx->apply_group_master_lock, LW_SHARED);
-
 	hdr.entry_count = hash_get_num_entries(SpockGroupHash);
 
 	write_buf(fd, &hdr, sizeof(hdr), SPOCK_RES_DUMPFILE "(header)");
@@ -585,8 +592,6 @@ spock_group_resource_dump(void)
 
 	/* write all entries */
 	spock_group_foreach(dump_one_group_cb, &dctx);
-
-	LWLockRelease(SpockCtx->apply_group_master_lock);
 
 	if (dctx.count != hdr.entry_count)
 		ereport(ERROR,
@@ -610,6 +615,8 @@ spock_group_resource_dump(void)
 		ereport(ERROR,
 				(errmsg("could not rename \"%s\" to \"%s\"",
 						pathtmp, pathfin)));
+
+	LWLockRelease(SpockCtx->apply_group_master_lock);
 }
 
 /*
