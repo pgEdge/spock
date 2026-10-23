@@ -34,8 +34,9 @@ _cleanup_staged_client_cert() {
 #       local container test. Takes precedence. Override the directory with
 #       PGEDGE_REPO_CLIENT_DIR.
 #
-#   common/client.crt and common/client.key           files beside this script,
-#       for a local run. Same convention as the GPG keys.
+#   client.crt and client.key                         files beside this script,
+#       in whichever directory it lives. For a local run; same convention as
+#       the GPG keys.
 #
 #   PGEDGE_REPO_CLIENT_CRT / PGEDGE_REPO_CLIENT_KEY   the PEM contents in the
 #       environment. Last resort, and NOT how CI passes them: the environment is
@@ -91,6 +92,28 @@ install_repo_client_cert() {
     echo "Error: the client key is not a PEM private key." >&2
     _cleanup_staged_client_cert "$staged" "$crt_src" "$key_src"
     return 1
+  fi
+
+  # Two certificates is not the same as a chain: the second must be the one that
+  # issued the first. -no_check_time keeps this about the issuer relationship,
+  # so an expired certificate reports expiry elsewhere rather than as a bad chain.
+  if command -v openssl >/dev/null 2>&1; then
+    local leaf_pem issuer_pem
+    leaf_pem=$(mktemp); issuer_pem=$(mktemp)
+    awk -v leaf="$leaf_pem" -v issuer="$issuer_pem" '
+      /BEGIN CERTIFICATE/ { n++ }
+      n == 1 { print > leaf }
+      n == 2 { print > issuer }
+    ' "$crt_src"
+    if ! openssl verify -partial_chain -no_check_time \
+         -CAfile "$issuer_pem" "$leaf_pem" >/dev/null 2>&1; then
+      rm -f "$leaf_pem" "$issuer_pem"
+      echo "Error: the second certificate in the file did not issue the first." >&2
+      echo "       The order must be leaf, then its issuing intermediate." >&2
+      _cleanup_staged_client_cert "$staged" "$crt_src" "$key_src"
+      return 1
+    fi
+    rm -f "$leaf_pem" "$issuer_pem"
   fi
 
   # Both files can be valid PEM and still not belong together. That mismatch
@@ -229,8 +252,12 @@ configure_pgedge_dnf_repo() {
   sudo sed -i "s|release|$REPO_TYPE|g" /etc/yum.repos.d/pgedge.repo
 
   # pgedge-release ships its stanzas disabled; srpm stays that way.
-  sudo sed -i "s|^enabled=0$|enabled=1|" /etc/yum.repos.d/pgedge.repo
-  sudo sed -i "/^\[pgedge-srpm\]/,\$s|^enabled=1$|enabled=0|" /etc/yum.repos.d/pgedge.repo
+  sudo awk '
+    /^\[/ { section = $0 }
+    { if (section !~ /srpm/ && $0 ~ /^enabled=0$/) print "enabled=1"; else print }
+  ' /etc/yum.repos.d/pgedge.repo > /tmp/pgedge.repo.$$ \
+    && sudo install -m 0644 /tmp/pgedge.repo.$$ /etc/yum.repos.d/pgedge.repo
+  rm -f /tmp/pgedge.repo.$$
 
   echo "Repo configured at /etc/yum.repos.d/pgedge.repo"
 }
