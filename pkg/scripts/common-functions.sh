@@ -10,11 +10,202 @@ install_syft(){
   curl -sSfL "https://raw.githubusercontent.com/anchore/syft/${SYFT_VERSION}/install.sh" | sudo sh -s -- -b /usr/local/bin "${SYFT_VERSION}"
 }
 
+# Remove the temporary copies install_repo_client_cert made from the
+# environment. A no-op when the material came from files on disk, which must
+# survive.
+_cleanup_staged_client_cert() {
+  [ "$1" = 1 ] || return 0
+  rm -f "$2" "$3"
+}
+
+# Install the client certificate the pgEdge repos require.
+#
+# dnf.pgedge.com and apt.pgedge.com authenticate clients with mutual TLS, and
+# pgedge-release writes ssl directives into the repo config. Both package
+# managers then hard-fail EVERY repository operation if those directives point
+# at files that are not there -- "could not load PEM client certificate" on dnf,
+# "Could not load client certificate" on apt -- so this runs before the repo is
+# configured, and fails loudly rather than leaving that to be diagnosed later.
+#
+# Three sources, so CI and a manual run use the same code path:
+#
+#   /run/pgedge-repo-client/{client.crt,client.key}   mounted read-only into the
+#       build container by the workflow, or copied in with `docker cp` for a
+#       local container test. Takes precedence. Override the directory with
+#       PGEDGE_REPO_CLIENT_DIR.
+#
+#   client.crt and client.key                         files beside this script,
+#       in whichever directory it lives. For a local run; same convention as
+#       the GPG keys.
+#
+#   PGEDGE_REPO_CLIENT_CRT / PGEDGE_REPO_CLIENT_KEY   the PEM contents in the
+#       environment. Last resort, and NOT how CI passes them: the environment is
+#       inherited by every build process, so an upstream build script dumping
+#       `env` would print the private key into the log. A mount is not.
+#
+# The certificate file must be the CHAIN -- the leaf followed by the issuing
+# intermediate. A leaf alone cannot be built into a path at the edge and fails
+# as an opaque TLS error.
+#
+# Unlike import_gpg_keys, the installed files are NOT removed afterwards: dnf
+# and apt read them on every transaction. Only the staging copies go.
+install_repo_client_cert() {
+  local crt_src="" key_src="" staged=0
+  local src_dir
+  src_dir=$(dirname "$0")
+
+  local mount_dir="${PGEDGE_REPO_CLIENT_DIR:-/run/pgedge-repo-client}"
+
+  if [ -f "$mount_dir/client.crt" ] && [ -f "$mount_dir/client.key" ]; then
+    crt_src="$mount_dir/client.crt"; key_src="$mount_dir/client.key"
+    echo "Using the repo client certificate from $mount_dir."
+  elif [ -f "$src_dir/client.crt" ] && [ -f "$src_dir/client.key" ]; then
+    crt_src="$src_dir/client.crt"; key_src="$src_dir/client.key"
+    echo "Using the repo client certificate from $src_dir."
+  elif [ -n "${PGEDGE_REPO_CLIENT_CRT:-}" ] && [ -n "${PGEDGE_REPO_CLIENT_KEY:-}" ]; then
+    crt_src=$(mktemp); key_src=$(mktemp); staged=1
+    printf '%s\n' "$PGEDGE_REPO_CLIENT_CRT" > "$crt_src"
+    printf '%s\n' "$PGEDGE_REPO_CLIENT_KEY" > "$key_src"
+    chmod 600 "$crt_src" "$key_src"
+    echo "Using the repo client certificate from the environment."
+  else
+    echo "Error: no repo client certificate available." >&2
+    echo "       Mount or copy client.crt and client.key into $mount_dir, or" >&2
+    echo "       place them in $src_dir." >&2
+    return 1
+  fi
+
+  # Never print the key. A bad PEM here surfaces much later as an unhelpful
+  # curl error, so check the shape now.
+  if ! grep -q 'BEGIN CERTIFICATE' "$crt_src"; then
+    echo "Error: the client certificate is not a PEM certificate." >&2
+    _cleanup_staged_client_cert "$staged" "$crt_src" "$key_src"
+    return 1
+  fi
+  if [ "$(grep -c 'BEGIN CERTIFICATE' "$crt_src")" -lt 2 ]; then
+    echo "Error: the client certificate holds one certificate; the chain is required." >&2
+    echo "       It must be the leaf followed by the issuing intermediate." >&2
+    _cleanup_staged_client_cert "$staged" "$crt_src" "$key_src"
+    return 1
+  fi
+  if ! grep -qE 'BEGIN [A-Z ]*PRIVATE KEY' "$key_src"; then
+    echo "Error: the client key is not a PEM private key." >&2
+    _cleanup_staged_client_cert "$staged" "$crt_src" "$key_src"
+    return 1
+  fi
+
+  # Two certificates is not the same as a chain: the second must be the one that
+  # issued the first. -no_check_time keeps this about the issuer relationship,
+  # so an expired certificate reports expiry elsewhere rather than as a bad chain.
+  if command -v openssl >/dev/null 2>&1; then
+    local leaf_pem issuer_pem
+    leaf_pem=$(mktemp); issuer_pem=$(mktemp)
+    awk -v leaf="$leaf_pem" -v issuer="$issuer_pem" '
+      /BEGIN CERTIFICATE/ { n++ }
+      n == 1 { print > leaf }
+      n == 2 { print > issuer }
+    ' "$crt_src"
+    if ! openssl verify -partial_chain -no_check_time -no-CApath -no-CAfile \
+         -CAfile "$issuer_pem" "$leaf_pem" >/dev/null 2>&1; then
+      rm -f "$leaf_pem" "$issuer_pem"
+      echo "Error: the second certificate in the file did not issue the first." >&2
+      echo "       The order must be leaf, then its issuing intermediate." >&2
+      _cleanup_staged_client_cert "$staged" "$crt_src" "$key_src"
+      return 1
+    fi
+
+    # The same verification again, this time WITH the validity dates. Separate
+    # from the check above so each failure says what it is, and it covers the
+    # issuer as well as the leaf: an expired intermediate under a leaf that is
+    # still in date would otherwise pass, then fail at the first authenticated
+    # request with nothing pointing at the cause.
+    if ! openssl verify -partial_chain -no-CApath -no-CAfile \
+         -CAfile "$issuer_pem" "$leaf_pem" >/dev/null 2>&1; then
+      rm -f "$leaf_pem" "$issuer_pem"
+      echo "Error: the client certificate or its issuer is expired or not yet valid." >&2
+      _cleanup_staged_client_cert "$staged" "$crt_src" "$key_src"
+      return 1
+    fi
+    rm -f "$leaf_pem" "$issuer_pem"
+  fi
+
+  # Both files can be valid PEM and still not belong together. That mismatch
+  # would survive to the first package download and surface as a TLS error that
+  # never mentions the key, so compare the public keys now. Compared as TEXT
+  # with explicit non-empty checks: hashing the two openssl outputs would make
+  # two unreadable files hash equal and report a match.
+  if command -v openssl >/dev/null 2>&1; then
+    local crt_pub key_pub
+    crt_pub=$(openssl x509 -in "$crt_src" -noout -pubkey 2>/dev/null)
+    key_pub=$(openssl pkey -in "$key_src" -pubout 2>/dev/null)
+    if [ -z "$crt_pub" ] || [ -z "$key_pub" ]; then
+      echo "Error: could not read the public key from the certificate or the key." >&2
+      _cleanup_staged_client_cert "$staged" "$crt_src" "$key_src"
+      return 1
+    fi
+    if [ "$crt_pub" != "$key_pub" ]; then
+      echo "Error: the client key does not match the client certificate." >&2
+      _cleanup_staged_client_cert "$staged" "$crt_src" "$key_src"
+      return 1
+    fi
+  else
+    echo "Warning: openssl not found; cannot check that the key matches the certificate." >&2
+  fi
+
+  # Build containers often run as root with no sudo installed. An array rather
+  # than a string so the empty case expands to nothing instead of relying on
+  # unquoted word splitting.
+  local -a sudo_cmd=()
+  if [ "$(id -u)" -ne 0 ]; then
+    if ! command -v sudo >/dev/null 2>&1; then
+      echo "Error: not root and sudo is not available." >&2
+      _cleanup_staged_client_cert "$staged" "$crt_src" "$key_src"
+      return 1
+    fi
+    sudo_cmd=(sudo)
+  fi
+
+  local dest
+  if command -v dnf >/dev/null 2>&1 || command -v yum >/dev/null 2>&1; then
+    dest=/etc/pki/pgedge
+  elif command -v apt-get >/dev/null 2>&1; then
+    dest=/etc/pgedge
+  else
+    echo "Error: neither dnf/yum nor apt-get found; cannot place the client" >&2
+    echo "       certificate for this platform." >&2
+    _cleanup_staged_client_cert "$staged" "$crt_src" "$key_src"
+    return 1
+  fi
+
+  local rc=0
+  if ! "${sudo_cmd[@]}" install -d -m 0755 "$dest"; then
+    rc=1
+  elif ! "${sudo_cmd[@]}" install -m 0644 "$crt_src" "$dest/client.crt"; then
+    rc=1
+  elif [ "$dest" = /etc/pgedge ]; then
+    # apt drops privileges to _apt before fetching, so a root-only key is
+    # unreadable at the moment it is needed. Always by NAME: the uid is 42 on
+    # bookworm/trixie/noble/resolute and 100 on jammy.
+    "${sudo_cmd[@]}" install -o _apt -g root -m 0400 "$key_src" "$dest/client.key" || rc=1
+  else
+    "${sudo_cmd[@]}" install -m 0600 "$key_src" "$dest/client.key" || rc=1
+  fi
+
+  _cleanup_staged_client_cert "$staged" "$crt_src" "$key_src"
+
+  if [ "$rc" -ne 0 ]; then
+    echo "Error: failed to install the client certificate into $dest." >&2
+    return 1
+  fi
+  echo "Client certificate installed at $dest/."
+  return 0
+}
+
 setup_dnf_build_env(){
 
   echo "Installing required packages..."
   dnf groupinstall "Development Tools" -y
-  dnf install -y rpm-build rpmdevtools yum-utils tar wget git gnupg2 sudo
+  dnf install -y rpm-build rpmdevtools yum-utils tar wget git gnupg2 sudo openssl
 
   echo "📦 Enabling additional repositories..."
   dnf install -y epel-release
@@ -23,6 +214,9 @@ setup_dnf_build_env(){
   else
     dnf config-manager --set-enabled crb
   fi
+
+  echo "Installing the repo client certificate..."
+  install_repo_client_cert || return 1
 
   echo "Configuring pgEdge repository..."
   configure_pgedge_dnf_repo $REPO_TYPE
@@ -40,7 +234,10 @@ setup_apt_build_env(){
 
   sudo apt-get update
   sudo apt-get install -y devscripts build-essential pkg-config fakeroot git curl \
-    ca-certificates debhelper dpkg-dev gnupg2 wget sudo lsb-release
+    ca-certificates debhelper dpkg-dev gnupg2 wget sudo lsb-release openssl
+
+  echo "Installing the repo client certificate..."
+  install_repo_client_cert || return 1
 
   echo "Configuring pgEdge repository..."
   configure_pgedge_apt_repo $REPO_TYPE
@@ -61,8 +258,28 @@ rename_ddeb_packages(){
 configure_pgedge_dnf_repo() {
   local REPO_TYPE="${1:-daily}"       # "daily" or "staging"
 
-  sudo dnf install -y https://dnf.pgedge.com/reporpm/pgedge-release-latest.noarch.rpm
+  # Bootstrapped from downloads.pgedge.com, NOT dnf.pgedge.com: the gated repos
+  # require a client certificate, and this package is what configures the repo,
+  # so it cannot live behind the gate it sets up.
+  sudo dnf install -y https://downloads.pgedge.com/reporpm/pgedge-release-latest.noarch.rpm
   sudo sed -i "s|release|$REPO_TYPE|g" /etc/yum.repos.d/pgedge.repo
+
+  # pgedge-release ships its stanzas disabled; srpm stays that way.
+  # No sudo on awk: the repo file is world-readable, and a redirect is not
+  # privileged anyway. Only the write back needs root. Writing a temp file and
+  # installing it keeps the live file from being left half-written.
+  local repo_tmp rc=0
+  repo_tmp=$(mktemp) || return 1
+  awk '
+    /^\[/ { section = $0 }
+    { if (section !~ /srpm/ && $0 ~ /^enabled=0$/) print "enabled=1"; else print }
+  ' /etc/yum.repos.d/pgedge.repo > "$repo_tmp" \
+    && sudo install -m 0644 "$repo_tmp" /etc/yum.repos.d/pgedge.repo || rc=1
+  rm -f "$repo_tmp"
+  if [ "$rc" -ne 0 ]; then
+    echo "Error: could not enable the pgEdge repositories." >&2
+    return 1
+  fi
 
   echo "Repo configured at /etc/yum.repos.d/pgedge.repo"
 }
@@ -71,8 +288,10 @@ configure_pgedge_apt_repo(){
   local REPO_TYPE="${1:-daily}"       # "daily" or "staging"
   local REPO_PATH="repodeb"
 
-  curl -sSL https://apt.pgedge.com/${REPO_PATH}/pgedge-release_latest_all.deb -o /tmp/pgedge-release.deb && sudo dpkg -i /tmp/pgedge-release.deb && rm -f /tmp/pgedge-release.deb || true
+  # downloads.pgedge.com, not apt.pgedge.com -- see configure_pgedge_dnf_repo.
+  curl -sSL https://downloads.pgedge.com/${REPO_PATH}/pgedge-release_latest_all.deb -o /tmp/pgedge-release.deb && sudo dpkg -i /tmp/pgedge-release.deb && rm -f /tmp/pgedge-release.deb || true
   sed -i "s|release|$REPO_TYPE|g" /etc/apt/sources.list.d/pgedge.sources
+  sed -i "s|^Enabled: no$|Enabled: yes|" /etc/apt/sources.list.d/pgedge.sources
   apt-get update
 
   echo "Repo configured at /etc/apt/sources.list.d/pgedge.sources"
