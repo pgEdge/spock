@@ -99,6 +99,14 @@ typedef struct SpockContext
 	/* Signal that subscription info have changed. */
 	bool		subscriptions_changed;
 
+	/*
+	 * Set once the channel counter hash has run out of room, so the counters
+	 * are known to be incomplete.  Shared rather than process-local: the
+	 * worker that hits the limit is not the backend that reports it through
+	 * spock.get_monitor_summary().  Protected by the lock above.
+	 */
+	bool		stats_hash_full;
+
 	/* Spock slot-group data */
 	LWLock	   *slot_group_master_lock;
 	int			slot_ngroups;
@@ -155,7 +163,6 @@ extern RepOriginId spock_session_origin_id;
 extern SpockSubscription *MySubscription;
 extern int	spock_stats_max_entries_conf;
 extern int	spock_stats_max_entries;
-extern bool spock_stats_hash_full;
 
 #define SPOCK_STATS_MAX_ENTRIES(_nworkers) \
 	(spock_stats_max_entries_conf < 0 ? (1000 * _nworkers) \
