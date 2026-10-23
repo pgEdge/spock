@@ -59,8 +59,8 @@ DROP TABLE test_380 CASCADE;
 -- CLUSTER on partitioned table can't be performed inside a transaction.
 -- Check this special use case.
 CREATE TABLE test_383 (a int) PARTITION BY RANGE (a);
-CREATE TABLE test_383_1 PARTITION OF clstrpart FOR VALUES FROM (1) TO (10);
-CREATE TABLE test_383_2 PARTITION OF clstrpart1 FOR VALUES FROM (1) TO (5);
+CREATE TABLE test_383_1 PARTITION OF test_383 FOR VALUES FROM (1) TO (10);
+CREATE TABLE test_383_2 PARTITION OF test_383 FOR VALUES FROM (10) TO (20);
 CREATE INDEX test_383_y_idx ON test_383 (a);
 CLUSTER test_383 USING test_383_y_idx; -- Should not be replicated
 DROP TABLE test_383 CASCADE;
