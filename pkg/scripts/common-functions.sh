@@ -105,7 +105,7 @@ install_repo_client_cert() {
       n == 1 { print > leaf }
       n == 2 { print > issuer }
     ' "$crt_src"
-    if ! openssl verify -partial_chain -no_check_time \
+    if ! openssl verify -partial_chain -no_check_time -no-CApath -no-CAfile \
          -CAfile "$issuer_pem" "$leaf_pem" >/dev/null 2>&1; then
       rm -f "$leaf_pem" "$issuer_pem"
       echo "Error: the second certificate in the file did not issue the first." >&2
@@ -114,6 +114,14 @@ install_repo_client_cert() {
       return 1
     fi
     rm -f "$leaf_pem" "$issuer_pem"
+
+    # Checked separately from the issuer test above, which deliberately ignores
+    # time: an expired certificate should say so, not look like a broken chain.
+    if ! openssl x509 -in "$crt_src" -noout -checkend 0 >/dev/null 2>&1; then
+      echo "Error: the client certificate has expired." >&2
+      _cleanup_staged_client_cert "$staged" "$crt_src" "$key_src"
+      return 1
+    fi
   fi
 
   # Both files can be valid PEM and still not belong together. That mismatch
@@ -252,12 +260,21 @@ configure_pgedge_dnf_repo() {
   sudo sed -i "s|release|$REPO_TYPE|g" /etc/yum.repos.d/pgedge.repo
 
   # pgedge-release ships its stanzas disabled; srpm stays that way.
-  sudo awk '
+  # No sudo on awk: the repo file is world-readable, and a redirect is not
+  # privileged anyway. Only the write back needs root. Writing a temp file and
+  # installing it keeps the live file from being left half-written.
+  local repo_tmp rc=0
+  repo_tmp=$(mktemp) || return 1
+  awk '
     /^\[/ { section = $0 }
     { if (section !~ /srpm/ && $0 ~ /^enabled=0$/) print "enabled=1"; else print }
-  ' /etc/yum.repos.d/pgedge.repo > /tmp/pgedge.repo.$$ \
-    && sudo install -m 0644 /tmp/pgedge.repo.$$ /etc/yum.repos.d/pgedge.repo
-  rm -f /tmp/pgedge.repo.$$
+  ' /etc/yum.repos.d/pgedge.repo > "$repo_tmp" \
+    && sudo install -m 0644 "$repo_tmp" /etc/yum.repos.d/pgedge.repo || rc=1
+  rm -f "$repo_tmp"
+  if [ "$rc" -ne 0 ]; then
+    echo "Error: could not enable the pgEdge repositories." >&2
+    return 1
+  fi
 
   echo "Repo configured at /etc/yum.repos.d/pgedge.repo"
 }
