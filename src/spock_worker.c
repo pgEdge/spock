@@ -183,6 +183,13 @@ spock_worker_register(SpockWorker *worker)
 				 shorten_hash(NameStr(worker->worker.sync.relname), NAMEDATALEN - 37),
 				 worker->dboid, worker->worker.sync.apply.subid);
 	}
+	else if (worker->worker_type == SPOCK_WORKER_GROUP_SLOT)
+	{
+		snprintf(bgw.bgw_function_name, BGW_MAXLEN,
+				 "spock_group_slot_main");
+		snprintf(bgw.bgw_name, BGW_MAXLEN,
+				 "spock group_slot %u", worker->dboid);
+	}
 	else
 	{
 		snprintf(bgw.bgw_function_name, BGW_MAXLEN,
@@ -502,6 +509,26 @@ spock_manager_find(Oid dboid)
 	for (i = 0; i < SpockCtx->total_workers; i++)
 	{
 		if (SpockCtx->workers[i].worker_type == SPOCK_WORKER_MANAGER &&
+			dboid == SpockCtx->workers[i].dboid)
+			return &SpockCtx->workers[i];
+	}
+
+	return NULL;
+}
+
+/*
+ * Find the group-slot worker for given database.
+ */
+SpockWorker *
+spock_group_slot_find(Oid dboid)
+{
+	int			i;
+
+	Assert(LWLockHeldByMe(SpockCtx->lock));
+
+	for (i = 0; i < SpockCtx->total_workers; i++)
+	{
+		if (SpockCtx->workers[i].worker_type == SPOCK_WORKER_GROUP_SLOT &&
 			dboid == SpockCtx->workers[i].dboid)
 			return &SpockCtx->workers[i];
 	}
@@ -920,6 +947,8 @@ spock_worker_type_name(SpockWorkerType type)
 			return "apply";
 		case SPOCK_WORKER_SYNC:
 			return "sync";
+		case SPOCK_WORKER_GROUP_SLOT:
+			return "group_slot";
 		default:
 			Assert(false);
 			return NULL;
