@@ -285,9 +285,16 @@ jobs:
                   mkdir -p .github/actions
                   # Pinned to gated-release: it carries repo_client_crt/repo_client_key.
                   # REVERT to the default branch once that is merged to main.
-                  git clone --depth 1 --branch gated-release \
-                      "https://x-access-token:${TOKEN}@github.com/pgEdge/pgedge-builder-action.git" \
-                      ".github/actions/pgedge-builder-action"
+                  # Pinned to an immutable commit of pgedge-builder-action's gated-release
+                  # branch, which carries repo_client_crt/repo_client_key. A branch ref can be
+                  # retargeted, and this checkout runs with the repo client certificate and key.
+                  # REVERT to a reviewed commit on main once gated-release is merged there.
+                  builder_action_sha=23ee5f525497ed7ea8c963eff83a275781476e89
+                  git init -q .github/actions/pgedge-builder-action
+                  git -C .github/actions/pgedge-builder-action remote add origin \
+                      "https://x-access-token:${TOKEN}@github.com/pgEdge/pgedge-builder-action.git"
+                  git -C .github/actions/pgedge-builder-action fetch -q --depth 1 origin "$builder_action_sha"
+                  git -C .github/actions/pgedge-builder-action checkout -q --detach FETCH_HEAD
 
             - name: Build RPM
               uses: ./.github/actions/pgedge-builder-action
@@ -485,9 +492,16 @@ jobs:
                   mkdir -p .github/actions
                   # Pinned to gated-release: it carries repo_client_crt/repo_client_key.
                   # REVERT to the default branch once that is merged to main.
-                  git clone --depth 1 --branch gated-release \
-                      "https://x-access-token:${TOKEN}@github.com/pgEdge/pgedge-builder-action.git" \
-                      ".github/actions/pgedge-builder-action"
+                  # Pinned to an immutable commit of pgedge-builder-action's gated-release
+                  # branch, which carries repo_client_crt/repo_client_key. A branch ref can be
+                  # retargeted, and this checkout runs with the repo client certificate and key.
+                  # REVERT to a reviewed commit on main once gated-release is merged there.
+                  builder_action_sha=23ee5f525497ed7ea8c963eff83a275781476e89
+                  git init -q .github/actions/pgedge-builder-action
+                  git -C .github/actions/pgedge-builder-action remote add origin \
+                      "https://x-access-token:${TOKEN}@github.com/pgEdge/pgedge-builder-action.git"
+                  git -C .github/actions/pgedge-builder-action fetch -q --depth 1 origin "$builder_action_sha"
+                  git -C .github/actions/pgedge-builder-action checkout -q --detach FETCH_HEAD
 
             - name: Build DEB
               uses: ./.github/actions/pgedge-builder-action
