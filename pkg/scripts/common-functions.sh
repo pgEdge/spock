@@ -113,15 +113,20 @@ install_repo_client_cert() {
       _cleanup_staged_client_cert "$staged" "$crt_src" "$key_src"
       return 1
     fi
-    rm -f "$leaf_pem" "$issuer_pem"
 
-    # Checked separately from the issuer test above, which deliberately ignores
-    # time: an expired certificate should say so, not look like a broken chain.
-    if ! openssl x509 -in "$crt_src" -noout -checkend 0 >/dev/null 2>&1; then
-      echo "Error: the client certificate has expired." >&2
+    # The same verification again, this time WITH the validity dates. Separate
+    # from the check above so each failure says what it is, and it covers the
+    # issuer as well as the leaf: an expired intermediate under a leaf that is
+    # still in date would otherwise pass, then fail at the first authenticated
+    # request with nothing pointing at the cause.
+    if ! openssl verify -partial_chain -no-CApath -no-CAfile \
+         -CAfile "$issuer_pem" "$leaf_pem" >/dev/null 2>&1; then
+      rm -f "$leaf_pem" "$issuer_pem"
+      echo "Error: the client certificate or its issuer is expired or not yet valid." >&2
       _cleanup_staged_client_cert "$staged" "$crt_src" "$key_src"
       return 1
     fi
+    rm -f "$leaf_pem" "$issuer_pem"
   fi
 
   # Both files can be valid PEM and still not belong together. That mismatch
