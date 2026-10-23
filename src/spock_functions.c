@@ -2131,6 +2131,64 @@ Datum spock_replicate_ddl_command(PG_FUNCTION_ARGS)
 }
 
 /*
+ * Does this CLUSTER or REPACK commit, or wait, on its own as it runs?
+ *
+ * With no table it reorganizes every table it can find, committing after
+ * each one, and a partitioned table takes that same path one partition at
+ * a time.  On PostgreSQL 19, REPACK (ANALYZE) commits between the rewrite
+ * and the analyze even for a single table, and REPACK (CONCURRENTLY) sets
+ * up logical decoding that waits for the running transaction to end.
+ *
+ * None of these can run inside the apply worker's transaction: the commits
+ * leave the worker with a finished transaction under its feet and it
+ * crashes, and the wait is on the worker itself, so it never returns.  Such
+ * a statement is run locally and left out of the queue.
+ */
+static bool
+cluster_commits_on_its_own(Node *stmt)
+{
+	RangeVar   *rv;
+	Oid			relid;
+#if PG_VERSION_NUM >= 190000
+	RepackStmt *repack = castNode(RepackStmt, stmt);
+	ListCell   *lc;
+
+	if (repack->relation == NULL)
+		return true;
+
+	foreach(lc, repack->params)
+	{
+		DefElem    *opt = lfirst_node(DefElem, lc);
+
+		if ((strcmp(opt->defname, "analyze") == 0 ||
+			 strcmp(opt->defname, "analyse") == 0 ||
+			 strcmp(opt->defname, "concurrently") == 0) &&
+			defGetBoolean(opt))
+			return true;
+	}
+
+	rv = repack->relation->relation;
+#else
+	ClusterStmt *cluster = castNode(ClusterStmt, stmt);
+
+	if (cluster->relation == NULL)
+		return true;
+
+	rv = cluster->relation;
+#endif
+
+	/*
+	 * Look the table up the way this hook always did: locked, and an error if
+	 * it is gone.  ExecRepack() may have committed and released its locks
+	 * before the hook runs, so the table can have been dropped or renamed by
+	 * now, and an unresolved name must not pass as safe to replicate.
+	 */
+	relid = RangeVarGetRelid(rv, AccessShareLock, false);
+
+	return get_rel_relkind(relid) == RELKIND_PARTITIONED_TABLE;
+}
+
+/*
  * spock_auto_replicate_ddl
  *
  * Add the DDL statement to the spock.queue table so it can
@@ -2223,15 +2281,20 @@ spock_auto_replicate_ddl(const char *query, List *replication_sets,
 		case T_CreateTableSpaceStmt:	/* TABLESPACE */
 		case T_DropTableSpaceStmt:
 		case T_AlterTableSpaceOptionsStmt:
+			add_search_path = false;
+			break;
+
+			/*
+			 * PostgreSQL 19 folded CLUSTER into the new REPACK command, so a
+			 * CLUSTER statement now parses into a RepackStmt.
+			 */
 #if PG_VERSION_NUM >= 190000
-		/*
-		 * PostgreSQL 19 folded CLUSTER into the new REPACK command, so a
-		 * CLUSTER statement now parses into a RepackStmt.
-		 */
-		case T_RepackStmt:				/* CLUSTER */
+		case T_RepackStmt:				/* CLUSTER, REPACK */
 #else
 		case T_ClusterStmt:				/* CLUSTER */
 #endif
+			if (cluster_commits_on_its_own(stmt))
+				goto skip_ddl;
 			add_search_path = false;
 			break;
 

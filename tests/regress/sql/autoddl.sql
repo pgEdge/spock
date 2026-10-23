@@ -31,6 +31,23 @@ $func$ LANGUAGE plpgsql;
 SELECT auto_ddl_test();
 INSERT INTO test1 VALUES (1, 'one'), (2, 'two');
 
+-- CLUSTER without a table commits after every table it processes, and so
+-- does CLUSTER on a partitioned table, one partition at a time.  Neither can
+-- be replayed inside the apply worker's transaction: AutoDDL must warn and
+-- leave them out of the queue, while CLUSTER on one plain table replicates.
+-- The hook fires for the table-less form outside a transaction, which
+-- AutoDDL has to handle.
+CREATE TABLE test_380 (x serial PRIMARY KEY, y integer);
+CREATE INDEX test_380_y_idx ON test_380 (y);
+ALTER TABLE test_380 CLUSTER ON test_380_y_idx;
+CLUSTER;
+CLUSTER test_380;
+CREATE TABLE test_380_part (x integer, y integer) PARTITION BY RANGE (x);
+CREATE TABLE test_380_part1 PARTITION OF test_380_part
+    FOR VALUES FROM (0) TO (100);
+CREATE INDEX test_380_part_y_idx ON test_380_part (y);
+CLUSTER test_380_part USING test_380_part_y_idx;
+
 -- Generate a sync event
 SELECT spock.sync_event() as sync_event
 \gset
@@ -45,16 +62,14 @@ SELECT count(*) FROM spock.tables where nspname = 'hollywood' AND set_name IS NO
 SELECT count(*) FROM spock.tables where relname = 'test1' AND set_name IS NOT NULL;
 SELECT count(*) FROM spock.tables where (relname = 'test2' or relname = 'test3') AND set_name IS NOT NULL;
 
--- auto-ddl and transaction state: check that auto-ddl initiates a new
--- transaction if it is not inside one.
-CREATE TABLE test_380 (x serial PRIMARY KEY, y integer);
-CREATE INDEX test_380_y_idx ON test_380 (y);
-ALTER TABLE test_380 CLUSTER ON test_380_y_idx;
-CLUSTER; -- Should call utility hook outside of transaction state
-DROP TABLE test_380 CASCADE;
+-- test_380 arrived with its clustered index and replication went on.
+SELECT indisclustered FROM pg_index WHERE indexrelid = 'test_380_y_idx'::regclass;
+SELECT status FROM spock.sub_show_status();
 
 -- Reset the configuration to the default value
 \c :provider_dsn
+DROP TABLE test_380 CASCADE;
+DROP TABLE test_380_part CASCADE;
 ALTER SYSTEM SET spock.enable_ddl_replication = 'off';
 ALTER SYSTEM SET spock.include_ddl_repset = 'off';
 ALTER SYSTEM SET spock.allow_ddl_from_functions = 'off';
