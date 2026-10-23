@@ -27,6 +27,7 @@
 #include "storage/shmem.h"
 
 #include "spock_shmem.h"
+#include "spock_monitor.h"
 #include "spock_worker.h"
 #include "spock_group.h"
 #include "spock_output_plugin.h"
@@ -115,6 +116,9 @@ spock_shmem_request(void)
 	/* Request shmem for Apply Group */
 	spock_group_shmem_request(max_worker_processes);
 
+	/* Request shared memory for the monitoring subsystem */
+	spock_monitor_shmem_request(max_worker_processes);
+
 	/* For SpockCtx->lock */
 	RequestNamedLWLockTranche("spock context lock", 1);
 }
@@ -156,6 +160,7 @@ spock_shmem_startup(void)
 		SpockCtx->lock = &((GetNamedLWLockTranche("spock context lock")[0]).lock);
 		SpockCtx->supervisor = NULL;
 		SpockCtx->subscriptions_changed = false;
+		SpockCtx->stats_hash_full = false;
 		SpockCtx->total_workers = nworkers;
 		pg_atomic_init_u32(&SpockCtx->pause_apply, 0);
 		ConditionVariableInit(&SpockCtx->pause_cv);
@@ -171,6 +176,9 @@ spock_shmem_startup(void)
 
 	/* Initialize spock_group's shared memory. */
 	spock_group_shmem_startup(found);
+
+	/* Initialize the monitoring subsystem shared memory structures */
+	spock_monitor_shmem_startup(found);
 
 	LWLockRelease(AddinShmemInitLock);
 }

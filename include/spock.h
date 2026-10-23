@@ -126,6 +126,15 @@ extern Oid	get_spock_table_oid(const char *table);
 extern void spock_execute_sql_command(char *cmdstr, char *role,
 									  bool isTopLevel);
 
+/*
+ * A connection string carries its password, so anything that echoes one back
+ * is masked from the keyword to the end of the value before it is logged or
+ * stored.  Shared so the monitoring views mask what they keep as well.
+ */
+#define SPOCK_PSWD_KEYWORD	"password"
+
+extern char *pg_strcasestr(const char *str, const char *substr);
+
 extern PGconn *spock_connect(const char *connstring, const char *connname,
 							 const char *suffix);
 extern PGconn *spock_connect_replica(const char *connstring,

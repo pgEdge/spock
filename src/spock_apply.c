@@ -76,6 +76,7 @@
 #include "spock_common.h"
 #include "spock_conflict.h"
 #include "spock_executor.h"
+#include "spock_monitor.h"
 #include "spock_node.h"
 #include "spock_progress_recovery.h"
 #include "spock_proto_native.h"
@@ -173,6 +174,9 @@ static uint32 xact_action_counter;
  * at commit time.
  */
 static bool xact_had_exception = false;
+
+/* The failing transaction's first error has been reported to the monitor. */
+static bool xact_error_reported = false;
 
 typedef struct SPKFlushPosition
 {
@@ -751,6 +755,10 @@ handle_begin(StringInfo s)
 	xact_had_exception = false;
 	errcallback_arg.action_name = "BEGIN";
 
+	/* A replay repeats the same transaction; only a new one starts afresh. */
+	if (!MyApplyWorker->use_try_block)
+		xact_error_reported = false;
+
 	spock_read_begin(s, &commit_lsn, &commit_time, &remote_xid);
 	maybe_start_skipping_changes(commit_lsn);
 
@@ -1021,6 +1029,8 @@ handle_commit(StringInfo s)
 	TimestampTz commit_time;
 	XLogRecPtr	remote_insert_lsn;
 	XLogRecPtr	local_commit_lsn = InvalidXLogRecPtr;
+	bool		xact_discarded = false;
+	bool		xact_skipped = false;
 
 	errcallback_arg.action_name = "COMMIT";
 	xact_action_counter++;
@@ -1045,6 +1055,7 @@ handle_commit(StringInfo s)
 		SpockExceptionLog *exception_log;
 
 		stop_skipping_changes();
+		xact_skipped = true;
 
 		/*
 		 * Clear exception handling state since we successfully skipped the
@@ -1146,6 +1157,16 @@ handle_commit(StringInfo s)
 				 exception_log->initial_error_message[0] != '\0' ? ". Initial error: " : "",
 				 exception_log->initial_error_message[0] != '\0' ? exception_log->initial_error_message : "");
 
+			if (exception_behaviour == TRANSDISCARD)
+			{
+				xact_discarded = true;
+				spock_monitor_record_event(SPOCK_EVENT_TRANSACTION_DISCARDED,
+										   MySubscription->id, end_lsn, "%s",
+										   exception_log->initial_error_message[0] != '\0'
+										   ? exception_log->initial_error_message
+										   : "transaction discarded");
+			}
+
 			/*
 			 * Clear the exception state so we don't enter exception handling
 			 * mode again on the next transaction.
@@ -1164,6 +1185,21 @@ handle_commit(StringInfo s)
 
 		if (replorigin_session_origin_lsn == end_lsn)
 			log_origin_progress(end_lsn);
+
+		/*
+		 * Count what this commit actually did.  stop_skipping_changes()
+		 * already counted a skipped transaction, and the commit here only
+		 * clears subskiplsn, so counting it again would have it appear as
+		 * both skipped and applied.  A SUB_DISABLE retry likewise commits
+		 * nothing but its exception_log rows before the ERROR below disables
+		 * the subscription, so it was not applied either.
+		 */
+		if (xact_discarded)
+			spock_monitor_count(SPOCK_MONITOR_XACTS_DISCARDED, 1);
+		else if (!xact_skipped &&
+				 !(exception_behaviour == SUB_DISABLE &&
+				   (xact_had_exception || MyApplyWorker->use_try_block)))
+			spock_monitor_count(SPOCK_MONITOR_XACTS_APPLIED, 1);
 
 		if (WalSndCtl->sync_standbys_status & SYNC_STANDBY_DEFINED)
 			append_feedback_position(XactLastCommitEnd, end_lsn);
@@ -3898,6 +3934,7 @@ stream_replay:
 													  (long) spock_apply_idle_timeout * 1000L);
 				if (GetCurrentTimestamp() > timeout)
 				{
+					spock_monitor_count(SPOCK_MONITOR_IDLE_TIMEOUTS, 1);
 					MySpockWorker->worker_status = SPOCK_WORKER_STATUS_STOPPED;
 					ereport(ERROR,
 							(errcode(ERRCODE_CONNECTION_FAILURE),
@@ -4035,6 +4072,7 @@ stream_replay:
 					 * but don't add it to the queue yet.
 					 */
 					entry = apply_replay_entry_create(r, buf);
+					spock_monitor_message_received(r, last_receive_timestamp);
 					queue_append = true;
 				}
 				else
@@ -4259,15 +4297,11 @@ stream_replay:
 		 * version-mismatched provider, which is permanent and would then retry
 		 * forever.
 		 */
-		if (edata->sqlerrcode == ERRCODE_CONNECTION_FAILURE ||
-			edata->sqlerrcode == ERRCODE_CONNECTION_EXCEPTION ||
-			edata->sqlerrcode == ERRCODE_CONNECTION_DOES_NOT_EXIST ||
-			edata->sqlerrcode == ERRCODE_ADMIN_SHUTDOWN ||
-			edata->sqlerrcode == ERRCODE_CRASH_SHUTDOWN ||
-			edata->sqlerrcode == ERRCODE_CANNOT_CONNECT_NOW ||
+		if (spock_monitor_is_connection_error(edata->sqlerrcode) ||
 			(applyconn != NULL && PQstatus(applyconn) == CONNECTION_BAD))
 		{
 			clear_transient_exception_state("provider connection loss");
+			spock_monitor_provider_disconnected(edata->message);
 
 			/*
 			 * Pace the respawn as the transient branches below do.  An error
@@ -4358,6 +4392,13 @@ stream_replay:
 		if (exception_behaviour == SUB_DISABLE &&
 			(xact_had_exception || MyApplyWorker->use_try_block))
 		{
+			/*
+			 * The first error of this transaction was reported when it
+			 * entered replay; the error that ends the replay is only the
+			 * request to disable.
+			 */
+			if (!xact_error_reported)
+				spock_monitor_report_error(edata);
 			spock_disable_subscription(MySubscription,
 									   remote_origin_id,
 									   remote_xid,
@@ -4406,7 +4447,13 @@ stream_replay:
 		 * mode. We need to abort the current toplevel transactions and reset
 		 * cache states so that we can retry the transaction in
 		 * exception-handling mode by replaying from the queue.
+		 *
+		 * A caught error is never emitted, so the monitoring hook does not
+		 * see it; report it here.  The rethrow paths above reach the hook
+		 * through the worker's top-level error handler.
 		 */
+		spock_monitor_report_error(edata);
+		xact_error_reported = true;
 		AbortOutOfAnyTransaction();
 
 		MemoryContextSwitchTo(MessageContext);
@@ -4558,6 +4605,11 @@ stop_skipping_changes(void)
 	ereport(LOG,
 			(errmsg("SPOCK %s: logical replication completed skipping transaction at LSN %X/%X",
 					MySubscription->name, LSN_FORMAT_ARGS(skip_xact_finish_lsn))));
+
+	spock_monitor_count(SPOCK_MONITOR_XACTS_SKIPPED, 1);
+	spock_monitor_record_event(SPOCK_EVENT_TRANSACTION_SKIPPED,
+							   MySubscription->id, skip_xact_finish_lsn,
+							   "transaction skipped by sub_skip_lsn");
 
 	/* Stop skipping changes */
 	skip_xact_finish_lsn = InvalidXLogRecPtr;

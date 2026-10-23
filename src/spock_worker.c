@@ -50,6 +50,7 @@
 #include "spock_relcache.h"
 #include "spock_exception_handler.h"
 #include "spock_group.h"
+#include "spock_monitor.h"
 #include "spock_shmem.h"
 #include "spock_injection.h"
 
@@ -68,7 +69,6 @@ SpockWorker *MySpockWorker = NULL;
 static uint16 MySpockWorkerGeneration;
 int			spock_stats_max_entries_conf = -1;
 int			spock_stats_max_entries;
-bool		spock_stats_hash_full = false;
 
 
 static bool xact_cb_installed = false;
@@ -399,6 +399,8 @@ spock_worker_attach(int slot, SpockWorkerType type)
 		MemoryContextSwitchTo(oldcontext);
 		CommitTransactionCommand();
 	}
+
+	spock_monitor_worker_attached();
 }
 
 /*
@@ -421,6 +423,8 @@ spock_worker_detach(bool crash)
 	 * callers can distinguish worker types if needed.
 	 */
 	SPOCK_WORKER_DELAY();
+
+	spock_monitor_worker_detached(crash);
 
 	LWLockAcquire(SpockCtx->lock, LW_EXCLUSIVE);
 
@@ -955,9 +959,12 @@ handle_stats_counter(Relation relation, Oid subid, spockStatsType typ, int ntup)
 		 * Didn't find this entry. Check that we didn't exceed the hash table
 		 * previously.
 		 */
-		LWLockRelease(SpockCtx->lock);
-		if (spock_stats_hash_full)
+		if (SpockCtx->stats_hash_full)
+		{
+			LWLockRelease(SpockCtx->lock);
 			return;
+		}
+		LWLockRelease(SpockCtx->lock);
 
 		/*
 		 * Upgrade to exclusive lock since we attempt to create a new entry in
@@ -966,9 +973,9 @@ handle_stats_counter(Relation relation, Oid subid, spockStatsType typ, int ntup)
 		LWLockAcquire(SpockCtx->lock, LW_EXCLUSIVE);
 		if (hash_get_num_entries(SpockHash) >= spock_stats_max_entries)
 		{
+			SpockCtx->stats_hash_full = true;
 			LWLockRelease(SpockCtx->lock);
 			elog(LOG, "SPOCK: channel counter hash table full");
-			spock_stats_hash_full = true;
 			return;
 		}
 
@@ -981,9 +988,9 @@ handle_stats_counter(Relation relation, Oid subid, spockStatsType typ, int ntup)
 		 */
 		if (entry == NULL)
 		{
+			SpockCtx->stats_hash_full = true;
 			LWLockRelease(SpockCtx->lock);
 			elog(WARNING, "SpockHash is full, cannot add stats entry");
-			spock_stats_hash_full = true;
 			return;
 		}
 	}
