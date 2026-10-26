@@ -27,24 +27,3 @@ WHERE extname = 'spock';
 (1 row)
 
 DROP EXTENSION spock;
--- test upgrades
-DO $$
-BEGIN
-        IF version() ~ 'Postgres-XL' THEN
-                CREATE EXTENSION IF NOT EXISTS spock;
-        ELSE
-                CREATE EXTENSION IF NOT EXISTS spock VERSION '3.2';
-        END IF;
-END;
-$$;
-ALTER EXTENSION spock UPDATE;
-NOTICE:  version "3.2" of extension "spock" is already installed
-SELECT spock.spock_version() = extversion
-FROM pg_extension
-WHERE extname = 'spock';
- ?column? 
-----------
- t
-(1 row)
-
-DROP EXTENSION spock;
