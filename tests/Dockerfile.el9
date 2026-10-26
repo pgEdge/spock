@@ -1,38 +1,78 @@
 FROM rockylinux:9
-RUN dnf -y  --allowerasing install bzip2 epel-release  \
-    curl sudo procps vim unzip python3 nc  \
-    openssh-server openssh-clients dnsutils clang
-RUN dnf -y groupinstall "Development Tools"
+
+ARG PGVER
+
+ENV PGVER=$PGVER
+
+RUN dnf -y update && dnf -y install sudo && dnf -y groupinstall "Development Tools"
+
 RUN useradd -m pgedge -s /bin/bash && \
     echo pgedge:asdf | chpasswd && \
-    echo "pgedge ALL=(ALL) NOPASSWD:ALL" >/etc/sudoers.d/pgedge
-COPY lib-list.txt /home/pgedge/
-RUN dnf install --enablerepo=crb -y $(cat /home/pgedge/lib-list.txt)
-USER pgedge
-WORKDIR /home/pgedge
+    echo "pgedge ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/pgedge && \
+    chmod 0440 /etc/sudoers.d/pgedge && \
+    chown -R pgedge:pgedge /home/pgedge
 
-RUN git clone https://github.com/postgres/postgres /home/pgedge/postgres && \
-          cd /home/pgedge/postgres && git checkout REL_16_2
+COPY tests/lib-list.txt /home/pgedge/
+
+RUN dnf install --allowerasing --enablerepo=crb -y $(cat /home/pgedge/lib-list.txt)
+
+COPY . /home/pgedge/spock
+RUN chown -R pgedge:pgedge /home/pgedge/spock
+#-----------------------------------------
+USER pgedge
 
 RUN ssh-keygen -t ed25519 -N "" -f ~/.ssh/id_ed25519 && \
-    cat ~/.ssh/*.pub >> ~/.ssh/authorized_keys && \
-    sudo chmod -R a+w ~/postgres
+    cat ~/.ssh/*.pub >> ~/.ssh/authorized_keys
 
-RUN curl -fsSL https://pgedge-upstream.s3.amazonaws.com/REPO/install.py > /home/pgedge/install.py
+WORKDIR /home/pgedge
+
+RUN echo "Determine PostgreSQL tag"
+RUN LATEST_TAG=$(git ls-remote --tags https://github.com/postgres/postgres.git | \
+				grep "refs/tags/REL_${PGVER}_" | \
+				sed 's|.*refs/tags/||' | \
+				tr '_' '.' | \
+				sort -V | \
+				tail -n 1 | \
+				tr '.' '_') && \
+			echo "Using tag $LATEST_TAG" && \
+			git clone --branch $LATEST_TAG --depth 1 https://github.com/postgres/postgres /home/pgedge/postgres
+
+
+RUN sudo chmod -R a+w ~/postgres
+
+RUN echo "Setting up pgedge..."
+WORKDIR /home/pgedge
+RUN curl -fsSL https://pgedge-download.s3.amazonaws.com/REPO/install.py > /home/pgedge/install.py
 RUN sudo -u pgedge python3 /home/pgedge/install.py
-RUN cd pgedge && ./pgedge setup -U admin -P inSecure123! -d demo --pg 16 && ./pgedge stop
-COPY pg16* /home/pgedge/postgres/
-WORKDIR /home/pgedge/postgres
-RUN git apply --verbose pg16*
-RUN options="'--prefix=/home/pgedge/pgedge/pg16' '--disable-rpath' '--with-zstd' '--with-lz4' '--with-icu' '--with-libxslt' '--with-libxml' '--with-uuid=ossp' '--with-gssapi' '--with-ldap' '--with-pam' '--enable-debug' '--enable-dtrace' '--with-llvm' 'LLVM_CONFIG=/usr/bin/llvm-config-64' '--with-openssl' '--with-systemd' '--enable-tap-tests' '--with-python' 'PYTHON=/usr/bin/python3.9' 'BITCODE_CFLAGS=-gdwarf-5 -O0 -fforce-dwarf-frame' 'CFLAGS=-g -O0'" && \
-    eval ./configure $options && \
-    make -j16 && \
-    make install
 
-COPY entrypoint.sh /home/pgedge
-COPY run-tests.sh /home/pgedge
-RUN sudo chmod +x /home/pgedge/entrypoint.sh
-RUN sudo chmod +x /home/pgedge/run-tests.sh
 WORKDIR /home/pgedge/pgedge
+# Set up according to the environment in pgedge.env file in tests subdir
+RUN . /home/pgedge/spock/tests/pgedge.env && ./pgedge setup -U $DBUSER -P $DBPASSWD -d $DBNAME --pg_ver=$PGVER && ./pgedge stop
 
-CMD /home/pgedge/entrypoint.sh
+WORKDIR /home/pgedge/postgres
+
+RUN git apply --verbose /home/pgedge/spock/patches/pg${PGVER}*
+
+RUN echo "==========Compiling Modified PostgreSQL=========="
+RUN options="'--prefix=/home/pgedge/pgedge/pg$PGVER' '--disable-rpath' '--with-zstd' '--with-lz4' '--with-icu' '--with-libxslt' '--with-libxml' '--with-uuid=ossp' '--with-gssapi' '--with-ldap' '--with-pam' '--enable-debug' '--enable-dtrace' '--with-llvm' 'LLVM_CONFIG=/usr/bin/llvm-config-64' '--with-openssl' '--with-systemd' '--enable-tap-tests' '--with-python' 'PYTHON=/usr/bin/python3.9' 'BITCODE_CFLAGS=-gdwarf-5 -O0 -fforce-dwarf-frame' 'CFLAGS=-g -O0'" && eval ./configure $options && make -j4 && make install
+
+WORKDIR /home/pgedge
+
+RUN echo "export LD_LIBRARY_PATH=/home/pgedge/pgedge/pg$PGVER/lib/:$LD_LIBRARY_PATH" >> /home/pgedge/.bashrc
+RUN echo "export PATH=/home/pgedge/pgedge/pg$PGVER/bin:$PATH" >> /home/pgedge/.bashrc
+
+RUN echo "==========Recompiling Spock=========="
+WORKDIR /home/pgedge/spock
+RUN . /home/pgedge/.bashrc && export PG_CONFIG=/home/pgedge/pgedge/pg$PGVER/bin/pg_config && export PATH=/home/pgedge/pgedge/pg$PGVER/bin:$PATH && make clean && make -j16 && make install
+
+RUN echo "==========Built Spock=========="
+
+#-----------------------------------------
+COPY tests/entrypoint.sh tests/run-tests.sh /home/pgedge/
+
+RUN sudo chmod +x /home/pgedge/entrypoint.sh /home/pgedge/run-tests.sh
+
+WORKDIR /home/pgedge/
+USER pgedge
+
+CMD ["/home/pgedge/entrypoint.sh"]
