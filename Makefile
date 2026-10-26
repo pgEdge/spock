@@ -22,7 +22,7 @@ OBJS = spock_apply.o spock_conflict.o spock_manager.o \
 SCRIPTS_built = spock_create_subscriber
 
 REGRESS = preseed infofuncs init_fail init preseed_check basic conflict_secondary_unique \
-		  toasted replication_set matview bidirectional primary_key \
+		  toasted replication_set wire_tuple_sanity matview bidirectional primary_key \
 		  interfaces foreign_key copy sequence triggers parallel row_filter \
 		  row_filter_sampling att_list column_filter apply_delay multiple_upstreams \
 		  node_origin_cascade drop
