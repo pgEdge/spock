@@ -51,7 +51,7 @@ RUN . /home/pgedge/spock/tests/pgedge.env && ./pgedge setup -U $DBUSER -P $DBPAS
 
 WORKDIR /home/pgedge/postgres
 
-RUN git apply --verbose /home/pgedge/spock/patches/pg${PGVER}*
+RUN for p in /home/pgedge/spock/patches/pg${PGVER}*; do echo "Applying $p"; patch -p1 --forward < "$p" || exit 1; done
 
 RUN echo "==========Compiling Modified PostgreSQL=========="
 RUN options="'--prefix=/home/pgedge/pgedge/pg$PGVER' '--disable-rpath' '--with-zstd' '--with-lz4' '--with-icu' '--with-libxslt' '--with-libxml' '--with-uuid=ossp' '--with-gssapi' '--with-ldap' '--with-pam' '--enable-debug' '--enable-dtrace' '--with-llvm' 'LLVM_CONFIG=/usr/bin/llvm-config-64' '--with-openssl' '--with-systemd' '--enable-tap-tests' '--with-python' 'PYTHON=/usr/bin/python3.9' 'BITCODE_CFLAGS=-gdwarf-5 -O0 -fforce-dwarf-frame' 'CFLAGS=-g -O0'" && eval ./configure $options && make -j4 && make install
