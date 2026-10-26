@@ -1,9 +1,24 @@
 name: Spockbench tests
 run-name: Running Spockbench
-on: [push]
+
+on:
+  workflow_dispatch:
+  push:
+
+
+permissions:
+  contents: read
+
 jobs:
   pull-and-test:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest]
+        pgver: [15, 16, 17]
+
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
 
     steps:
       - name: Checkout spock
@@ -23,14 +38,30 @@ jobs:
         run: |
           sudo chmod -R a+w ${GITHUB_WORKSPACE}
 
+      - name: Set up Docker
+        uses: docker/setup-buildx-action@v3
+
+      - name: Set up docker compose
+        uses: docker/setup-compose-action@v1
+        with:
+          version: latest
+
+      - name: Build docker container
+        run: |
+          cd ${GITHUB_WORKSPACE}/
+          docker build \
+            --build-arg PGVER=${{ matrix.pgver }} \
+            -t spock -f tests/Dockerfile.el9 .
+
       - name: Start docker
         run: |
           cd ${GITHUB_WORKSPACE}/tests/
-          docker-compose build
-          docker-compose up
+          rm -f ${GITHUB_WORKSPACE}/ready-* ${GITHUB_WORKSPACE}/confirmed-* ${GITHUB_WORKSPACE}/done-*
+          export PGVER=${{ matrix.pgver }}
+          docker compose up
 
       - name: Check spockbench output
         run: |
-          cd ${GITHUB_WORKSPACE}/tests/
+          cd ${GITHUB_WORKSPACE}/tests
           ./check-outputs.sh
 

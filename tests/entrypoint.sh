@@ -1,29 +1,38 @@
 #!/bin/bash
 set -e
 
-cd /home/pgedge
-. /home/pgedge/pgedge/pg16/pg16.env
-echo 'export LD_LIBRARY_PATH=/home/pgedge/pgedge/pg16/lib/$LD_LIBRARY_PATH' >> /home/pgedge/.bashrc
-echo 'export PATH=/home/test/pgedge/pg16/bin:$PATH' >> /home/pgedge/.bashrc
+function wait_for_pg()
+{
+  count=0
+  while ! pg_isready -h /tmp; do
+    if [ $count -ge 24 ]
+    then
+      echo "Gave up waiting for PostgreSQL to become ready..."
+      exit 1
+    fi
+
+    echo "Waiting for PostgreSQL to become ready..."
+    count=$((count + 1))
+    sleep 5
+  done
+}
+
+. /home/pgedge/pgedge/pg$PGVER/pg$PGVER.env
 . /home/pgedge/.bashrc
 
-echo "==========Recompiling Spock=========="
-cd ~/spock-private
-make clean && make -j16 && make install
-
 echo "==========Installing Spockbench=========="
-cd ~/spockbench
+# All three containers mount the same checkout, so build from a copy
+# of it rather than in it at the same time.
+rm -rf /tmp/spockbench && cp -r ~/spockbench /tmp/spockbench
+cd /tmp/spockbench
 sudo python3 setup.py install
 
 cd ~/pgedge
-sed -i '/log_min_messages/s/^#//g' data/pg16/postgresql.conf
-sed -i -e '/log_min_messages =/ s/= .*/= debug1/' data/pg16/postgresql.conf
+sed -i '/log_min_messages/s/^#//g' data/pg$PGVER/postgresql.conf
+sed -i -e '/log_min_messages =/ s/= .*/= debug1/' data/pg$PGVER/postgresql.conf
 ./pgedge restart
 
-while ! pg_isready -h /tmp; do
-  echo "Waiting for PostgreSQL to become ready..."
-  sleep 1
-done
+wait_for_pg
 
 psql -h /tmp -U $DBUSER -d $DBNAME -c "drop extension spock;"
 psql -h /tmp -U $DBUSER -d $DBNAME -c "drop schema public cascade;"
@@ -32,14 +41,24 @@ psql -h /tmp -U $DBUSER -d $DBNAME -c "create extension spock;"
 
 ./pgedge restart
 
-while ! pg_isready -h /tmp; do
-  echo "Waiting for PostgreSQL to become ready..."
-  sleep 1
-done
+wait_for_pg
+
+echo "==========Assert Spock version is the latest=========="
+expected_line=$(grep '#define SPOCK_VERSION' /home/pgedge/spock/spock.h)
+expected_version=$(echo "$expected_line" | grep -oP '"\K[0-9]+\.[0-9]+\.[0-9]+')
+actual_version=$(psql -U $DBUSER -d $DBNAME -X -t -A -c "select spock.spock_version()")
+
+if [ "$actual_version" = "$expected_version" ]; then
+  echo " Actual version ($actual_version) matches the tree"
+else
+  echo " Actual version ($actual_version) is not what we expected ($expected_version)"
+  exit 1
+fi
+
 
 echo "==========Creating tables and repsets=========="
-./pgedge spock node-create $HOSTNAME "host=$HOSTNAME user=pgedge dbname=demo" demo
-./pgedge spock repset-create demo_replication_set demo
+./pgedge spock node-create $HOSTNAME "host=$HOSTNAME user=pgedge dbname=$DBNAME" $DBNAME
+./pgedge spock repset-create demo_replication_set $DBNAME
 
 IFS=',' read -r -a peer_names <<< "$PEER_NAMES"
 
@@ -47,7 +66,7 @@ for PEER_HOSTNAME in "${peer_names[@]}";
 do
   while :
     do
-      mapfile -t node_array < <(psql -A -t demo -h $PEER_HOSTNAME -c "SELECT node_name FROM spock.node;")
+      mapfile -t node_array < <(psql -A -t $DBNAME -h $PEER_HOSTNAME -c "SELECT node_name FROM spock.node;")
       for element in "${node_array[@]}";
       do
         if [[ "$element" == "$PEER_HOSTNAME" ]]; then
@@ -61,33 +80,33 @@ done
 
 # TODO: Re-introduce parallel slots at a later point when the apply worker restarts are handled correctly
 # and transactions are not skipped on restart in parallel mode
-./pgedge spock sub-create sub_${peer_names[0]}$HOSTNAME   "host=${peer_names[0]} port=5432 user=pgedge dbname=demo" demo
-#./pgedge spock sub-create "sub_${peer_names[0]}$HOSTNAME"_1 "host=${peer_names[0]} port=5432 user=pgedge dbname=demo" demo
-#./pgedge spock sub-create "sub_${peer_names[0]}$HOSTNAME"_2 "host=${peer_names[0]} port=5432 user=pgedge dbname=demo" demo
-#./pgedge spock sub-create "sub_${peer_names[0]}$HOSTNAME"_3 "host=${peer_names[0]} port=5432 user=pgedge dbname=demo" demo
-#./pgedge spock sub-create "sub_${peer_names[0]}$HOSTNAME"_4 "host=${peer_names[0]} port=5432 user=pgedge dbname=demo" demo
+./pgedge spock sub-create sub_${peer_names[0]}$HOSTNAME   "host=${peer_names[0]} port=5432 user=pgedge dbname=$DBNAME" $DBNAME
+#./pgedge spock sub-create "sub_${peer_names[0]}$HOSTNAME"_1 "host=${peer_names[0]} port=5432 user=pgedge dbname=$DBNAME" $DBNAME
+#./pgedge spock sub-create "sub_${peer_names[0]}$HOSTNAME"_2 "host=${peer_names[0]} port=5432 user=pgedge dbname=$DBNAME" $DBNAME
+#./pgedge spock sub-create "sub_${peer_names[0]}$HOSTNAME"_3 "host=${peer_names[0]} port=5432 user=pgedge dbname=$DBNAME" $DBNAME
+#./pgedge spock sub-create "sub_${peer_names[0]}$HOSTNAME"_4 "host=${peer_names[0]} port=5432 user=pgedge dbname=$DBNAME" $DBNAME
 
-./pgedge spock sub-create sub_${peer_names[1]}$HOSTNAME   "host=${peer_names[1]} port=5432 user=pgedge dbname=demo" demo
-#./pgedge spock sub-create "sub_${peer_names[1]}$HOSTNAME"_1 "host=${peer_names[1]} port=5432 user=pgedge dbname=demo" demo
-#./pgedge spock sub-create "sub_${peer_names[1]}$HOSTNAME"_2 "host=${peer_names[1]} port=5432 user=pgedge dbname=demo" demo
-#./pgedge spock sub-create "sub_${peer_names[1]}$HOSTNAME"_3 "host=${peer_names[1]} port=5432 user=pgedge dbname=demo" demo
-#./pgedge spock sub-create "sub_${peer_names[1]}$HOSTNAME"_4 "host=${peer_names[1]} port=5432 user=pgedge dbname=demo" demo
+./pgedge spock sub-create sub_${peer_names[1]}$HOSTNAME   "host=${peer_names[1]} port=5432 user=pgedge dbname=$DBNAME" $DBNAME
+#./pgedge spock sub-create "sub_${peer_names[1]}$HOSTNAME"_1 "host=${peer_names[1]} port=5432 user=pgedge dbname=$DBNAME" $DBNAME
+#./pgedge spock sub-create "sub_${peer_names[1]}$HOSTNAME"_2 "host=${peer_names[1]} port=5432 user=pgedge dbname=$DBNAME" $DBNAME
+#./pgedge spock sub-create "sub_${peer_names[1]}$HOSTNAME"_3 "host=${peer_names[1]} port=5432 user=pgedge dbname=$DBNAME" $DBNAME
+#./pgedge spock sub-create "sub_${peer_names[1]}$HOSTNAME"_4 "host=${peer_names[1]} port=5432 user=pgedge dbname=$DBNAME" $DBNAME
 
-psql -U admin -h /tmp -d demo -c "create table t1 (id serial primary key, data int8);"
-psql -U admin -h /tmp -d demo -c "create table t2 (id serial primary key, data int8);"
-psql -U admin -h /tmp -d demo -c "alter table t1 alter column data set (log_old_value=true, delta_apply_function=spock.delta_apply);"
+psql -U $DBUSER -h /tmp -d $DBNAME -c "create table t1 (id serial primary key, data int8);"
+psql -U $DBUSER -h /tmp -d $DBNAME -c "create table t2 (id serial primary key, data int8);"
+psql -U $DBUSER -h /tmp -d $DBNAME -c "alter table t1 alter column data set (log_old_value=true, delta_apply_function=spock.delta_apply);"
 
-./pgedge spock sub-add-repset sub_${peer_names[0]}$HOSTNAME demo_replication_set demo
-#./pgedge spock sub-add-repset "sub_${peer_names[0]}$HOSTNAME"_1 demo_replication_set demo
-#./pgedge spock sub-add-repset "sub_${peer_names[0]}$HOSTNAME"_2 demo_replication_set demo
-#./pgedge spock sub-add-repset "sub_${peer_names[0]}$HOSTNAME"_3 demo_replication_set demo
-#./pgedge spock sub-add-repset "sub_${peer_names[0]}$HOSTNAME"_4 demo_replication_set demo
+./pgedge spock sub-add-repset sub_${peer_names[0]}$HOSTNAME demo_replication_set $DBNAME
+#./pgedge spock sub-add-repset "sub_${peer_names[0]}$HOSTNAME"_1 demo_replication_set $DBNAME
+#./pgedge spock sub-add-repset "sub_${peer_names[0]}$HOSTNAME"_2 demo_replication_set $DBNAME
+#./pgedge spock sub-add-repset "sub_${peer_names[0]}$HOSTNAME"_3 demo_replication_set $DBNAME
+#./pgedge spock sub-add-repset "sub_${peer_names[0]}$HOSTNAME"_4 demo_replication_set $DBNAME
 
-./pgedge spock sub-add-repset sub_${peer_names[1]}$HOSTNAME demo_replication_set demo
-#./pgedge spock sub-add-repset "sub_${peer_names[1]}$HOSTNAME"_1 demo_replication_set demo
-#./pgedge spock sub-add-repset "sub_${peer_names[1]}$HOSTNAME"_2 demo_replication_set demo
-#./pgedge spock sub-add-repset "sub_${peer_names[1]}$HOSTNAME"_3 demo_replication_set demo
-#./pgedge spock sub-add-repset "sub_${peer_names[1]}$HOSTNAME"_4 demo_replication_set demo
+./pgedge spock sub-add-repset sub_${peer_names[1]}$HOSTNAME demo_replication_set $DBNAME
+#./pgedge spock sub-add-repset "sub_${peer_names[1]}$HOSTNAME"_1 demo_replication_set $DBNAME
+#./pgedge spock sub-add-repset "sub_${peer_names[1]}$HOSTNAME"_2 demo_replication_set $DBNAME
+#./pgedge spock sub-add-repset "sub_${peer_names[1]}$HOSTNAME"_3 demo_replication_set $DBNAME
+#./pgedge spock sub-add-repset "sub_${peer_names[1]}$HOSTNAME"_4 demo_replication_set $DBNAME
 
 
-cd /home/pgedge && ./run-tests.sh $peer_names
+cd /home/pgedge && ./run-tests.sh "$PEER_NAMES"
