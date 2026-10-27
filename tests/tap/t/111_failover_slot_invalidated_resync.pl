@@ -23,7 +23,9 @@ use Time::HiRes qw(time);
 #   2. Build a physical standby of n1; the worker syncs the slot to it.
 #   3. Pause sync (hot_standby_feedback off), set max_slot_wal_keep_size,
 #      and generate WAL so a restartpoint invalidates the standby copy.
-#   4. Re-enable sync and check the slot is valid again on the standby.
+#   4. Re-enable sync with spock.failover_slots_recreate_invalidated off:
+#      the copy stays invalidated and the worker says so once.
+#   5. Turn the setting back on and check the slot is valid again.
 #
 # The worker does not exist on PG18+ (native slotsync only).
 # =============================================================================
@@ -185,10 +187,54 @@ unless ($lost)
          FROM pg_replication_slots"));
 }
 
-# ---------- resume sync ----------
+# ---------- resume sync with recreation turned off ----------
 
+# With spock.failover_slots_recreate_invalidated off the worker must leave
+# the invalidated copy alone and say so once.
 qport($standby_port, "ALTER SYSTEM RESET max_slot_wal_keep_size");
+qport($standby_port, "ALTER SYSTEM SET spock.failover_slots_recreate_invalidated = off");
 qport($standby_port, "ALTER SYSTEM SET hot_standby_feedback = on");
+qport($standby_port, "SELECT pg_reload_conf()");
+
+my $left_alone_logged = wait_until(60, 2, sub {
+    psql_or_bail(1, "INSERT INTO inval_test (pad) VALUES ('x')");
+    my $n = 0;
+    if (open(my $fh, '<', $standby_logpath))
+    {
+        while (<$fh>)
+        {
+            $n++ if /replication slot "\Q$slot_name\E" is invalidated on the standby, not recreating it/;
+        }
+        close($fh);
+    }
+    return $n > 0;
+});
+ok($left_alone_logged, 'worker logged that it leaves the invalidated slot alone');
+
+# A few more passes: still invalidated, and the warning was not repeated.
+for my $i (1 .. 5)
+{
+    psql_or_bail(1, "INSERT INTO inval_test (pad) VALUES ('x')");
+    sleep(2);
+}
+is(qport($standby_port,
+    "SELECT wal_status FROM pg_replication_slots WHERE slot_name = '$slot_name'"),
+    'lost', "standby copy of '$slot_name' is left invalidated while recreation is off");
+
+my $left_alone_warnings = 0;
+if (open(my $fh, '<', $standby_logpath))
+{
+    while (<$fh>)
+    {
+        $left_alone_warnings++ if /replication slot "\Q$slot_name\E" is invalidated on the standby, not recreating it/;
+    }
+    close($fh);
+}
+is($left_alone_warnings, 1, 'the warning about the slot left alone was logged once');
+
+# ---------- turn recreation back on ----------
+
+qport($standby_port, "ALTER SYSTEM RESET spock.failover_slots_recreate_invalidated");
 qport($standby_port, "SELECT pg_reload_conf()");
 
 my $valid = wait_until(120, 3, sub {

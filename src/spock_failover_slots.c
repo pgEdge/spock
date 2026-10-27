@@ -119,6 +119,13 @@ static List *spock_failover_slot_names_list = NIL;
 static bool spock_failover_slots_drop = true;
 
 /*
+ * Whether a synchronized slot that was invalidated on the standby is dropped
+ * and created again from the primary.  Off leaves it as it is and reports
+ * it once.
+ */
+static bool spock_failover_slots_recreate_invalidated = true;
+
+/*
  * How long the worker sleeps between slot-sync passes, and the shorter retry
  * used while it is still waiting for the standby to receive/feedback WAL.
  * Both are in milliseconds and settable at runtime (SIGHUP).  A smaller
@@ -930,6 +937,22 @@ synchronize_one_slot(RemoteSlot *remote_slot)
 				 "not synchronizing it",
 				 remote_slot->name,
 				 active ? "in use" : "owned by native slot sync");
+		PopActiveSnapshot();
+		CommitTransactionCommand();
+		return;
+	}
+	/*
+	 * With spock.failover_slots_recreate_invalidated off the copy is left as
+	 * it is and reported once, so it can be looked at before it is dropped.
+	 * It is recreated on the first pass after the setting is turned on.
+	 */
+	if (found && invalidated && !spock_failover_slots_recreate_invalidated)
+	{
+		if (invalidated_warning_due(remote_slot->name, true))
+			elog(WARNING,
+				 "replication slot \"%s\" is invalidated on the standby, "
+				 "not recreating it: spock.failover_slots_recreate_invalidated is off",
+				 remote_slot->name);
 		PopActiveSnapshot();
 		CommitTransactionCommand();
 		return;
@@ -2076,6 +2099,14 @@ spock_init_failover_slot(void)
 							1, 3600000,
 							PGC_SIGHUP, GUC_UNIT_MS, NULL, NULL, NULL);
 
+	DefineCustomBoolVariable(
+							"spock.failover_slots_recreate_invalidated",
+							"whether the failover slot worker recreates a synchronized slot that was invalidated on the standby",
+							"When off, an invalidated copy is left as it is and reported once.  It cannot "
+							"serve a subscriber after a promotion until the setting is turned on and the "
+							"copy is recreated from the primary.",
+							&spock_failover_slots_recreate_invalidated, true,
+							PGC_SIGHUP, 0, NULL, NULL, NULL);
 
 	if (IsBinaryUpgrade)
 		return;

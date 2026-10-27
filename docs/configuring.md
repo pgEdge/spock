@@ -496,6 +496,22 @@ Settable at runtime with `SIGHUP` (reload).
 spock.failover_slots_feedback_naptime = 10000
 ```
 
+### `spock.failover_slots_recreate_invalidated`
+
+Whether the `spock_failover_slots` worker drops and recreates a synchronized
+slot whose copy on the standby was invalidated, for example because the
+standby removed WAL or the primary removed catalog rows the copy still
+needed. Such a copy looks current but cannot serve a subscriber after a
+promotion. With the default `on`, the worker reports it with a WARNING,
+drops it and creates it again from the primary. With `off`, the worker
+leaves the copy as it is and reports it once, so it can be looked at
+before anything is dropped; it is recreated on the first pass after the
+setting is turned back on. Settable at runtime with `SIGHUP` (reload).
+
+```ini
+spock.failover_slots_recreate_invalidated = on
+```
+
 ### `spock.include_ddl_repset`
 
 `spock.include_ddl_repset` enables spock to automatically add tables to
