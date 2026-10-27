@@ -615,9 +615,11 @@ local_decoding_unavailable(ReplicationSlot *slot)
 	return "PostgreSQL 15 cannot decode WAL on a standby";
 #else
 	if (wal_level < WAL_LEVEL_LOGICAL)
-		return "wal_level on the standby is lower than logical";
+		return "The standby's wal_level is lower than logical";
 	if (!OidIsValid(MyDatabaseId))
-		return "spock.failover_slots_database is not set";
+		return "The worker is not connected to a database: "
+			"spock.failover_slots_database is empty, or connecting to it "
+			"failed or was interrupted";
 #if PG_VERSION_NUM >= 170000
 	{
 		bool		synced;
@@ -626,12 +628,12 @@ local_decoding_unavailable(ReplicationSlot *slot)
 		synced = slot->data.synced;
 		SpinLockRelease(&slot->mutex);
 		if (synced)
-			return "the slot was created by native slot sync, which "
+			return "The slot was created by native slot sync, which "
 				"PostgreSQL does not let other processes decode on a standby";
 	}
 #else
 	if (slot->data.database != MyDatabaseId)
-		return "the slot is not in the database named by "
+		return "The slot is not in the database named by "
 			"spock.failover_slots_database, which PostgreSQL 16 requires";
 #endif
 	return NULL;
@@ -641,7 +643,7 @@ local_decoding_unavailable(ReplicationSlot *slot)
 /*
  * Slots reported because their copy cannot be decoded on the standby, or
  * because decoding has not reached a consistent snapshot.  Each is reported
- * once, and again only after it has left that state.
+ * once, and again only after it has left that state in between.
  */
 static List *undecodable_warned = NIL;
 static List *inconsistent_warned = NIL;
@@ -784,27 +786,37 @@ apply_remote_position(RemoteSlot *remote_slot)
 							 "decoding reaches a consistent point may not be sent.")));
 	}
 #if PG_VERSION_NUM >= 160000
-	else if (local_snapshot_exists(remote_slot->own_restart_lsn))
-	{
-		/* Decoding can start from the snapshot saved there */
-		restart_lsn = remote_slot->own_restart_lsn;
-		state = COPY_SNAPSHOT_CONSISTENT;
-	}
 	else
 	{
-		bool		pending = MyReplicationSlot->data.persistency != RS_PERSISTENT;
-		XLogRecPtr	moveto;
+		/* The copy can be decoded: forget any report that it could not */
+		warning_due(&undecodable_warned, remote_slot->name, false);
 
-		/* Read only WAL that has been replayed, as core's slot advance does */
-		moveto = Min(remote_slot->confirmed_lsn, GetXLogReplayRecPtr(NULL));
+		if (local_snapshot_exists(remote_slot->own_restart_lsn))
+		{
+			/* Decoding can start from the snapshot saved there */
+			restart_lsn = remote_slot->own_restart_lsn;
+			state = COPY_SNAPSHOT_CONSISTENT;
+		}
+		else
+		{
+			bool		pending;
+			XLogRecPtr	moveto;
 
-		/* Nothing new to decode; a pending copy stays pending */
-		if (moveto <= MyReplicationSlot->data.confirmed_flush ||
-			moveto <= MyReplicationSlot->data.restart_lsn)
-			return pending ? COPY_SNAPSHOT_INCONSISTENT : COPY_SNAPSHOT_UNCHECKED;
+			pending = MyReplicationSlot->data.persistency != RS_PERSISTENT;
 
-		return advance_copy_locally(moveto) ?
-			COPY_SNAPSHOT_CONSISTENT : COPY_SNAPSHOT_INCONSISTENT;
+			/* Read only replayed WAL, as core's slot advance does */
+			moveto = Min(remote_slot->confirmed_lsn,
+						 GetXLogReplayRecPtr(NULL));
+
+			/* Nothing new to decode; a pending copy stays pending */
+			if (moveto <= MyReplicationSlot->data.confirmed_flush ||
+				moveto <= MyReplicationSlot->data.restart_lsn)
+				return pending ?
+					COPY_SNAPSHOT_INCONSISTENT : COPY_SNAPSHOT_UNCHECKED;
+
+			return advance_copy_locally(moveto) ?
+				COPY_SNAPSHOT_CONSISTENT : COPY_SNAPSHOT_INCONSISTENT;
+		}
 	}
 #endif
 
@@ -1633,6 +1645,7 @@ synchronize_failover_slots(long sleep_time)
 
 	return sleep_time;
 }
+
 /*
  * Connect to spock.failover_slots_database if set: decoding a copy on the
  * standby needs a database connection, and on PG16 the slot's own
@@ -1663,8 +1676,9 @@ failover_slots_connect(void)
 		ereport(WARNING,
 				(errmsg("spock_failover_slots worker is not connecting to database \"%s\"",
 						dbname),
-				 errdetail("An earlier attempt to connect to it failed."),
-				 errhint("Correct spock.failover_slots_database and restart the server.")));
+				 errdetail("An earlier attempt to connect to it failed or was interrupted."),
+				 errhint("Correct spock.failover_slots_database if needed, then restart the "
+						 "server; the worker does not try again before that.")));
 	}
 #endif
 	BackgroundWorkerInitializeConnection(NULL, NULL, 0);

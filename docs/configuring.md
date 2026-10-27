@@ -539,9 +539,21 @@ once with a WARNING. The standby also needs `wal_level = logical`.
 PostgreSQL 15 cannot decode WAL on a standby, so there the check is not
 available. Default: empty. Requires a restart.
 
-Used on PostgreSQL 16 and 17 (when `sync_replication_slots` is not
-enabled). On PostgreSQL 15, on PostgreSQL 17 with native slotsync active,
-or on PostgreSQL 18+, this setting is ignored.
+On PostgreSQL 16 and 17 the worker stays connected to this database on
+every node where the setting is present, including a primary, where it
+otherwise sleeps, and a PostgreSQL 17 standby using native slot sync. As
+with any open connection, `DROP DATABASE`, `ALTER DATABASE ... RENAME` and
+`CREATE DATABASE ... TEMPLATE` on that database then fail. Stopping the
+worker frees the database only until it restarts 60 seconds later; use
+`DROP DATABASE ... WITH (FORCE)`, or clear the setting and restart the
+server. If connecting fails, for example because the database does not
+exist, the worker reports it, carries on without the check, and does not
+try again until the server is restarted.
+
+The check is made on PostgreSQL 16 and 17 (when `sync_replication_slots` is
+not enabled). On PostgreSQL 17 with native slot sync active, the worker still
+connects but makes no check. On PostgreSQL 15 and 18+, this setting is
+ignored.
 
 ```ini
 spock.failover_slots_database = 'pgedge'
