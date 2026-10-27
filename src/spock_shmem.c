@@ -156,6 +156,7 @@ spock_shmem_startup(void)
 		SpockCtx->lock = &((GetNamedLWLockTranche("spock context lock")[0]).lock);
 		SpockCtx->supervisor = NULL;
 		SpockCtx->subscriptions_changed = false;
+		SpockCtx->failover_slots_db_connecting = false;
 		SpockCtx->total_workers = nworkers;
 		pg_atomic_init_u32(&SpockCtx->pause_apply, 0);
 		ConditionVariableInit(&SpockCtx->pause_cv);
@@ -173,4 +174,16 @@ spock_shmem_startup(void)
 	spock_group_shmem_startup(found);
 
 	LWLockRelease(AddinShmemInitLock);
+}
+
+bool
+spock_failover_slots_db_connecting(void)
+{
+	return SpockCtx->failover_slots_db_connecting;
+}
+
+void
+spock_set_failover_slots_db_connecting(bool connecting)
+{
+	SpockCtx->failover_slots_db_connecting = connecting;
 }
