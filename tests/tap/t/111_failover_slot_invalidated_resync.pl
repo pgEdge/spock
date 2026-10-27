@@ -146,7 +146,11 @@ ok(wait_until(120, 3, sub {
 qport($standby_port, "ALTER SYSTEM SET hot_standby_feedback = off");
 qport($standby_port, "ALTER SYSTEM SET max_slot_wal_keep_size = '1MB'");
 qport($standby_port, "SELECT pg_reload_conf()");
-sleep(3);
+ok(wait_until(30, 1, sub {
+    return qport($standby_port,
+        "SELECT current_setting('hot_standby_feedback') = 'off'
+            AND current_setting('max_slot_wal_keep_size') = '1MB'") eq 't';
+}), 'standby picked up the invalidation settings');
 
 for my $i (1 .. 5)
 {
