@@ -25,7 +25,14 @@ use Time::HiRes qw(time);
 #      and generate WAL so a restartpoint invalidates the standby copy.
 #   4. Re-enable sync with spock.failover_slots_recreate_invalidated off:
 #      the copy stays invalidated and the worker says so once.
-#   5. Turn the setting back on and check the slot is valid again.
+#   5. Stop the subscriber and turn the setting back on: the copy is
+#      recreated as a temporary slot that waits for n1's slot, and a
+#      second slot keeps being synchronized meanwhile.
+#      Turning sync off drops the pending copy; turning it on again
+#      creates a new one.
+#   6. Start the subscriber again and check the copy is made persistent.
+#   7. Create a slot on n1 that never moves, so its copy stays pending, then
+#      promote the standby and check the copy is dropped, not persisted.
 #
 # The worker does not exist on PG18+ (native slotsync only).
 # =============================================================================
@@ -35,6 +42,12 @@ my ($pg_major) = `$pg_bin/pg_config --version` =~ /\b(\d+)/;
 plan skip_all =>
     "spock_failover_slots worker is disabled on PG18+ (native sync_replication_slots)"
     if defined $pg_major && $pg_major >= 18;
+
+# The second slot uses test_decoding.
+my $pkglibdir = `$pg_bin/pg_config --pkglibdir`;
+chomp $pkglibdir;
+plan skip_all => "test_decoding is not installed in $pkglibdir"
+    unless -e "$pkglibdir/test_decoding.so";
 
 sub qport {
     my ($port, $sql) = @_;
@@ -83,11 +96,37 @@ ok(wait_until(60, 2, sub {
 
 psql_or_bail(1, "CREATE TABLE inval_test (id serial primary key, pad text)");
 
-# Move the slot past a segment boundary so the worker's catchup wait on the
-# standby finishes quickly (see 018_failover_slots.pl).
+# A second slot that the test moves by hand, to show the worker keeps
+# synchronizing it while it recreates the first one.
+my $canary = 'inval_canary';
+psql_or_bail(1,
+    "SELECT pg_create_logical_replication_slot('$canary', 'test_decoding')");
+
+# Advance the canary to the current WAL position and return its new
+# confirmed_flush_lsn on n1.  The checkpoint logs a running-xacts record so
+# restart_lsn can move as well.
+sub advance_canary {
+    psql_or_bail(1, "CHECKPOINT");
+    psql_or_bail(1,
+        "SELECT pg_replication_slot_advance('$canary', pg_current_wal_lsn())");
+    my $lsn = scalar_query(1,
+        "SELECT confirmed_flush_lsn FROM pg_replication_slots
+         WHERE slot_name = '$canary'");
+    $lsn =~ s/\s+//g;
+    return $lsn;
+}
+
+# Move the slot past a segment boundary so the standby's copy does not stay
+# pending long waiting for n1's slot to pass it (see 018_failover_slots.pl).
 psql_or_bail(1, "SELECT pg_switch_wal()");
 psql_or_bail(1, "INSERT INTO inval_test (pad) VALUES ('x')");
-sleep(5);
+my $insert_lsn = scalar_query(1, "SELECT pg_current_wal_lsn()");
+$insert_lsn =~ s/\s+//g;
+ok(wait_until(60, 1, sub {
+    return scalar_query(1,
+        "SELECT confirmed_flush_lsn >= '$insert_lsn'::pg_lsn
+         FROM pg_replication_slots WHERE slot_name = '$slot_name'") =~ /t/;
+}), "slot '$slot_name' confirmed past the segment switch");
 
 psql_or_bail(1, "SELECT pg_create_physical_replication_slot('standby_slot')");
 
@@ -135,11 +174,12 @@ is(qport($standby_port, "SELECT pg_is_in_recovery()"), 't',
 
 ok(wait_until(120, 3, sub {
     psql_or_bail(1, "INSERT INTO inval_test (pad) VALUES ('x')");
+    advance_canary();
     return qport($standby_port,
         "SELECT count(*) FROM pg_replication_slots
-         WHERE slot_name = '$slot_name' AND wal_status <> 'lost'
-           AND confirmed_flush_lsn IS NOT NULL") eq '1';
-}), "slot '$slot_name' synced to standby");
+         WHERE slot_name IN ('$slot_name', '$canary') AND NOT temporary
+           AND wal_status <> 'lost' AND confirmed_flush_lsn IS NOT NULL") eq '2';
+}), "slots '$slot_name' and '$canary' synced to standby");
 
 # ---------- invalidate the standby copy ----------
 
@@ -169,14 +209,16 @@ ok(wait_until(60, 2, sub {
         "SELECT pg_last_wal_replay_lsn() >= '$primary_lsn'::pg_lsn") eq 't';
 }), 'standby replayed the generated WAL');
 
-# Restartpoint on the standby removes the old WAL and invalidates the copy.
+# Restartpoint on the standby removes the old WAL and invalidates both
+# copies: sync was paused for the canary as well.
 my $lost = wait_until(30, 2, sub {
     qport($standby_port, "CHECKPOINT");
     return qport($standby_port,
-        "SELECT wal_status FROM pg_replication_slots
-         WHERE slot_name = '$slot_name'") eq 'lost';
+        "SELECT count(*) FROM pg_replication_slots
+         WHERE slot_name IN ('$slot_name', '$canary')
+           AND wal_status = 'lost'") eq '2';
 });
-ok($lost, "standby copy of '$slot_name' is invalidated");
+ok($lost, "standby copies of '$slot_name' and '$canary' are invalidated");
 unless ($lost)
 {
     diag(qport($standby_port,
@@ -232,16 +274,87 @@ if (open(my $fh, '<', $standby_logpath))
 }
 is($left_alone_warnings, 1, 'the warning about the slot left alone was logged once');
 
-# ---------- turn recreation back on ----------
+# ---------- turn recreation back on, subscriber stopped ----------
+
+# With the subscriber stopped n1's slot does not move, so it stays behind
+# the position the recreated copy reserves on the standby.  The worker must
+# keep the copy pending and go on synchronizing the canary.
+psql_or_bail(2, "SELECT spock.sub_disable('sub_n2_n1')");
+ok(wait_until(60, 1, sub {
+    return scalar_query(1,
+        "SELECT active FROM pg_replication_slots
+         WHERE slot_name = '$slot_name'") =~ /f/;
+}), "slot '$slot_name' is inactive on n1 with the subscription disabled");
 
 qport($standby_port, "ALTER SYSTEM RESET spock.failover_slots_recreate_invalidated");
 qport($standby_port, "SELECT pg_reload_conf()");
 
-my $valid = wait_until(120, 3, sub {
+my $pending = wait_until(60, 2, sub {
     psql_or_bail(1, "INSERT INTO inval_test (pad) VALUES ('x')");
     return qport($standby_port,
+        "SELECT temporary FROM pg_replication_slots
+         WHERE slot_name = '$slot_name'") eq 't';
+});
+ok($pending, "recreated copy of '$slot_name' waits as a temporary slot");
+
+# The canary's copy is recreated too.  Its own slot on n1 moves, so it must
+# become persistent and keep following even though '$slot_name' is stalled
+# below it.  Two separate advances, each followed on the standby, show sync
+# keeps running across passes while the copy above is pending.
+for my $round (1 .. 2)
+{
+    my $target = advance_canary();
+    my $followed = wait_until(90, 2, sub {
+        return qport($standby_port,
+            "SELECT NOT temporary AND wal_status <> 'lost'
+                    AND confirmed_flush_lsn >= '$target'::pg_lsn
+             FROM pg_replication_slots WHERE slot_name = '$canary'") eq 't';
+    });
+    ok($followed, "canary slot is synchronized while '$slot_name' is pending (round $round)");
+    diag(qport($standby_port,
+        "SELECT string_agg(slot_name || ' tmp=' || temporary || ' ' || coalesce(wal_status, '')
+                           || ' ' || coalesce(confirmed_flush_lsn::text, ''), '; ')
+         FROM pg_replication_slots")) unless $followed;
+}
+
+is(qport($standby_port,
+    "SELECT temporary FROM pg_replication_slots WHERE slot_name = '$slot_name'"),
+    't', "copy of '$slot_name' is still pending while the subscriber is stopped");
+
+# When sync stops the worker must drop the pending copy, since it is not
+# caught up and could not serve a subscriber after a promotion.  The
+# persistent canary must stay.
+qport($standby_port, "ALTER SYSTEM SET hot_standby_feedback = off");
+qport($standby_port, "SELECT pg_reload_conf()");
+ok(wait_until(60, 2, sub {
+    return qport($standby_port,
         "SELECT count(*) FROM pg_replication_slots
-         WHERE slot_name = '$slot_name'
+         WHERE slot_name = '$slot_name'") eq '0';
+}), "pending copy of '$slot_name' is dropped while sync is off");
+is(qport($standby_port,
+    "SELECT count(*) FROM pg_replication_slots
+     WHERE slot_name = '$canary' AND NOT temporary"),
+    '1', 'the persistent canary slot is kept while sync is off');
+
+qport($standby_port, "ALTER SYSTEM SET hot_standby_feedback = on");
+qport($standby_port, "SELECT pg_reload_conf()");
+ok(wait_until(60, 2, sub {
+    psql_or_bail(1, "INSERT INTO inval_test (pad) VALUES ('x')");
+    return qport($standby_port,
+        "SELECT temporary FROM pg_replication_slots
+         WHERE slot_name = '$slot_name'") eq 't';
+}), "copy of '$slot_name' is pending again once sync resumes");
+
+# ---------- start the subscriber again ----------
+
+psql_or_bail(2, "SELECT spock.sub_enable('sub_n2_n1')");
+
+my $valid = wait_until(180, 3, sub {
+    psql_or_bail(1, "INSERT INTO inval_test (pad) VALUES ('x')");
+    psql_or_bail(1, "CHECKPOINT");
+    return qport($standby_port,
+        "SELECT count(*) FROM pg_replication_slots
+         WHERE slot_name = '$slot_name' AND NOT temporary
            AND wal_status <> 'lost' AND restart_lsn IS NOT NULL") eq '1';
 });
 ok($valid, "worker recreated '$slot_name' on the standby after invalidation");
@@ -257,6 +370,18 @@ if (open(my $fh, '<', $standby_logpath))
 }
 ok($warned > 0, 'worker logged a WARNING about the invalidated slot');
 
+my $recreated = 0;
+if (open(my $fh, '<', $standby_logpath))
+{
+    while (<$fh>)
+    {
+        $recreated++ if /created replication slot "\Q$slot_name\E" on the standby/;
+    }
+    close($fh);
+}
+# Once for the first copy, once for the recreated one.
+is($recreated, 2, 'worker logged that the copy was made persistent');
+
 unless ($valid)
 {
     diag(qport($standby_port,
@@ -264,10 +389,81 @@ unless ($valid)
          FROM pg_replication_slots"));
 }
 
+# ---------- promotion with a copy still pending ----------
+
+# A new slot on n1 that never moves stays behind the standby's reservation,
+# so its copy stays pending.  Promotion must drop it, not persist a copy
+# whose restart_lsn is past what the primary's slot still needed.
+my $stalled = 'inval_stalled';
+psql_or_bail(1,
+    "SELECT pg_create_logical_replication_slot('$stalled', 'test_decoding')");
+my $stalled_pending = wait_until(90, 2, sub {
+    psql_or_bail(1, "INSERT INTO inval_test (pad) VALUES ('x')");
+    psql_or_bail(1, "CHECKPOINT");
+    return qport($standby_port,
+        "SELECT temporary FROM pg_replication_slots
+         WHERE slot_name = '$stalled'") eq 't';
+});
+ok($stalled_pending, "copy of '$stalled' is pending on the standby");
+
+# With spock.drop_extra_slots off a persistent copy of a slot the primary no
+# longer has is kept, but a pending copy is not a usable slot and goes
+# either way.
+qport($standby_port, "ALTER SYSTEM SET spock.drop_extra_slots = off");
+qport($standby_port, "SELECT pg_reload_conf()");
+psql_or_bail(1, "SELECT pg_drop_replication_slot('$stalled')");
+ok(wait_until(60, 2, sub {
+    psql_or_bail(1, "INSERT INTO inval_test (pad) VALUES ('x')");
+    return qport($standby_port,
+        "SELECT count(*) FROM pg_replication_slots
+         WHERE slot_name = '$stalled'") eq '0';
+}), "pending copy of '$stalled' is dropped once n1 drops the slot, with spock.drop_extra_slots off");
+is(qport($standby_port,
+    "SELECT count(*) FROM pg_replication_slots
+     WHERE slot_name = '$canary' AND NOT temporary"),
+    '1', 'the persistent canary copy is kept');
+qport($standby_port, "ALTER SYSTEM RESET spock.drop_extra_slots");
+qport($standby_port, "SELECT pg_reload_conf()");
+
+# Create it again for the promotion below.
+psql_or_bail(1,
+    "SELECT pg_create_logical_replication_slot('$stalled', 'test_decoding')");
+ok(wait_until(90, 2, sub {
+    psql_or_bail(1, "INSERT INTO inval_test (pad) VALUES ('x')");
+    psql_or_bail(1, "CHECKPOINT");
+    return qport($standby_port,
+        "SELECT temporary FROM pg_replication_slots
+         WHERE slot_name = '$stalled'") eq 't';
+}), "copy of '$stalled' is pending on the standby again");
+
+system_or_bail("$pg_bin/pg_ctl", 'promote', '-D', $standby_datadir, '-w');
+ok(wait_until(30, 1, sub {
+    return qport($standby_port, "SELECT pg_is_in_recovery()") eq 'f';
+}), 'standby promoted');
+
+ok(wait_until(60, 2, sub {
+    return qport($standby_port,
+        "SELECT count(*) FROM pg_replication_slots
+         WHERE slot_name = '$stalled'") eq '0';
+}), "pending copy of '$stalled' is dropped after promotion");
+
+my $stalled_created = 0;
+if (open(my $fh, '<', $standby_logpath))
+{
+    while (<$fh>)
+    {
+        $stalled_created++ if /created replication slot "\Q$stalled\E" on the standby/;
+    }
+    close($fh);
+}
+is($stalled_created, 0, "copy of '$stalled' was never made persistent");
+
 # ---------- cleanup ----------
 
 system("$pg_bin/pg_ctl stop -D $standby_datadir -m immediate >/dev/null 2>&1");
 system("rm -rf $standby_datadir 2>/dev/null");
+psql_or_bail(1, "SELECT pg_drop_replication_slot('$canary')");
+psql_or_bail(1, "SELECT pg_drop_replication_slot('$stalled')");
 
 destroy_cluster('Destroy test cluster');
 done_testing();
