@@ -81,3 +81,5 @@ test: 116_lww_frozen_local_row
 test: 112_resync_apply_race
 test: 113_tablesync_same_txn
 test: 117_call_rollback_extended_protocol
+test: 118_exception_slot_same_name
+test: 119_exception_slot_exhausted
