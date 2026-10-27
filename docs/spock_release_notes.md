@@ -65,6 +65,10 @@ will be removed at general availability.
   `SIGHUP`) and `spock.failover_slots_feedback_naptime` (milliseconds,
   default `10000`, `SIGHUP`): how often Spock's failover-slots worker
   syncs slots.  It used to wait a fixed 60 seconds.
+* New `spock.failover_slots_recreate_invalidated` (boolean, default `on`,
+  `SIGHUP`): whether the failover-slots worker drops and recreates a
+  synchronized slot whose copy was invalidated on the standby.  Off leaves
+  the copy as it is and reports it once.
 * `spock.pause_timeout`: the 300-second maximum is removed.
 * `spock.restart_delay_default`, `spock.restart_delay_on_exception` and
   `spock.output_delay` are now declared in milliseconds, so they accept

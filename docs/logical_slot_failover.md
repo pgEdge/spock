@@ -108,6 +108,7 @@ addition to the base settings.
 | `spock.standby_slots_min_confirmed` | primary | `-1` | How many of those slots must confirm. `-1` means all. |
 | `spock.failover_slots_naptime` | standby | `1000` | Worker sleep between slot-sync passes, in ms (SIGHUP; range 1–3600000). |
 | `spock.failover_slots_feedback_naptime` | standby | `10000` | Shorter retry, in ms, while waiting for standby WAL feedback (SIGHUP; range 1–3600000). |
+| `spock.failover_slots_recreate_invalidated` | standby | `on` | Drop and recreate a synchronized slot whose copy was invalidated on the standby. `off` leaves it as it is and reports it once (SIGHUP). |
 
 `hot_standby_feedback = on` plus a physical slot named by `primary_slot_name` is
 the important pair. Without both, the primary can remove catalog rows a slot
@@ -478,6 +479,7 @@ primary it idles.
 | `spock.standby_slots_min_confirmed` | `-1` | How many slots from `pg_standby_slot_names` must confirm (`-1` = all) |
 | `spock.failover_slots_naptime` | `1000` | Worker sleep between slot-sync passes, in ms (SIGHUP; range 1–3600000) |
 | `spock.failover_slots_feedback_naptime` | `10000` | Shorter retry, in ms, while waiting for standby WAL feedback (SIGHUP; range 1–3600000) |
+| `spock.failover_slots_recreate_invalidated` | `on` | Drop and recreate a synchronized slot whose copy was invalidated on the standby; `off` leaves it as it is and reports it once (SIGHUP) |
 
 ### Example (`postgresql.conf` on standby)
 
