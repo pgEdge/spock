@@ -171,11 +171,13 @@ grep -q "ERROR" /home/pgedge/spock/spockbench-$HOSTNAME.out && exit 1
 # done, so they are there to confirm.  The benchmark asks for more than
 # the runners can apply, so the backlog can take several minutes to
 # drain; on failure, show how far behind each subscriber was.
+catchup_start=$(date +%s)
 psql -X -U admin -h /tmp -d demo -c "SET statement_timeout = '900s'; SELECT spock.wait_slot_confirm_lsn(NULL, NULL);" || {
   psql -X -U admin -h /tmp -d demo -c "SELECT slot_name, active, pg_size_pretty(pg_wal_lsn_diff(pg_current_wal_lsn(), confirmed_flush_lsn)) AS behind FROM pg_replication_slots WHERE slot_type = 'logical'"
   echo "FAIL: subscribers of $HOSTNAME did not catch up"
   exit 1
 }
+echo "Subscribers of $HOSTNAME caught up in $(( $(date +%s) - catchup_start )) seconds"
 
 # Once every node is past that, each has applied everything its peers
 # wrote, so its exception log is complete.
