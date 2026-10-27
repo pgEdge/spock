@@ -9,7 +9,7 @@ rm -f $marker_dir/ready-$HOSTNAME $marker_dir/confirmed-$HOSTNAME $marker_dir/do
 
 function wait_for_all()
 {
-  for attempt in $(seq 1 600); do
+  for attempt in $(seq 1 1200); do
     [ $(ls $marker_dir/$1-* 2>/dev/null | wc -l) -ge 3 ] && return 0
     sleep 1
   done
@@ -168,8 +168,11 @@ grep -q "ERROR" /home/pgedge/spock/spockbench-$HOSTNAME.out && exit 1
 # Every subscriber must have received everything this node wrote.  A
 # subscriber whose apply worker keeps failing never confirms it, so
 # this fails rather than hangs.  The peers stay up until all nodes are
-# done, so they are there to confirm.
-psql -X -U admin -h /tmp -d demo -c "SET statement_timeout = '300s'; SELECT spock.wait_slot_confirm_lsn(NULL, NULL);" || {
+# done, so they are there to confirm.  The benchmark asks for more than
+# the runners can apply, so the backlog can take several minutes to
+# drain; on failure, show how far behind each subscriber was.
+psql -X -U admin -h /tmp -d demo -c "SET statement_timeout = '900s'; SELECT spock.wait_slot_confirm_lsn(NULL, NULL);" || {
+  psql -X -U admin -h /tmp -d demo -c "SELECT slot_name, active, pg_size_pretty(pg_wal_lsn_diff(pg_current_wal_lsn(), confirmed_flush_lsn)) AS behind FROM pg_replication_slots WHERE slot_type = 'logical'"
   echo "FAIL: subscribers of $HOSTNAME did not catch up"
   exit 1
 }
