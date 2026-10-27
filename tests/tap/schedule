@@ -77,6 +77,7 @@ test: 107_node_refresh_info
 test: 108_apply_unknown_column_exception
 test: 109_node_info_propagation
 test: 110_resync_node_info_warning
+test: 111_failover_slot_invalidated_resync
 test: 116_lww_frozen_local_row
 test: 112_resync_apply_race
 test: 113_tablesync_same_txn
