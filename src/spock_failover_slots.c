@@ -26,6 +26,7 @@
 #include "access/xact.h"
 #include "access/xlog.h"
 #include "access/xlogrecovery.h"
+#include "access/xlogutils.h"
 #include "catalog/indexing.h"
 #include "catalog/pg_database.h"
 
@@ -35,6 +36,7 @@
 #include "replication/decode.h"
 #include "replication/logical.h"
 #include "replication/slot.h"
+#include "replication/snapbuild.h"
 #include "replication/walreceiver.h"
 #include "replication/walsender.h"
 #if PG_VERSION_NUM >= 170000
@@ -50,6 +52,7 @@
 #include "utils/fmgroids.h"
 #include "utils/fmgrprotos.h"
 #include "utils/guc.h"
+#include "utils/inval.h"
 #include "utils/memutils.h"
 #include "utils/pg_lsn.h"
 #include "utils/resowner.h"
@@ -61,6 +64,7 @@
 #include "libpq/libpq.h"
 
 #include "spock_common.h"
+#include "spock_shmem.h"
 
 /* Defaults (milliseconds) for the tunable worker intervals below. */
 #define WORKER_NAP_TIME_DEFAULT 1000
@@ -132,6 +136,7 @@ static bool spock_failover_slots_drop = true;
  * it once.
  */
 static bool spock_failover_slots_recreate_invalidated = true;
+static char *spock_failover_slots_database = NULL;
 
 /*
  * How long the worker sleeps between slot-sync passes, and the shorter retry
@@ -589,6 +594,229 @@ slot_is_invalidated(ReplicationSlot *s)
 }
 
 /*
+ * A copy holds the primary's positions, but not the snapshot the primary
+ * saved at its restart_lsn in pg_logical/snapshots, which physical
+ * replication does not carry.  Decoding from such a copy after a promotion
+ * has to build a snapshot from scratch, and a transaction that commits
+ * before that snapshot is consistent is never sent.  PostgreSQL 17's slot
+ * sync avoids this by decoding the standby's own WAL in fast-forward mode,
+ * which saves snapshots locally and moves restart_lsn only to positions
+ * that have one, and by persisting a new copy only once decoding has found
+ * a consistent snapshot.  Do the same where the standby can decode.
+ */
+
+/*
+ * Why the copy's WAL cannot be decoded on this standby, or NULL if it can.
+ */
+static const char *
+local_decoding_unavailable(ReplicationSlot *slot)
+{
+#if PG_VERSION_NUM < 160000
+	return "PostgreSQL 15 cannot decode WAL on a standby";
+#else
+	if (wal_level < WAL_LEVEL_LOGICAL)
+		return "wal_level on the standby is lower than logical";
+	if (!OidIsValid(MyDatabaseId))
+		return "spock.failover_slots_database is not set";
+#if PG_VERSION_NUM >= 170000
+	{
+		bool		synced;
+
+		SpinLockAcquire(&slot->mutex);
+		synced = slot->data.synced;
+		SpinLockRelease(&slot->mutex);
+		if (synced)
+			return "the slot was created by native slot sync, which "
+				"PostgreSQL does not let other processes decode on a standby";
+	}
+#else
+	if (slot->data.database != MyDatabaseId)
+		return "the slot is not in the database named by "
+			"spock.failover_slots_database, which PostgreSQL 16 requires";
+#endif
+	return NULL;
+#endif
+}
+
+/*
+ * Slots reported because their copy cannot be decoded on the standby, or
+ * because decoding has not reached a consistent snapshot.  Each is reported
+ * once, and again only after it has left that state.
+ */
+static List *undecodable_warned = NIL;
+static List *inconsistent_warned = NIL;
+
+static bool warning_due(List **warned, const char *name, bool in_state);
+
+/* What apply_remote_position() found out about the copy's snapshot */
+typedef enum CopySnapshotState
+{
+	COPY_SNAPSHOT_CONSISTENT,	/* decoding can start from a saved snapshot */
+	COPY_SNAPSHOT_INCONSISTENT, /* decoding has no consistent snapshot yet */
+	COPY_SNAPSHOT_UNCHECKED		/* not checked: cannot decode here, or
+								 * nothing new to decode on a persistent copy */
+} CopySnapshotState;
+
+#if PG_VERSION_NUM >= 160000
+/* Has this standby saved a snapshot at lsn? */
+static bool
+local_snapshot_exists(XLogRecPtr lsn)
+{
+#if PG_VERSION_NUM >= 170000
+	return SnapBuildSnapshotExists(lsn);
+#else
+	char		path[MAXPGPATH];
+	struct stat stat_buf;
+
+	snprintf(path, sizeof(path), "pg_logical/snapshots/%X-%X.snap",
+			 LSN_FORMAT_ARGS(lsn));
+	if (stat(path, &stat_buf) == 0)
+		return true;
+	if (errno != ENOENT)
+		ereport(ERROR,
+				(errcode_for_file_access(),
+				 errmsg("could not stat file \"%s\": %m", path)));
+	return false;
+#endif
+}
+
+/*
+ * Decode the acquired copy's WAL on the standby in fast-forward mode up to
+ * moveto, and return whether decoding has a consistent snapshot.  On PG16
+ * this is LogicalSlotAdvanceAndCheckSnapState() from PG17.
+ */
+static bool
+advance_copy_locally(XLogRecPtr moveto)
+{
+#if PG_VERSION_NUM >= 170000
+	bool		consistent;
+
+	LogicalSlotAdvanceAndCheckSnapState(moveto, &consistent);
+	return consistent;
+#else
+	LogicalDecodingContext *ctx;
+	ResourceOwner old_resowner = CurrentResourceOwner;
+	bool		consistent = false;
+
+	PG_TRY();
+	{
+		ctx = CreateDecodingContext(InvalidXLogRecPtr,
+									NIL,
+									true,	/* fast_forward */
+									XL_ROUTINE(.page_read = read_local_xlog_page,
+											   .segment_open = wal_segment_open,
+											   .segment_close = wal_segment_close),
+									NULL, NULL, NULL);
+
+		XLogBeginRead(ctx->reader, MyReplicationSlot->data.restart_lsn);
+
+		/* invalidate non-timetravel entries */
+		InvalidateSystemCaches();
+
+		while (ctx->reader->EndRecPtr < moveto)
+		{
+			char	   *errm = NULL;
+			XLogRecord *record;
+
+			record = XLogReadRecord(ctx->reader, &errm);
+			if (errm)
+				elog(ERROR, "could not find record while advancing replication slot: %s",
+					 errm);
+
+			if (record)
+				LogicalDecodingProcessRecord(ctx, ctx->reader);
+
+			CHECK_FOR_INTERRUPTS();
+		}
+
+		consistent = DecodingContextReady(ctx);
+
+		/* Decoding can clobber CurrentResourceOwner, as in core */
+		CurrentResourceOwner = old_resowner;
+
+		if (ctx->reader->EndRecPtr != InvalidXLogRecPtr)
+		{
+			LogicalConfirmReceivedLocation(moveto);
+			ReplicationSlotMarkDirty();
+		}
+
+		FreeDecodingContext(ctx);
+
+		InvalidateSystemCaches();
+	}
+	PG_CATCH();
+	{
+		/* clear all timetravel entries */
+		InvalidateSystemCaches();
+
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+
+	return consistent;
+#endif
+}
+#endif							/* PG_VERSION_NUM >= 160000 */
+
+/*
+ * Move the acquired copy to the remote slot's position, which the caller
+ * has checked the copy can satisfy, and report whether it has a consistent
+ * snapshot, that is, whether it can serve a subscriber after a promotion
+ * without skipping transactions.  Where the standby cannot decode, the
+ * positions are copied as they are and the slot reported once.
+ */
+static CopySnapshotState
+apply_remote_position(RemoteSlot *remote_slot)
+{
+	const char *reason = local_decoding_unavailable(MyReplicationSlot);
+	XLogRecPtr	restart_lsn = remote_slot->restart_lsn;
+	CopySnapshotState state = COPY_SNAPSHOT_UNCHECKED;
+
+	if (reason)
+	{
+		if (warning_due(&undecodable_warned, remote_slot->name, true))
+			ereport(WARNING,
+					(errmsg("replication slot \"%s\" is synchronized without a "
+							"consistent snapshot on the standby",
+							remote_slot->name),
+					 errdetail("%s.", reason),
+					 errhint("After a promotion, transactions that commit before "
+							 "decoding reaches a consistent point may not be sent.")));
+	}
+#if PG_VERSION_NUM >= 160000
+	else if (local_snapshot_exists(remote_slot->own_restart_lsn))
+	{
+		/* Decoding can start from the snapshot saved there */
+		restart_lsn = remote_slot->own_restart_lsn;
+		state = COPY_SNAPSHOT_CONSISTENT;
+	}
+	else
+	{
+		bool		pending = MyReplicationSlot->data.persistency != RS_PERSISTENT;
+		XLogRecPtr	moveto;
+
+		/* Read only WAL that has been replayed, as core's slot advance does */
+		moveto = Min(remote_slot->confirmed_lsn, GetXLogReplayRecPtr(NULL));
+
+		/* Nothing new to decode; a pending copy stays pending */
+		if (moveto <= MyReplicationSlot->data.confirmed_flush ||
+			moveto <= MyReplicationSlot->data.restart_lsn)
+			return pending ? COPY_SNAPSHOT_INCONSISTENT : COPY_SNAPSHOT_UNCHECKED;
+
+		return advance_copy_locally(moveto) ?
+			COPY_SNAPSHOT_CONSISTENT : COPY_SNAPSHOT_INCONSISTENT;
+	}
+#endif
+
+	LogicalConfirmReceivedLocation(remote_slot->confirmed_lsn);
+	LogicalIncreaseXminForSlot(remote_slot->confirmed_lsn,
+							   remote_slot->catalog_xmin);
+	LogicalIncreaseRestartDecodingForSlot(remote_slot->confirmed_lsn,
+										  restart_lsn);
+	return state;
+}
+
+/*
  * Slots whose invalidated copy the worker has warned about and left alone.
  * The warning is issued once, not on every pass: on PG17 a synced slot
  * stays in that state until promotion.  Returns true when the warning for
@@ -596,33 +824,43 @@ slot_is_invalidated(ReplicationSlot *s)
  */
 static List *invalidated_warned = NIL;
 
+/*
+ * Track one kind of once-only warning: returns true when the warning for a
+ * slot in that state is due, and forgets a slot no longer in it.
+ */
 static bool
-invalidated_warning_due(const char *name, bool left_alone)
+warning_due(List **warned_list, const char *name, bool in_state)
 {
 	ListCell   *lc;
 	MemoryContext oldcxt;
 
-	foreach(lc, invalidated_warned)
+	foreach(lc, *warned_list)
 	{
 		char	   *warned = (char *) lfirst(lc);
 
 		if (strcmp(warned, name) != 0)
 			continue;
-		if (!left_alone)
+		if (!in_state)
 		{
-			invalidated_warned = foreach_delete_current(invalidated_warned, lc);
+			*warned_list = foreach_delete_current(*warned_list, lc);
 			pfree(warned);
 		}
 		return false;
 	}
 
-	if (!left_alone)
+	if (!in_state)
 		return false;
 
 	oldcxt = MemoryContextSwitchTo(TopMemoryContext);
-	invalidated_warned = lappend(invalidated_warned, pstrdup(name));
+	*warned_list = lappend(*warned_list, pstrdup(name));
 	MemoryContextSwitchTo(oldcxt);
 	return true;
+}
+
+static bool
+invalidated_warning_due(const char *name, bool left_alone)
+{
+	return warning_due(&invalidated_warned, name, left_alone);
 }
 
 /*
@@ -630,11 +868,11 @@ invalidated_warning_due(const char *name, bool left_alone)
  * on the list for the life of the worker.
  */
 static void
-invalidated_warned_prune(List *remote_slots)
+warned_list_prune(List **warned_list, List *remote_slots)
 {
 	ListCell   *lc;
 
-	foreach(lc, invalidated_warned)
+	foreach(lc, *warned_list)
 	{
 		char	   *warned = (char *) lfirst(lc);
 		ListCell   *rc;
@@ -650,10 +888,18 @@ invalidated_warned_prune(List *remote_slots)
 		}
 		if (!present)
 		{
-			invalidated_warned = foreach_delete_current(invalidated_warned, lc);
+			*warned_list = foreach_delete_current(*warned_list, lc);
 			pfree(warned);
 		}
 	}
+}
+
+static void
+invalidated_warned_prune(List *remote_slots)
+{
+	warned_list_prune(&invalidated_warned, remote_slots);
+	warned_list_prune(&undecodable_warned, remote_slots);
+	warned_list_prune(&inconsistent_warned, remote_slots);
 }
 
 /*
@@ -820,6 +1066,7 @@ synchronize_one_slot(RemoteSlot *remote_slot)
 	if (found)
 	{
 		bool		pending;
+		CopySnapshotState state;
 
 		/* A temporary copy is one this worker has not made persistent yet */
 		SpinLockAcquire(&MyReplicationSlot->mutex);
@@ -830,9 +1077,12 @@ synchronize_one_slot(RemoteSlot *remote_slot)
 		 * We can't satisfy this remote slot's requirements with our
 		 * known-safe local restart_lsn, catalog_xmin and xmin.
 		 *
-		 * This shouldn't happen for existing slots unless someone else messed
-		 * with our physical replication slot on the master.  For a pending
-		 * copy it is expected: try again on the next pass.
+		 * Without local decoding this shouldn't happen for existing slots
+		 * unless someone else messed with our physical replication slot on
+		 * the master.  Local decoding moves restart_lsn and catalog_xmin to
+		 * where the standby saved a snapshot, which can be ahead of the
+		 * primary, so there it is routine.  For a pending copy it is
+		 * expected.  Either way, try again on the next pass.
 		 */
 		if (remote_slot->own_restart_lsn < MyReplicationSlot->data.restart_lsn ||
 			(TransactionIdIsValid(remote_slot->catalog_xmin) &&
@@ -840,8 +1090,7 @@ synchronize_one_slot(RemoteSlot *remote_slot)
 								   MyReplicationSlot->data.catalog_xmin)))
 		{
 			if (!pending)
-				elog(
-					 WARNING,
+				elog(local_decoding_unavailable(MyReplicationSlot) ? WARNING : DEBUG1,
 					 "not synchronizing slot %s; synchronization would move it backward",
 					 remote_slot->name);
 
@@ -851,11 +1100,37 @@ synchronize_one_slot(RemoteSlot *remote_slot)
 			return;
 		}
 
-		LogicalConfirmReceivedLocation(remote_slot->confirmed_lsn);
-		LogicalIncreaseXminForSlot(remote_slot->confirmed_lsn,
-								   remote_slot->catalog_xmin);
-		LogicalIncreaseRestartDecodingForSlot(remote_slot->confirmed_lsn,
-											  remote_slot->restart_lsn);
+		/*
+		 * A pending copy is made persistent only once it has a consistent
+		 * snapshot; until then it could skip transactions after a promotion.
+		 * A persistent copy without one, for example one copied before
+		 * local decoding was turned on while a long transaction was open on
+		 * the primary, is reported once until it gets one.
+		 */
+		state = apply_remote_position(remote_slot);
+		if (state == COPY_SNAPSHOT_INCONSISTENT && pending)
+		{
+			elog(DEBUG1,
+				 "replication slot \"%s\" has no consistent snapshot on the standby yet",
+				 remote_slot->name);
+			ReplicationSlotMarkDirty();
+			ReplicationSlotRelease();
+			PopActiveSnapshot();
+			CommitTransactionCommand();
+			return;
+		}
+		if (state != COPY_SNAPSHOT_UNCHECKED &&
+			warning_due(&inconsistent_warned, remote_slot->name,
+						state == COPY_SNAPSHOT_INCONSISTENT))
+			ereport(WARNING,
+					(errmsg("replication slot \"%s\" has no consistent snapshot on the standby",
+							remote_slot->name),
+					 errdetail("Decoding from its restart_lsn has not reached a consistent "
+							   "point, usually because a transaction older than that is "
+							   "still open on the primary."),
+					 errhint("A promotion now could skip transactions committed shortly "
+							 "before it.  The worker keeps decoding and reports nothing "
+							 "more once the slot is consistent.")));
 		ReplicationSlotMarkDirty();
 		if (pending)
 		{
@@ -1026,13 +1301,17 @@ synchronize_one_slot(RemoteSlot *remote_slot)
 
 		/*
 		 * We can locally satisfy requirements of remote slot's current
-		 * position now. Apply the new position if any and make it persistent.
+		 * position now. Apply the new position if any and make it persistent
+		 * once it has a consistent snapshot; until then keep it pending.
 		 */
-		LogicalConfirmReceivedLocation(remote_slot->confirmed_lsn);
-		LogicalIncreaseXminForSlot(remote_slot->confirmed_lsn,
-								   remote_slot->catalog_xmin);
-		LogicalIncreaseRestartDecodingForSlot(remote_slot->confirmed_lsn,
-											  remote_slot->restart_lsn);
+		if (apply_remote_position(remote_slot) == COPY_SNAPSHOT_INCONSISTENT)
+		{
+			ReplicationSlotMarkDirty();
+			ReplicationSlotRelease();
+			PopActiveSnapshot();
+			CommitTransactionCommand();
+			return;
+		}
 		ReplicationSlotMarkDirty();
 
 		ReplicationSlotPersist();
@@ -1354,6 +1633,42 @@ synchronize_failover_slots(long sleep_time)
 
 	return sleep_time;
 }
+/*
+ * Connect to spock.failover_slots_database if set: decoding a copy on the
+ * standby needs a database connection, and on PG16 the slot's own
+ * database.  Otherwise connect only to the shared catalogs (we only read
+ * pg_database).
+ */
+static void
+failover_slots_connect(void)
+{
+#if PG_VERSION_NUM >= 160000
+	const char *dbname = spock_failover_slots_database;
+
+	if (dbname && dbname[0])
+	{
+		if (!spock_failover_slots_db_connecting())
+		{
+			/*
+			 * A missing database makes the connection FATAL.  The flag then
+			 * stays set, so the restarted worker connects without a database
+			 * and slot sync goes on, without the snapshot check, until the
+			 * server is restarted with a corrected setting.
+			 */
+			spock_set_failover_slots_db_connecting(true);
+			BackgroundWorkerInitializeConnection(dbname, NULL, 0);
+			spock_set_failover_slots_db_connecting(false);
+			return;
+		}
+		ereport(WARNING,
+				(errmsg("spock_failover_slots worker is not connecting to database \"%s\"",
+						dbname),
+				 errdetail("An earlier attempt to connect to it failed."),
+				 errhint("Correct spock.failover_slots_database and restart the server.")));
+	}
+#endif
+	BackgroundWorkerInitializeConnection(NULL, NULL, 0);
+}
 #endif							/* PG_VERSION_NUM < 180000 */
 
 void
@@ -1379,8 +1694,7 @@ spock_failover_slots_main(Datum main_arg)
 
 	elog(LOG, "starting spock_failover_slots replica worker");
 
-	/* Setup connection to pinned catalogs (we only ever read pg_database). */
-	BackgroundWorkerInitializeConnection(NULL, NULL, 0);
+	failover_slots_connect();
 
 	/* Main wait loop. */
 	while (true)
@@ -1410,7 +1724,12 @@ spock_failover_slots_main(Datum main_arg)
 			sleep_time = synchronize_failover_slots(spock_failover_slots_naptime);
 		else
 		{
-			/* On PG17 pending copies would also block native slot sync */
+			/*
+			 * Not synchronizing: after a promotion, with hot_standby_feedback
+			 * off, or with native slot sync on PG17, where pending copies
+			 * would also block it.  Pending copies cannot serve a subscriber
+			 * after a promotion, so drop them.
+			 */
 			drop_pending_copies();
 			sleep_time = (long) spock_failover_slots_naptime * 10;
 		}
@@ -1954,6 +2273,16 @@ spock_init_failover_slot(void)
 							"copy is recreated from the primary.",
 							&spock_failover_slots_recreate_invalidated, true,
 							PGC_SIGHUP, 0, NULL, NULL, NULL);
+
+	DefineCustomStringVariable(
+							   "spock.failover_slots_database",
+							   "database the failover slot worker connects to, to check that slot copies have a consistent snapshot",
+							   "On PostgreSQL 16 and 17 the worker decodes each copy's WAL on the standby so the copy "
+							   "can serve a subscriber after a promotion without skipping transactions.  That needs "
+							   "a database connection; on PostgreSQL 16 it must be the database the slots are in.  "
+							   "When empty, copies are synchronized without that check.",
+							   &spock_failover_slots_database, "",
+							   PGC_POSTMASTER, 0, NULL, NULL, NULL);
 
 	if (IsBinaryUpgrade)
 		return;

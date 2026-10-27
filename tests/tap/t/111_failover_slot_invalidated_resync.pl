@@ -152,6 +152,8 @@ system_or_bail('mkdir', '-p', $standby_logdir);
     print $conf "hot_standby = on\n";
     print $conf "hot_standby_feedback = on\n";
     print $conf "primary_slot_name = 'standby_slot'\n";
+    # Decode copies on the standby so they have a consistent snapshot
+    print $conf "spock.failover_slots_database = '$dbname'\n";
     print $conf "log_directory = '$standby_logdir'\n";
     print $conf "log_filename = 'standby.log'\n";
     # PG17: keep native slotsync off so the spock worker does the sync

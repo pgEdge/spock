@@ -24,4 +24,11 @@
  */
 extern void spock_shmem_init(void);
 
+/*
+ * Whether the failover slot worker is connecting to
+ * spock.failover_slots_database; see failover_slots_connect().
+ */
+extern bool spock_failover_slots_db_connecting(void);
+extern void spock_set_failover_slots_db_connecting(bool connecting);
+
 #endif							/* SPOCK_SHMEM_H */
