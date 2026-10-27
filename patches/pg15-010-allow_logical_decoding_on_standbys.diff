@@ -247,77 +247,78 @@ index 466f30c22d..b67ad3abe4 100644
  	slot = MyReplicationSlot;
  
 diff --git a/src/backend/replication/slot.c b/src/backend/replication/slot.c
-index 80d96db8eb..2d5b2945ed 100644
+index 1f4aad52c4a..623967e4fa1 100644
 --- a/src/backend/replication/slot.c
 +++ b/src/backend/replication/slot.c
 @@ -40,6 +40,7 @@
  #include <sys/stat.h>
- 
+
  #include "access/transam.h"
 +#include "access/xlogrecovery.h"
  #include "access/xlog_internal.h"
  #include "common/string.h"
  #include "miscadmin.h"
-@@ -1174,37 +1175,28 @@ ReplicationSlotReserveWal(void)
- 		/*
- 		 * For logical slots log a standby snapshot and start logical decoding
- 		 * at exactly that position. That allows the slot to start up more
--		 * quickly.
-+		 * quickly. But on a standby we cannot do WAL writes, so just use the
-+		 * replay pointer; effectively, an attempt to create a logical slot on
-+		 * standby will cause it to wait for an xl_running_xact record to be
-+		 * logged independently on the primary, so that a snapshot can be
-+		 * built using the record.
- 		 *
--		 * That's not needed (or indeed helpful) for physical slots as they'll
--		 * start replay at the last logged checkpoint anyway. Instead return
--		 * the location of the last redo LSN. While that slightly increases
--		 * the chance that we have to retry, it's where a base backup has to
--		 * start replay at.
-+		 * None of this is needed (or indeed helpful) for physical slots as
-+		 * they'll start replay at the last logged checkpoint anyway. Instead
-+		 * return the location of the last redo LSN. While that slightly
-+		 * increases the chance that we have to retry, it's where a base
-+		 * backup has to start replay at.
- 		 */
--		if (!RecoveryInProgress() && SlotIsLogical(slot))
--		{
--			XLogRecPtr	flushptr;
+@@ -1238,37 +1239,29 @@ ReplicationSlotReserveWal(void)
+ 	LWLockAcquire(ReplicationSlotAllocationLock, LW_EXCLUSIVE);
+
+ 	/*
+-	 * For logical slots log a standby snapshot and start logical decoding at
+-	 * exactly that position. That allows the slot to start up more quickly.
++	 * For logical slots log a standby snapshot and start logical decoding
++	 * at exactly that position. That allows the slot to start up more
++	 * quickly. But on a standby we cannot do WAL writes, so just use the
++	 * replay pointer; effectively, an attempt to create a logical slot on
++	 * standby will cause it to wait for an xl_running_xact record to be
++	 * logged independently on the primary, so that a snapshot can be
++	 * built using the record.
+ 	 *
+-	 * That's not needed (or indeed helpful) for physical slots as they'll
+-	 * start replay at the last logged checkpoint anyway. Instead return the
+-	 * location of the last redo LSN, where a base backup has to start replay
+-	 * at.
++	 * None of this is needed (or indeed helpful) for physical slots as
++	 * they'll start replay at the last logged checkpoint anyway. Instead
++	 * return the location of the last redo LSN, where a base backup has
++	 * to start replay at.
+ 	 */
+-	if (!RecoveryInProgress() && SlotIsLogical(slot))
+-	{
+-		XLogRecPtr	flushptr;
 -
--			/* start at current insert position */
-+		if (SlotIsPhysical(slot))
-+			restart_lsn = GetRedoRecPtr();
-+		else if (RecoveryInProgress())
-+			restart_lsn = GetXLogReplayRecPtr(NULL);
-+		else
- 			restart_lsn = GetXLogInsertRecPtr();
--			SpinLockAcquire(&slot->mutex);
--			slot->data.restart_lsn = restart_lsn;
--			SpinLockRelease(&slot->mutex);
+-		/* start at current insert position */
++	if (SlotIsPhysical(slot))
++		restart_lsn = GetRedoRecPtr();
++	else if (RecoveryInProgress())
++		restart_lsn = GetXLogReplayRecPtr(NULL);
++	else
+ 		restart_lsn = GetXLogInsertRecPtr();
+-		SpinLockAcquire(&slot->mutex);
+-		slot->data.restart_lsn = restart_lsn;
+-		SpinLockRelease(&slot->mutex);
 -
--			/* make sure we have enough information to start */
--			flushptr = LogStandbySnapshot();
- 
--			/* and make sure it's fsynced to disk */
--			XLogFlush(flushptr);
--		}
--		else
--		{
--			restart_lsn = GetRedoRecPtr();
--			SpinLockAcquire(&slot->mutex);
--			slot->data.restart_lsn = restart_lsn;
--			SpinLockRelease(&slot->mutex);
--		}
-+		SpinLockAcquire(&slot->mutex);
-+		slot->data.restart_lsn = restart_lsn;
-+		SpinLockRelease(&slot->mutex);
- 
- 		/* prevent WAL removal as fast as possible */
- 		ReplicationSlotsComputeRequiredLSN();
-@@ -1220,6 +1212,17 @@ ReplicationSlotReserveWal(void)
- 		if (XLogGetLastRemovedSegno() < segno)
- 			break;
- 	}
+-		/* make sure we have enough information to start */
+-		flushptr = LogStandbySnapshot();
+
+-		/* and make sure it's fsynced to disk */
+-		XLogFlush(flushptr);
+-	}
+-	else
+-	{
+-		restart_lsn = GetRedoRecPtr();
+-		SpinLockAcquire(&slot->mutex);
+-		slot->data.restart_lsn = restart_lsn;
+-		SpinLockRelease(&slot->mutex);
+-	}
++	SpinLockAcquire(&slot->mutex);
++	slot->data.restart_lsn = restart_lsn;
++	SpinLockRelease(&slot->mutex);
+
+ 	/* prevent WAL removal as fast as possible */
+ 	ReplicationSlotsComputeRequiredLSN();
+@@ -1280,6 +1273,17 @@ ReplicationSlotReserveWal(void)
+ 			 NameStr(slot->data.name));
+
+ 	LWLockRelease(ReplicationSlotAllocationLock);
 +
 +	if (!RecoveryInProgress() && SlotIsLogical(slot))
 +	{
@@ -330,7 +331,7 @@ index 80d96db8eb..2d5b2945ed 100644
 +		XLogFlush(flushptr);
 +	}
  }
- 
+
  /*
 diff --git a/src/backend/replication/walsender.c b/src/backend/replication/walsender.c
 index 269914bce2..3c39fe20cb 100644
