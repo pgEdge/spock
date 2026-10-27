@@ -93,6 +93,10 @@ will be removed at general availability.
 
 ### Other changes
 
+* The failover-slots worker no longer stops synchronizing every slot while
+  it waits for the primary's copy of a new slot to catch up.  The new copy
+  stays a temporary slot until then and is dropped, not kept, if the
+  standby is promoted first.
 * Direct DDL against the `spock` and `snowflake` schemas is refused while
   DDL replication is on.
 * Large objects stored by lolor can be replicated, and Zodan `add_node`

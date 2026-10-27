@@ -86,6 +86,14 @@ typedef struct RemoteSlot
 	XLogRecPtr	restart_lsn;
 	XLogRecPtr	confirmed_lsn;
 	TransactionId catalog_xmin;
+
+	/*
+	 * restart_lsn is lowered to the oldest restart_lsn of all synchronized
+	 * slots before a slot is synchronized.  This is the slot's own value,
+	 * capped at the WAL received, used to check that the local copy can
+	 * satisfy it.
+	 */
+	XLogRecPtr	own_restart_lsn;
 } RemoteSlot;
 
 typedef enum FailoverSlotFilterKey
@@ -558,216 +566,6 @@ remote_connect(const char *connstr, const char *appname)
 
 
 /*
- * Wait for remote slot to pass locally reserved position.
- *
- * Wait until the slot named in 'remote_slot' on the host at 'conn' has all its
- * requirements satisfied by the local slot 'slot' by polling 'conn'. This
- * relies on us having already reserved the WAL for the old position of
- * `remote_slot` so `slot` can't continue to advance.
- */
-static bool
-wait_for_primary_slot_catchup(ReplicationSlot *slot, RemoteSlot *remote_slot)
-{
-	List	   *slots;
-	PGconn	   *conn;
-	StringInfoData connstr;
-	TimestampTz cb_wait_start =
-		0;						/* first invocation should happen immediately */
-
-	elog(
-		 LOG,
-		 "waiting for remote slot %s lsn (%X/%X) and catalog xmin (%u) to pass local slot lsn (%X/%X) and catalog xmin (%u)",
-		 remote_slot->name, (uint32) (remote_slot->restart_lsn >> 32),
-		 (uint32) (remote_slot->restart_lsn), remote_slot->catalog_xmin,
-		 (uint32) (slot->data.restart_lsn >> 32),
-		 (uint32) (slot->data.restart_lsn), slot->data.catalog_xmin);
-
-	initStringInfo(&connstr);
-
-	/*
-	 * Append the dbname of the remote slot. We don't use a generic db like
-	 * postgres here because plugin callback below might want to invoke
-	 * extension functions.  Keep connstr alive for reconnect attempts.
-	 */
-	if (!make_sync_failover_slots_dsn(&connstr, remote_slot->database))
-	{
-		/*
-		 * The walreceiver dropped its connection string while we were getting
-		 * here, so it is reconnecting to the primary.  Give up on this slot
-		 * for now; the caller's next cycle starts over.
-		 */
-		elog(DEBUG1,
-			 "no connection string for the primary yet, not waiting for slot %s",
-			 remote_slot->name);
-		pfree(connstr.data);
-		return false;
-	}
-
-	conn = remote_connect(connstr.data, "spock_failover_slots");
-
-	for (;;)
-	{
-		RemoteSlot *new_slot;
-		int			rc;
-		FailoverSlotFilter *filter;
-		XLogRecPtr	receivePtr;
-		bool		query_failed;
-
-		CHECK_FOR_INTERRUPTS();
-
-		if (!RecoveryInProgress())
-		{
-			/*
-			 * The remote slot didn't pass the locally reserved position at
-			 * the time of local promotion, so it's not safe to use.
-			 */
-			ereport(
-					WARNING,
-					(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
-					 errmsg(
-							"replication slot sync wait for slot %s interrupted by promotion",
-							remote_slot->name)));
-			if (conn)
-				PQfinish(conn);
-			pfree(connstr.data);
-			return false;
-		}
-
-		/*
-		 * If the connection to the primary was lost (e.g. because the primary
-		 * was stopped as part of a controlled failover), attempt to
-		 * reconnect. We wrap the reconnect in PG_TRY so that a failed
-		 * reconnect does not crash the bgworker; we simply wait and try
-		 * again, and the RecoveryInProgress() check at the top of the loop
-		 * will detect promotion and return false cleanly.
-		 */
-		if (conn == NULL)
-		{
-			PG_TRY();
-			{
-				conn = remote_connect(connstr.data, "spock_failover_slots");
-			}
-			PG_CATCH();
-			{
-				FlushErrorState();
-				conn = NULL;
-			}
-			PG_END_TRY();
-
-			if (conn == NULL)
-			{
-				/* Still cannot reach primary; wait before retrying. */
-				rc = WaitLatch(MyLatch,
-							   WL_LATCH_SET | WL_TIMEOUT | WL_POSTMASTER_DEATH,
-							   wal_retrieve_retry_interval, PG_WAIT_EXTENSION);
-				if (rc & WL_POSTMASTER_DEATH)
-					proc_exit(1);
-				ResetLatch(MyLatch);
-				continue;
-			}
-		}
-
-		/*
-		 * Query the primary for the current slot state.  Wrap in PG_TRY so
-		 * that a connection failure (primary stopped before promotion) is
-		 * handled gracefully: close the dead connection, wait, and retry. The
-		 * RecoveryInProgress() check above will detect promotion on the next
-		 * iteration and return false, allowing the caller to persist the slot
-		 * with whatever WAL position the standby has locally reserved.
-		 */
-		query_failed = false;
-		slots = NIL;
-		filter = palloc(sizeof(FailoverSlotFilter));
-		filter->key = FAILOVERSLOT_FILTER_NAME;
-		filter->val = remote_slot->name;
-
-		PG_TRY();
-		{
-			slots = remote_get_primary_slot_info(conn, list_make1(filter));
-		}
-		PG_CATCH();
-		{
-			FlushErrorState();
-			PQfinish(conn);
-			conn = NULL;
-			query_failed = true;
-		}
-		PG_END_TRY();
-
-		if (query_failed)
-		{
-			rc = WaitLatch(MyLatch,
-						   WL_LATCH_SET | WL_TIMEOUT | WL_POSTMASTER_DEATH,
-						   wal_retrieve_retry_interval, PG_WAIT_EXTENSION);
-			if (rc & WL_POSTMASTER_DEATH)
-				proc_exit(1);
-			ResetLatch(MyLatch);
-			continue;
-		}
-
-		if (!list_length(slots))
-		{
-			/* Slot on provider vanished */
-			PQfinish(conn);
-			pfree(connstr.data);
-			return false;
-		}
-
-		receivePtr = GetWalRcvFlushRecPtr(NULL, NULL);
-
-		Assert(list_length(slots) == 1);
-
-		new_slot = linitial(slots);
-		if (new_slot->restart_lsn > receivePtr)
-			new_slot->restart_lsn = receivePtr;
-		if (new_slot->confirmed_lsn > receivePtr)
-			new_slot->confirmed_lsn = receivePtr;
-
-		if (new_slot->restart_lsn >= slot->data.restart_lsn &&
-			(!TransactionIdIsValid(new_slot->catalog_xmin) ||
-			 TransactionIdFollowsOrEquals(new_slot->catalog_xmin,
-										  MyReplicationSlot->data.catalog_xmin)))
-		{
-			remote_slot->restart_lsn = new_slot->restart_lsn;
-			remote_slot->confirmed_lsn = new_slot->confirmed_lsn;
-			remote_slot->catalog_xmin = new_slot->catalog_xmin;
-			PQfinish(conn);
-			pfree(connstr.data);
-			return true;
-		}
-
-		/*
-		 * Invoke any callbacks that will help move the slots along
-		 */
-		if (TimestampDifferenceExceeds(
-									   cb_wait_start, GetCurrentTimestamp(),
-									   Min(wal_retrieve_retry_interval * 5, PG_WAIT_EXTENSION)))
-		{
-			if (cb_wait_start > 0)
-				elog(
-					 LOG,
-					 "still waiting for remote slot %s lsn (%X/%X) and catalog xmin (%u) to pass local slot lsn (%X/%X) and catalog xmin (%u)",
-					 remote_slot->name, (uint32) (new_slot->restart_lsn >> 32),
-					 (uint32) (new_slot->restart_lsn), new_slot->catalog_xmin,
-					 (uint32) (slot->data.restart_lsn >> 32),
-					 (uint32) (slot->data.restart_lsn),
-					 slot->data.catalog_xmin);
-
-			cb_wait_start = GetCurrentTimestamp();
-		}
-
-		rc =
-			WaitLatch(MyLatch, WL_LATCH_SET | WL_TIMEOUT | WL_POSTMASTER_DEATH,
-					  wal_retrieve_retry_interval, PG_WAIT_EXTENSION);
-
-		if (rc & WL_POSTMASTER_DEATH)
-			proc_exit(1);
-
-		ResetLatch(MyLatch);
-	}
-}
-
-/*
  * Is the slot invalidated?  Caller must hold the slot's mutex.
  */
 static bool
@@ -779,9 +577,12 @@ slot_is_invalidated(ReplicationSlot *s)
 	/*
 	 * PG15 records the old restart_lsn in invalidated_at and clears
 	 * restart_lsn.  Only invalidated_at is tested: a worker without this fix
-	 * advanced such copies and gave them a valid restart_lsn again, and those
-	 * still need recreating.  Nothing clears invalidated_at short of dropping
-	 * the slot.
+	 * advanced such copies and gave them a valid restart_lsn again.  The
+	 * standby may have removed the WAL at that position while the copy was
+	 * invalidated, and a valid restart_lsn holds back the cutoff that
+	 * InvalidateObsoleteReplicationSlots() compares it with, so a later
+	 * restartpoint need not invalidate the copy again.  Nothing clears
+	 * invalidated_at short of dropping the slot.
 	 */
 	return !XLogRecPtrIsInvalid(s->data.invalidated_at);
 #endif
@@ -905,7 +706,8 @@ synchronize_one_slot(RemoteSlot *remote_slot)
 		if (strcmp(NameStr(s->data.name), remote_slot->name) == 0)
 		{
 			found = true;
-			active = SlotIsActive(s);
+			/* A pending copy is held by this process */
+			active = SlotIsActive(s) && s->active_pid != MyProcPid;
 			SpinLockAcquire(&s->mutex);
 			invalidated = slot_is_invalidated(s);
 #if PG_VERSION_NUM >= 170000
@@ -925,9 +727,7 @@ synchronize_one_slot(RemoteSlot *remote_slot)
 	 *
 	 * Leave it alone while a walsender holds it, and on PG17 when it was
 	 * created by native slot sync, since ReplicationSlotDrop() refuses to
-	 * drop a synced slot on a standby.  A walsender can still take the slot
-	 * between the check and the drop; the drop then errors out and the
-	 * restarted worker tries again.
+	 * drop a synced slot on a standby.
 	 */
 	if (found && invalidated && (active || synced))
 	{
@@ -960,32 +760,19 @@ synchronize_one_slot(RemoteSlot *remote_slot)
 	invalidated_warning_due(remote_slot->name, false);
 
 	/*
-	 * The new copy is created below like any other slot.  Its restart_lsn is
-	 * reserved at the standby's current WAL position, so while the primary's
-	 * slot is still behind that point the create path waits for it in
-	 * wait_for_primary_slot_catchup(), and no other slot is synchronized
-	 * until then (see the TODO there).
-	 */
-	if (found && invalidated)
-	{
-		elog(WARNING,
-			 "replication slot \"%s\" is invalidated on the standby, "
-			 "recreating it from the primary",
-			 remote_slot->name);
-		ReplicationSlotDrop(remote_slot->name, true);
-		found = false;
-	}
-
-	/*
 	 * Remote slot exists locally, acquire and move. There's a race here where
 	 * the slot could've been dropped since we checked, but we'll just ERROR
 	 * out in `ReplicationSlotAcquire` and retry next loop so it's harmless.
+	 * The same happens if a walsender takes the slot first; the worker then
+	 * exits and is restarted after bgw_restart_time.
 	 *
 	 * Moving the slot this way does not do logical decoding. We're not
 	 * processing WAL, we're just updating the slot metadata.
 	 */
 	if (found)
 	{
+		bool		now_invalidated;
+
 #if PG_VERSION_NUM >= 180000
 		ReplicationSlotAcquire(remote_slot->name, true, true);
 #else
@@ -994,15 +781,13 @@ synchronize_one_slot(RemoteSlot *remote_slot)
 
 		/*
 		 * A restartpoint can invalidate the copy between the lookup above and
-		 * the acquire.  Leave it as it is: advancing it would give it a valid
-		 * restart_lsn again, and on PG15 that is what the lookup goes by, so
-		 * the next pass would no longer see the invalidation.  Left alone,
-		 * the next pass drops and recreates it.
+		 * the acquire.  Advancing it would hide that, so leave it as it is;
+		 * the next pass handles it like any other invalidated copy.
 		 */
 		SpinLockAcquire(&MyReplicationSlot->mutex);
-		invalidated = slot_is_invalidated(MyReplicationSlot);
+		now_invalidated = slot_is_invalidated(MyReplicationSlot);
 		SpinLockRelease(&MyReplicationSlot->mutex);
-		if (invalidated)
+		if (now_invalidated && !invalidated)
 		{
 			ReplicationSlotRelease();
 			PopActiveSnapshot();
@@ -1011,21 +796,54 @@ synchronize_one_slot(RemoteSlot *remote_slot)
 		}
 
 		/*
+		 * Drop the invalidated copy while it is acquired, so no walsender can
+		 * take it between the check and the drop.  ReplicationSlotDropAcquired()
+		 * is not exported before PG17, but releasing an ephemeral slot drops
+		 * it, so mark the copy ephemeral and release it.  If removing its
+		 * directory fails, the drop only warns and the copy is back after a
+		 * server restart, to be recreated again.
+		 */
+		if (invalidated)
+		{
+			elog(WARNING,
+				 "replication slot \"%s\" is invalidated on the standby, "
+				 "recreating it from the primary",
+				 remote_slot->name);
+			SpinLockAcquire(&MyReplicationSlot->mutex);
+			MyReplicationSlot->data.persistency = RS_EPHEMERAL;
+			SpinLockRelease(&MyReplicationSlot->mutex);
+			ReplicationSlotRelease();
+			found = false;
+		}
+	}
+
+	if (found)
+	{
+		bool		pending;
+
+		/* A temporary copy is one this worker has not made persistent yet */
+		SpinLockAcquire(&MyReplicationSlot->mutex);
+		pending = MyReplicationSlot->data.persistency == RS_TEMPORARY;
+		SpinLockRelease(&MyReplicationSlot->mutex);
+
+		/*
 		 * We can't satisfy this remote slot's requirements with our
 		 * known-safe local restart_lsn, catalog_xmin and xmin.
 		 *
 		 * This shouldn't happen for existing slots unless someone else messed
-		 * with our physical replication slot on the master.
+		 * with our physical replication slot on the master.  For a pending
+		 * copy it is expected: try again on the next pass.
 		 */
-		if (remote_slot->restart_lsn < MyReplicationSlot->data.restart_lsn ||
+		if (remote_slot->own_restart_lsn < MyReplicationSlot->data.restart_lsn ||
 			(TransactionIdIsValid(remote_slot->catalog_xmin) &&
 			 TransactionIdPrecedes(remote_slot->catalog_xmin,
 								   MyReplicationSlot->data.catalog_xmin)))
 		{
-			elog(
-				 WARNING,
-				 "not synchronizing slot %s; synchronization would move it backward",
-				 remote_slot->name);
+			if (!pending)
+				elog(
+					 WARNING,
+					 "not synchronizing slot %s; synchronization would move it backward",
+					 remote_slot->name);
 
 			ReplicationSlotRelease();
 			PopActiveSnapshot();
@@ -1039,7 +857,14 @@ synchronize_one_slot(RemoteSlot *remote_slot)
 		LogicalIncreaseRestartDecodingForSlot(remote_slot->confirmed_lsn,
 											  remote_slot->restart_lsn);
 		ReplicationSlotMarkDirty();
-		ReplicationSlotSave();
+		if (pending)
+		{
+			ReplicationSlotPersist();
+			elog(LOG, "created replication slot \"%s\" on the standby",
+				 remote_slot->name);
+		}
+		else
+			ReplicationSlotSave();
 
 		elog(
 			 DEBUG2,
@@ -1062,14 +887,21 @@ synchronize_one_slot(RemoteSlot *remote_slot)
 		/*
 		 * We have to create the slot to reserve its name and resources, but
 		 * don't want it to persist if we fail.
+		 *
+		 * The slot is temporary: if the primary's slot is behind it, this
+		 * worker keeps holding it across passes instead of waiting here, and
+		 * makes it persistent once the primary has caught up (see the found
+		 * branch above).  Waiting would stop the sync of every other slot.
+		 * The worker drops it if sync stops or the standby is promoted
+		 * first, and so does its exit.
 		 */
 #if PG_VERSION_NUM >= 170000
-		ReplicationSlotCreate(remote_slot->name, true, RS_EPHEMERAL,
+		ReplicationSlotCreate(remote_slot->name, true, RS_TEMPORARY,
 							  remote_slot->two_phase,
 							  false,
 							  false);
 #else
-		ReplicationSlotCreate(remote_slot->name, true, RS_EPHEMERAL,
+		ReplicationSlotCreate(remote_slot->name, true, RS_TEMPORARY,
 							  remote_slot->two_phase);
 #endif
 		slot = MyReplicationSlot;
@@ -1094,10 +926,10 @@ synchronize_one_slot(RemoteSlot *remote_slot)
 		 * standby actually has from the pg_basebackup checkpoint.
 		 *
 		 * When restart_lsn is zero, the unsigned comparison below
-		 * (remote_slot->restart_lsn < slot->data.restart_lsn) is always FALSE
-		 * for any real remote LSN, so wait_for_primary_slot_catchup is never
-		 * called.  When restart_lsn is a small but non-zero value (less than
-		 * the redo pointer), the comparison still fails to fire for remote
+		 * (remote_slot->own_restart_lsn < slot->data.restart_lsn) is always
+		 * FALSE for any real remote LSN, so the slot is never kept pending.
+		 * When restart_lsn is a small but non-zero value (less than the redo
+		 * pointer), the comparison still fails to fire for remote
 		 * slots that require WAL older than what the standby has.  In both
 		 * cases we end up persisting a slot with the remote's restart_lsn,
 		 * which the standby cannot satisfy, causing an immediate PANIC
@@ -1107,8 +939,8 @@ synchronize_one_slot(RemoteSlot *remote_slot)
 		 * Fix: always ensure restart_lsn is at least as high as the recovery
 		 * redo pointer (GetRedoRecPtr), which is set from the basebackup
 		 * checkpoint and represents the guaranteed minimum WAL floor on this
-		 * standby.  Any remote slot that requires WAL older than that will
-		 * then correctly trigger wait_for_primary_slot_catchup.
+		 * standby.  Any remote slot that requires WAL older than that then
+		 * correctly stays pending until the primary's slot passes it.
 		 */
 		{
 			XLogRecPtr	old_lsn = MyReplicationSlot->data.restart_lsn;
@@ -1172,42 +1004,24 @@ synchronize_one_slot(RemoteSlot *remote_slot)
 		 * promise we can't satisfy.
 		 *
 		 * This can happen if this replica is fairly new or has only recently
-		 * started failover slot sync.
-		 *
-		 * TODO: Don't stop synchronization of other slots for this, we can't
-		 * add timeout because that could result in some slots never being
-		 * synchronized as they will always be behind the physical slot.
+		 * started failover slot sync, and after a copy was recreated.  Keep
+		 * the slot pending and check again on the next pass.
 		 */
-		if (remote_slot->restart_lsn < MyReplicationSlot->data.restart_lsn ||
+		if (remote_slot->own_restart_lsn < MyReplicationSlot->data.restart_lsn ||
 			(TransactionIdIsValid(remote_slot->catalog_xmin) &&
 			 TransactionIdPrecedes(remote_slot->catalog_xmin,
 								   MyReplicationSlot->data.catalog_xmin)))
 		{
-			if (!wait_for_primary_slot_catchup(MyReplicationSlot, remote_slot))
-			{
-				if (RecoveryInProgress())
-				{
-					/*
-					 * Not a promotion — genuinely can't satisfy slot
-					 * requirements while still in recovery.
-					 */
-					ReplicationSlotRelease();
-					PopActiveSnapshot();
-					CommitTransactionCommand();
-					return;
-				}
-
-				/*
-				 * Promotion interrupted the wait.  A freshly promoted
-				 * streaming standby has all WAL from pg_basebackup onward, so
-				 * the slot's restart_lsn (set conservatively by
-				 * ReplicationSlotReserveWal) is safe to use.  Fall through to
-				 * persist the slot.
-				 */
-				elog(LOG, "spock_failover_slots: persisting slot \"%s\" after "
-					 "promotion interrupted WAL catchup; standby has required WAL",
-					 remote_slot->name);
-			}
+			elog(LOG,
+				 "waiting for remote slot %s lsn (%X/%X) and catalog xmin (%u) to pass local slot lsn (%X/%X) and catalog xmin (%u)",
+				 remote_slot->name, LSN_FORMAT_ARGS(remote_slot->own_restart_lsn),
+				 remote_slot->catalog_xmin,
+				 LSN_FORMAT_ARGS(MyReplicationSlot->data.restart_lsn),
+				 MyReplicationSlot->data.catalog_xmin);
+			ReplicationSlotRelease();
+			PopActiveSnapshot();
+			CommitTransactionCommand();
+			return;
 		}
 
 		/*
@@ -1222,6 +1036,8 @@ synchronize_one_slot(RemoteSlot *remote_slot)
 		ReplicationSlotMarkDirty();
 
 		ReplicationSlotPersist();
+		elog(LOG, "created replication slot \"%s\" on the standby",
+			 remote_slot->name);
 
 		elog(DEBUG1,
 			 "synchronized new slot %s to lsn (%X/%X) and catalog xmin (%u)",
@@ -1232,6 +1048,21 @@ synchronize_one_slot(RemoteSlot *remote_slot)
 	ReplicationSlotRelease();
 	PopActiveSnapshot();
 	CommitTransactionCommand();
+}
+
+/*
+ * Drop the pending copies: temporary slots held by this process that are
+ * not caught up with the primary and cannot serve a subscriber after a
+ * promotion.  Called whenever the worker is not synchronizing.
+ */
+static void
+drop_pending_copies(void)
+{
+#if PG_VERSION_NUM >= 170000
+	ReplicationSlotCleanup(false);
+#else
+	ReplicationSlotCleanup();
+#endif
 }
 
 /*
@@ -1273,7 +1104,10 @@ synchronize_failover_slots(long sleep_time)
 
 	if (!WalRcv || !HotStandbyActive() ||
 		list_length(spock_failover_slot_names_list) == 0)
+	{
+		drop_pending_copies();
 		return sleep_time;
+	}
 
 	/*
 	 * Sync requires hot_standby_feedback; skip when off so the worker keeps
@@ -1335,9 +1169,12 @@ synchronize_failover_slots(long sleep_time)
 		{
 			ReplicationSlot *s = &ReplicationSlotCtl->replication_slots[i];
 			bool		active;
+			bool		pending;
 			bool		found = false;
 
-			active = SlotIsActive(s);
+			/* A pending copy is held by this process */
+			pending = s->active_pid == MyProcPid;
+			active = SlotIsActive(s) && !pending;
 
 			/* Only check inactive slots. */
 			if (!s->in_use || active)
@@ -1361,9 +1198,10 @@ synchronize_failover_slots(long sleep_time)
 
 			/*
 			 * Not found, should be dropped if synchronize_failover_slots_drop
-			 * is enabled.
+			 * is enabled.  A pending copy is not a usable slot, so it is
+			 * dropped either way.
 			 */
-			if (!found && spock_failover_slots_drop)
+			if (!found && (spock_failover_slots_drop || pending))
 			{
 				dropslot = pstrdup(NameStr(s->data.name));
 				break;
@@ -1477,8 +1315,13 @@ synchronize_failover_slots(long sleep_time)
 
 			/*
 			 * For simplicity we always move restart_lsn of all slots to the
-			 * restart_lsn needed by the furthest-behind master slot.
+			 * restart_lsn needed by the furthest-behind master slot.  Whether
+			 * the local copy can satisfy the slot is checked against its own
+			 * restart_lsn, so one slot that lags does not hold back the
+			 * others.
 			 */
+			remote_slot->own_restart_lsn = Min(remote_slot->restart_lsn,
+											   receivePtr);
 			if (remote_slot->restart_lsn > lsn)
 				remote_slot->restart_lsn = lsn;
 
@@ -1566,7 +1409,11 @@ spock_failover_slots_main(Datum main_arg)
 			)
 			sleep_time = synchronize_failover_slots(spock_failover_slots_naptime);
 		else
+		{
+			/* On PG17 pending copies would also block native slot sync */
+			drop_pending_copies();
 			sleep_time = (long) spock_failover_slots_naptime * 10;
+		}
 
 		rc =
 			WaitLatch(MyLatch, WL_LATCH_SET | WL_TIMEOUT | WL_POSTMASTER_DEATH,

@@ -503,10 +503,17 @@ slot whose copy on the standby was invalidated, for example because the
 standby removed WAL or the primary removed catalog rows the copy still
 needed. Such a copy looks current but cannot serve a subscriber after a
 promotion. With the default `on`, the worker reports it with a WARNING,
-drops it and creates it again from the primary. With `off`, the worker
+drops it and creates it again from the primary. The new copy stays a
+temporary slot until the primary's slot has caught up with it, while the
+worker keeps synchronizing the other slots; if the standby is promoted
+before then, the copy is dropped. With `off`, the worker
 leaves the copy as it is and reports it once, so it can be looked at
 before anything is dropped; it is recreated on the first pass after the
 setting is turned back on. Settable at runtime with `SIGHUP` (reload).
+
+Used on PostgreSQL 15, 16, and 17 (when `sync_replication_slots` is not
+enabled). On PostgreSQL 17 with native slotsync active, or on PostgreSQL 18+,
+this setting is ignored.
 
 ```ini
 spock.failover_slots_recreate_invalidated = on
