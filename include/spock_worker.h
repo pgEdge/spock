@@ -99,6 +99,13 @@ typedef struct SpockContext
 	/* Signal that subscription info have changed. */
 	bool		subscriptions_changed;
 
+	/*
+	 * Set while the failover slot worker connects to
+	 * spock.failover_slots_database, so that after a failed connection the
+	 * restarted worker does not try again.
+	 */
+	bool		failover_slots_db_connecting;
+
 	/* Spock slot-group data */
 	LWLock	   *slot_group_master_lock;
 	int			slot_ngroups;

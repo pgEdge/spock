@@ -691,6 +691,7 @@ CopyMultiInsertBuffer
 CopyMultiInsertInfo
 CopyOnErrorChoice
 CopySeqResult
+CopySnapshotState
 CopySource
 CopyStmt
 CopyToRoutine
