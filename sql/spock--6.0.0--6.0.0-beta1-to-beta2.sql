@@ -123,3 +123,7 @@ RETURNS void
 LANGUAGE sql AS $$
     DELETE FROM spock.reserved_object WHERE name = p_name AND kind = p_kind;
 $$;
+
+CREATE OR REPLACE FUNCTION spock.core_patchset() RETURNS integer
+AS 'MODULE_PATHNAME', 'spock_core_patchset'
+LANGUAGE c;

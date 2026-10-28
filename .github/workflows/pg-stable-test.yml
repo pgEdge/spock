@@ -118,6 +118,9 @@ jobs:
           export PATH="$PG_PREFIX/bin:$PATH"
           export PG_CONFIG="$PG_PREFIX/bin/pg_config"
           cd "${GITHUB_WORKSPACE}/spock/tests/tap"
+          # Built with this tree's patches, so test 301 must see the core
+          # patch-set marker rather than accept an older patch set.
+          export SPOCK_EXPECT_CORE_PATCHSET=1
           ./run_tests.sh
 
       - name: Upload TAP artifacts on failure
