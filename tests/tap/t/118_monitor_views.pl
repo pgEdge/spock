@@ -147,9 +147,11 @@ is_true(2, "SELECT sync_worker_failures >= 1 AND sync_errors >= 1 FROM $stats",
         'the failure is counted against the sync worker');
 is(scalar_query(2, "SELECT worker_failures FROM $stats"),
    '0', 'and not against the apply worker');
-is(scalar_query(2, "SELECT sync_status FROM spock.table_sync_status " .
-                   "WHERE table_name = 'mon_tbl'"),
-   'failed', 'the table is marked failed');
+# The event comes from the sync worker that died; the next one marks the
+# table failed.
+ok(poll_query_until(2, "SELECT sync_status = 'failed' FROM spock.table_sync_status " .
+                       "WHERE table_name = 'mon_tbl'", 't', 60),
+   'the table is marked failed');
 
 psql_or_bail(2, "SET spock.enable_ddl_replication = off; " .
                 "ALTER TABLE mon_tbl DROP CONSTRAINT mon_tbl_no_copy");
