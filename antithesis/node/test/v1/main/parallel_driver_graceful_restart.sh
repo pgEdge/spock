@@ -43,29 +43,63 @@ elapsed() { awk -v a="$1" -v b="$(now)" 'BEGIN { printf "%.1f", b - a }'; }
 
 q() { psql -X -q -At -h localhost -U admin -d demo -c "$1" 2> /dev/null; }
 
-# Swarm per node and timeline: some nodes never restart, some always do.
+# Swarm per node and timeline: some nodes never restart, some often do.
+# This file is in all four node containers, so Antithesis picks it about
+# four times as often as the ledger writer; the weights and the cooldown
+# keep restarts from crowding out the writes (run cc5efb7f, with 0/20/100%
+# and 60 s, cut eventually checks by half).
 if [ ! -e "${STATE}/graceful_percent" ]; then
-	pick 0 20 100 > "${STATE}/graceful_percent"
+	pick 0 10 50 > "${STATE}/graceful_percent"
 fi
 percent=$(cat "${STATE}/graceful_percent")
 [ $(($(rand) % 100)) -lt "${percent}" ] || exit 0
 
-# Antithesis calls drivers often, so even a 100% node gets COOLDOWN seconds
-# up between restarts for writes and catch-up.
-COOLDOWN=60
+# Seconds up between two restarts of a node, for writes and catch-up.
+COOLDOWN=120
 last=$(cat "${STATE}/graceful_last" 2> /dev/null || echo 0)
 awk -v a="$(now)" -v l="${last:-0}" -v c="${COOLDOWN}" \
 	'BEGIN { exit !(a - l >= c) }' || exit 0
 
 pg_isready -q -h localhost || exit 0
 
-# What the stop lands on, for the reach claims.
-writers=$(q "SELECT count(*) FROM pg_stat_activity
-             WHERE application_name = 'parallel_driver_write_ledger.py'
-               AND state <> 'idle'")
-apply_in_txn=$(q "SELECT count(*) FROM pg_stat_activity
-                  WHERE application_name LIKE 'spock apply %'
-                    AND backend_xid IS NOT NULL")
+# Open transactions the stop may cut short: xids of ledger writers and of
+# apply workers inside a remote transaction, comma separated.
+xids_of() {
+	q "SELECT coalesce(string_agg(backend_xid::text, ','), '')
+	   FROM pg_stat_activity
+	   WHERE application_name LIKE '$1' AND backend_xid IS NOT NULL"
+}
+snapshot() {
+	writer_xids=$(xids_of 'parallel_driver_write_ledger.py')
+	apply_xids=$(xids_of 'spock apply %')
+}
+
+# How many of the xids aborted, i.e. the stop cut them short; asked after
+# the restart.  The xids are read as epoch 0, true for these short runs.
+aborted() {
+	if [ -z "$1" ]; then
+		echo 0
+		return
+	fi
+	q "SELECT count(*) FROM unnest(string_to_array('$1', ',')) x
+	   WHERE pg_xact_status(x::xid8) = 'aborted'"
+}
+
+# Aim the stop: watch for up to aim seconds for one of those transactions
+# on this node and stop the moment one shows up.  Each lasts only one
+# transaction, so a stop at a random moment almost never meets a writer
+# (0 of 278 in run cc5efb7f).  0 keeps some stops at a random moment.
+aim=$(pick 0 2 10)
+aim_start=$(now)
+while :; do
+	snapshot
+	if [ -n "${writer_xids}" ] || [ -n "${apply_xids}" ]; then
+		break
+	fi
+	awk -v a="$(now)" -v s="${aim_start}" -v w="${aim}" \
+		'BEGIN { exit !(a - s < w) }' || break
+	sleep 0.1
+done
 
 # 0 and 1: back at once (1 is the entrypoint's default); 4-6: either side
 # of spock.restart_delay_default (5 s), the peers' reconnect delay; 30: long
@@ -137,14 +171,19 @@ while [ "$(cat "${STATE}/boot_count")" = "${boot}" ]; do
 done
 restart=$(now)
 ready_s=timeout
+writers_cut='?'
+apply_cut='?'
 while awk -v a="$(now)" -v r="${restart}" 'BEGIN { exit !(a - r < 300) }'; do
 	if pg_isready -q -h localhost; then
 		ready_s=$(elapsed "${restart}")
+		writers_cut=$(aborted "${writer_xids}")
+		apply_cut=$(aborted "${apply_xids}")
 		break
 	fi
 	poll
 done
 echo "boot=${boot} stop_rc=0 stop_s=${stop_s} delay=${delay} ready_s=${ready_s}" \
-	"paused=${paused} writers=${writers:-?} apply_in_txn=${apply_in_txn:-?}" \
-	>> "${STATE}/graceful.log"
+	"paused=${paused} aim=${aim} writer_xids=${writer_xids:-none}" \
+	"writers_cut=${writers_cut:-?} apply_xids=${apply_xids:-none}" \
+	"apply_cut=${apply_cut:-?}" >> "${STATE}/graceful.log"
 exit 0

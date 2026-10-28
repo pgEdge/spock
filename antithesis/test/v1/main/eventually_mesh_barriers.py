@@ -122,11 +122,15 @@ def check_graceful_restarts(ledger):
             always(ready_ok,
                    "a gracefully stopped node accepts connections within 2 minutes of starting again",
                    {"node": node, "bound_s": RESTART_BOUND, **r})
-            sometimes(r.get("writers", "0") not in ("0", "?"),
-                      "graceful stop landed while a ledger writer was active on the node",
+            # The driver asks pg_xact_status() after the restart, so these
+            # count only transactions the stop really cut short.
+            sometimes(r.get("writers_cut", "0").isdigit()
+                      and int(r.get("writers_cut", "0")) > 0,
+                      "graceful stop cut short a ledger writer's transaction",
                       {"node": node, **r})
-            sometimes(r.get("apply_in_txn", "0") not in ("0", "?"),
-                      "graceful stop landed while an apply worker was inside a remote transaction",
+            sometimes(r.get("apply_cut", "0").isdigit()
+                      and int(r.get("apply_cut", "0")) > 0,
+                      "graceful stop cut short an apply worker's remote transaction",
                       {"node": node, **r})
 
     clean = {n: h["clean_exits"] for n, h in history.items()}

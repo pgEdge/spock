@@ -101,9 +101,13 @@ Current catalog line: Priority: P1 · Topology: v1 · Faults: graceful stop (tes
 - `antithesis/node/test/v1/main/parallel_driver_graceful_restart.sh`, copied
   into the node image only, so Antithesis runs it in a node container. It
   skips n4, takes a per-node lock, rolls against a per-node, per-timeline
-  restart weight drawn from {0, 20, 100}% (kept in
-  `/data/state/graceful_percent`), records how many ledger writers and apply
-  workers inside a remote transaction the stop lands on, writes a restart
+  restart weight drawn from {0, 10, 50}% (kept in
+  `/data/state/graceful_percent`) with at least 120 s between restarts,
+  watches for up to {0, 2, 10} s for a ledger writer or an apply worker
+  inside a remote transaction and stops when one appears, records the xids
+  of those open transactions (after the restart, `pg_xact_status()` tells
+  which ones the stop cut short; the reach claims count only those), writes
+  a restart
   delay from {0, 1, 4, 5, 6, 30} s to `/data/state/restart_delay`, and runs
   `pg_ctl stop -m fast -W` as postgres, then waits up to 330 s (above the 5min `wal_sender_timeout` variant plus the drain) for the entrypoint's `exits.log` line for that boot and takes the exit code from it. `pg_ctl -w` is not used: with a short delay the new postmaster writes its pid file before `pg_ctl` polls again, and `pg_ctl` waits on the new one. `node-entrypoint.sh` reads and
   removes the delay after the postmaster exits, so a driver killed by an
