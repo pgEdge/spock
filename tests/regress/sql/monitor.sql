@@ -559,6 +559,13 @@ SELECT event_type, severity, subscription_name,
  WHERE event_type = 'sync_failed'
    AND detail LIKE '%violates check constraint%'
  LIMIT 1;
+-- One failed copy gives two sync_failed events and no more: the worker that
+-- hit the error, and the next one, which gives the table up.
+SELECT count(*) AS sync_failed_events,
+       count(*) FILTER (WHERE detail LIKE '%abandoned after an earlier failure')
+         AS abandoned
+  FROM spock.events
+ WHERE event_type = 'sync_failed';
 SELECT sync_status
   FROM spock.table_sync_status
  WHERE table_name = 'monitor_dml';

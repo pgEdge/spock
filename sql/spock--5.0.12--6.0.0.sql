@@ -654,6 +654,17 @@ CREATE VIEW spock.settings AS
 -- pg_ls_waldir() is restricted to pg_monitor.  The views only need the
 -- total, so compute it in C and let a plain monitoring role see it without
 -- the file list.
+-- The origin progress behind the subscription views.  The core view
+-- pg_replication_origin_status is superuser only; this reads the same
+-- progress through the origin API.
+CREATE FUNCTION spock.replication_origin_status(
+    OUT external_id text,
+    OUT remote_lsn pg_lsn)
+RETURNS SETOF record
+LANGUAGE c STRICT
+AS 'MODULE_PATHNAME', 'spock_replication_origin_status';
+REVOKE ALL ON FUNCTION spock.replication_origin_status() FROM PUBLIC;
+
 CREATE FUNCTION spock.wal_size_bytes() RETURNS bigint
 LANGUAGE c STRICT STABLE AS 'MODULE_PATHNAME', 'spock_wal_size_bytes';
 
@@ -871,12 +882,13 @@ CREATE VIEW spock.subscription_status AS
            s.sub_name AS subscription_name,
            s.sub_enabled AS enabled,
            CASE
-               WHEN w.pid IS NOT NULL THEN
+               WHEN w.pid IS NOT NULL AND w.worker_status = 'running' THEN
                    CASE
                        WHEN t.sync_status IS NULL THEN 'unknown'
                        WHEN t.sync_status = 'ready' THEN 'replicating'
                        ELSE 'initializing'
                    END
+               WHEN w.pid IS NOT NULL THEN 'starting'
                WHEN NOT s.sub_enabled THEN 'disabled'
                ELSE 'down'
            END AS status,
@@ -937,7 +949,7 @@ CREATE VIEW spock.subscription_status AS
       LEFT JOIN spock.progress AS p
              ON p.node_id = s.sub_target
             AND p.remote_node_id = s.sub_origin
-      LEFT JOIN pg_catalog.pg_replication_origin_status AS ros
+      LEFT JOIN spock.replication_origin_status() AS ros
              ON ros.external_id = s.sub_slot_name
       LEFT JOIN spock.get_pending_exceptions() AS pe
              ON pe.subscription_name = s.sub_name
@@ -1519,3 +1531,16 @@ REVOKE ALL ON FUNCTION spock.get_apply_stats() FROM PUBLIC;
 REVOKE ALL ON FUNCTION spock.get_pending_exceptions() FROM PUBLIC;
 REVOKE ALL ON FUNCTION spock.reset_events() FROM PUBLIC;
 REVOKE ALL ON FUNCTION spock.reset_subscription_stats(oid) FROM PUBLIC;
+
+-- The read side is granted to pg_monitor, as PostgreSQL does for its own
+-- monitoring views, so GRANT pg_monitor TO a role is all it needs.  The
+-- reset functions stay with the superuser.
+GRANT USAGE ON SCHEMA spock TO pg_monitor;
+GRANT EXECUTE ON FUNCTION spock.get_system_info(), spock.get_events(),
+    spock.get_apply_stats(), spock.get_pending_exceptions(),
+    spock.replication_origin_status() TO pg_monitor;
+GRANT SELECT ON spock.settings, spock.system_status, spock.worker_status,
+    spock.events, spock.subscription_stats, spock.table_sync_status,
+    spock.subscription_status, spock.peer_status,
+    spock.replication_set_status, spock.slot_status, spock.node_status
+    TO pg_monitor;

@@ -733,7 +733,7 @@ SELECT DISTINCT event_type, severity, sqlstate,
       event_type       | severity | sqlstate | names_cause | password_hidden 
 -----------------------+----------+----------+-------------+-----------------
  provider_disconnected | warning  | 08006    | t           | t
- worker_failed         | error    |          | t           | t
+ worker_failed         | error    | 08006    | t           | t
 (2 rows)
 
 SELECT spock.sub_alter_interface('test_subscription', 'test_provider');
@@ -1041,7 +1041,7 @@ SELECT sync_worker_failures >= 1 AS sync_worker_failed,
   FROM spock.subscription_stats;
  sync_worker_failed | apply_worker_failures | sync_errors_counted | last_error_sqlstate | has_message 
 --------------------+-----------------------+---------------------+---------------------+-------------
- t                  |                     0 | t                   | XX000               | t
+ t                  |                     0 | t                   | 23514               | t
 (1 row)
 
 SELECT event_type, severity, subscription_name,
@@ -1054,6 +1054,18 @@ SELECT event_type, severity, subscription_name,
  event_type  | severity | subscription_name | names_table_and_cause 
 -------------+----------+-------------------+-----------------------
  sync_failed | error    | test_subscription | t
+(1 row)
+
+-- One failed copy gives two sync_failed events and no more: the worker that
+-- hit the error, and the next one, which gives the table up.
+SELECT count(*) AS sync_failed_events,
+       count(*) FILTER (WHERE detail LIKE '%abandoned after an earlier failure')
+         AS abandoned
+  FROM spock.events
+ WHERE event_type = 'sync_failed';
+ sync_failed_events | abandoned 
+--------------------+-----------
+                  2 |         1
 (1 row)
 
 SELECT sync_status

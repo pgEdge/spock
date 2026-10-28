@@ -111,7 +111,7 @@ seems stuck.
 | Column | Description |
 |--------|-------------|
 | `subscription_id`, `subscription_name`, `enabled` | The subscription. |
-| `status` | `replicating`, `initializing`, `down` (enabled but no worker), `disabled` or `unknown`. |
+| `status` | `replicating`, `initializing`, `starting` (the worker is up but not streaming yet, as during a reconnect loop), `down` (enabled but no worker), `disabled` or `unknown`. |
 | `provider_node`, `provider_dsn` | The provider; the password in the DSN is replaced with asterisks. |
 | `slot_name`, `replication_sets`, `forward_origins`, `apply_delay`, `skip_lsn`, `skip_schema`, `force_text_transfer`, `created_at` | Configuration. |
 | `sync_status` | Initial synchronization state of the subscription as a whole. |
@@ -120,7 +120,7 @@ seems stuck.
 | `worker_paused` | True while the worker sleeps because apply is paused. |
 | `in_exception_handling` | True while the worker replays a failed transaction under `spock.exception_behaviour`. |
 | `pending_exception_lsn`, `pending_exception_error` | Commit LSN and first error of the transaction being retried, if any. |
-| `origin_lsn` | Last durably applied provider LSN from `pg_replication_origin_status`. |
+| `origin_lsn` | Last durably applied provider LSN, from `spock.replication_origin_status()`. |
 | `remote_commit_lsn`, `remote_commit_ts`, `remote_insert_lsn`, `received_lsn` | Positions from `spock.progress`. |
 | `replication_lag_bytes` | WAL the provider has written that this node has not yet applied. |
 | `replication_lag` | Time between the last applied commit on the provider and its apply here. |
@@ -250,7 +250,7 @@ Event types:
 | `worker_error` | An error is raised inside an apply or sync worker. The detail carries the message with DETAIL and CONTEXT. |
 | `provider_connected`, `provider_disconnected` | The replication connection to the named provider is established, with the start LSN, or lost, with the error. |
 | `transaction_skipped`, `transaction_discarded` | A transaction is skipped through `sub_skip_lsn` or discarded under `transdiscard`. |
-| `sync_started`, `sync_finished`, `sync_failed` | Initial copy of a table. `sync_failed` carries the error that ended the copy. |
+| `sync_started`, `sync_finished`, `sync_failed` | Initial copy of a table. `sync_failed` carries the error that ended the copy; the next sync worker for that table records a second `sync_failed` saying the table was abandoned after the earlier failure, and no further attempt is made. |
 | `slot_created`, `stream_started`, `stream_stopped`, `stream_error` | Provider side: a spock slot is created, a walsender starts streaming to a subscriber (its address, spock version and protocol in the detail, the slot position in `lsn`), stops, or fails with an error while decoding. |
 | `apply_paused`, `apply_resumed` | `spock.pause_apply_workers()` and `spock.resume_apply_workers()`. |
 | `repair_mode_enabled`, `repair_mode_disabled` | `spock.repair_mode()`. |
@@ -476,9 +476,14 @@ The views are plain SQL, so any monitoring agent can poll them. Poll
 `spock.events` by `event_id` to fetch only new rows, and treat a gap in
 ids as history that was dropped because `spock.event_history_size` was too
 small for the polling interval. `spock.get_monitor_summary()` reports how
-full the event ring and the counters table are. A monitoring role needs
-`EXECUTE` on the functions listed below that the views call; the views
-themselves need no `pg_monitor` membership.
+full the event ring and the counters table are. The read-only views and
+the functions they call are granted to `pg_monitor`, so
+`GRANT pg_monitor TO monitoring_role;` is enough. Members of `pg_monitor`
+cannot reset counters or events: `spock.reset_events()` and
+`spock.reset_subscription_stats()` stay with the superuser. The
+`spock_info()` sections on `spock.tables`, `spock.lag_tracker`,
+`spock.exception_log` and `spock.resolutions` need `SELECT` on those,
+which the grant does not include; without it each shows as one error line.
 
 ## Underlying functions
 
@@ -488,12 +493,13 @@ contents. They are useful for tooling that wants unfiltered rows.
 | Function | Returns |
 |----------|---------|
 | `spock.get_worker_status()` | Every worker slot of the cluster, with `database_id`. |
-| `spock.get_events()` | Every event in the history, with `database_id`. |
-| `spock.get_apply_stats()` | The counters of every subscription of the current database. |
+| `spock.get_events()` | Every event in the history, with `database_id`. Superuser or `pg_monitor`. |
+| `spock.get_apply_stats()` | The counters of every subscription of the current database. Superuser or `pg_monitor`. |
 | `spock.get_slot_groups()` | Slot groups with attached walsenders. |
 | `spock.get_monitor_summary()` | Capacity and usage of the shared memory structures. |
-| `spock.get_system_info()` | Host name, operating system, CPU, memory, load averages, disk space of the data and WAL volumes, postmaster start, PostgreSQL and spock versions. |
-| `spock.get_pending_exceptions()` | Transactions being retried under exception handling, with their first error and the position of the failing change in the transaction. |
-| `spock.reset_events()` | Clears the event history of the current database. |
-| `spock.reset_subscription_stats(subid)` | Resets the activity and conflict counters of one or all subscriptions. |
+| `spock.get_system_info()` | Host name, operating system, CPU, memory, load averages, disk space of the data and WAL volumes, postmaster start, PostgreSQL and spock versions. Superuser or `pg_monitor`; the data directory only with `pg_read_all_settings`. |
+| `spock.get_pending_exceptions()` | Transactions being retried under exception handling, with their first error and the position of the failing change in the transaction. Superuser or `pg_monitor`. |
+| `spock.replication_origin_status()` | Every replication origin with its remote progress, as `pg_replication_origin_status` shows a superuser. Superuser or `pg_monitor`. |
+| `spock.reset_events()` | Clears the event history of the current database. Superuser only. |
+| `spock.reset_subscription_stats(subid)` | Resets the activity and conflict counters of one or all subscriptions. Superuser only. |
 | `spock.redact_dsn(text)` | Returns a connection string with its password hidden. |

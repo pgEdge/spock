@@ -39,6 +39,11 @@
 
 #include "funcapi.h"
 #include "miscadmin.h"
+#include "access/heapam.h"
+#include "access/htup_details.h"
+#include "access/table.h"
+#include "catalog/pg_replication_origin.h"
+#include "utils/rel.h"
 #include "utils/acl.h"
 
 #include "catalog/pg_authid_d.h"
@@ -82,6 +87,7 @@ PG_FUNCTION_INFO_V1(spock_get_slot_groups);
 PG_FUNCTION_INFO_V1(spock_get_monitor_summary);
 PG_FUNCTION_INFO_V1(spock_get_system_info);
 PG_FUNCTION_INFO_V1(spock_wal_size_bytes);
+PG_FUNCTION_INFO_V1(spock_replication_origin_status);
 PG_FUNCTION_INFO_V1(spock_get_pending_exceptions);
 PG_FUNCTION_INFO_V1(get_channel_stats);
 PG_FUNCTION_INFO_V1(reset_channel_stats);
@@ -174,8 +180,7 @@ static bool spock_monitor_disconnect_reported = false;
 static Size spock_monitor_shmem_size(int nevents);
 static void spock_monitor_append_event(SpockMonitorEventType type,
 									   Oid subid, XLogRecPtr lsn,
-									   int sqlerrcode, const char *detail,
-									   bool nowait);
+									   int sqlerrcode, const char *detail);
 static SpockMonitorStatsEntry *spock_monitor_attach_stats(Oid subid);
 static void spock_monitor_detach_stats(void);
 static void spock_monitor_reset_stats_entry(SpockMonitorStatsEntry *entry,
@@ -298,13 +303,16 @@ spock_monitor_shmem_startup(bool found)
 /*
  * Append one event to the ring, dropping the oldest one when full.
  *
- * With nowait the lock is only tried, so that the error reporting path
- * can never block on it.
+ * This also runs from the error reporting path.  The ring lock is held
+ * only while an event is written or the ring is copied out, so waiting
+ * for it is safe there.  The one case that is not is an error raised by
+ * this process while it holds the lock itself (an allocation failing in
+ * that copy); that event is skipped rather than deadlocking.
  */
 static void
 spock_monitor_append_event(SpockMonitorEventType type, Oid subid,
 						   XLogRecPtr lsn, int sqlerrcode,
-						   const char *detail, bool nowait)
+						   const char *detail)
 {
 	SpockMonitorEvent *event;
 	int			idx;
@@ -312,13 +320,10 @@ spock_monitor_append_event(SpockMonitorEventType type, Oid subid,
 	if (SpockMonitorShm == NULL)
 		return;
 
-	if (nowait)
-	{
-		if (!LWLockConditionalAcquire(SpockMonitorShm->lock, LW_EXCLUSIVE))
-			return;
-	}
-	else
-		LWLockAcquire(SpockMonitorShm->lock, LW_EXCLUSIVE);
+	if (LWLockHeldByMe(SpockMonitorShm->lock))
+		return;
+
+	LWLockAcquire(SpockMonitorShm->lock, LW_EXCLUSIVE);
 
 	if (SpockMonitorShm->event_count == SpockMonitorShm->event_capacity)
 	{
@@ -364,7 +369,7 @@ spock_monitor_record_event(SpockMonitorEventType type, Oid subid,
 	vsnprintf(detail, sizeof(detail), fmt, args);
 	va_end(args);
 
-	spock_monitor_append_event(type, subid, lsn, 0, detail, false);
+	spock_monitor_append_event(type, subid, lsn, 0, detail);
 }
 
 
@@ -754,6 +759,8 @@ static void
 spock_monitor_worker_failed(SpockWorker *worker, Oid subid)
 {
 	char		message[SPOCK_MONITOR_MESSAGE_LEN];
+	char		detail[SPOCK_MONITOR_MESSAGE_LEN];
+	int			sqlerrcode = 0;
 	SpockMonitorCounter failures = SPOCK_MONITOR_WORKER_FAILURES;
 	bool		is_sync = worker->worker_type == SPOCK_WORKER_SYNC;
 
@@ -771,17 +778,19 @@ spock_monitor_worker_failed(SpockWorker *worker, Oid subid)
 
 		/* Only an error this process raised explains this exit. */
 		if (MySpockMonitorStats->last_error_pid == MyProcPid)
+		{
 			strlcpy(message, MySpockMonitorStats->last_error_message,
 					sizeof(message));
+			sqlerrcode = MySpockMonitorStats->last_error_sqlerrcode;
+		}
 		SpinLockRelease(&MySpockMonitorStats->mutex);
 	}
 
-	spock_monitor_record_event(SPOCK_EVENT_WORKER_FAILED, subid,
-							   InvalidXLogRecPtr,
-							   "%s worker exited with error%s%s",
-							   spock_worker_type_name(worker->worker_type),
-							   message[0] != '\0' ? ": " : "",
-							   message);
+	snprintf(detail, sizeof(detail), "%s worker exited with error%s%s",
+			 spock_worker_type_name(worker->worker_type),
+			 message[0] != '\0' ? ": " : "", message);
+	spock_monitor_append_event(SPOCK_EVENT_WORKER_FAILED, subid,
+							   InvalidXLogRecPtr, sqlerrcode, detail);
 
 	/*
 	 * A sync worker that dies has failed to copy its table.  Say so under the
@@ -789,13 +798,14 @@ spock_monitor_worker_failed(SpockWorker *worker, Oid subid)
 	 * attempt gives up.
 	 */
 	if (is_sync)
-		spock_monitor_record_event(SPOCK_EVENT_SYNC_FAILED, subid,
-								   InvalidXLogRecPtr,
-								   "table %s.%s%s%s",
-								   NameStr(worker->worker.sync.nspname),
-								   NameStr(worker->worker.sync.relname),
-								   message[0] != '\0' ? ": " : "",
-								   message);
+	{
+		snprintf(detail, sizeof(detail), "table %s.%s%s%s",
+				 NameStr(worker->worker.sync.nspname),
+				 NameStr(worker->worker.sync.relname),
+				 message[0] != '\0' ? ": " : "", message);
+		spock_monitor_append_event(SPOCK_EVENT_SYNC_FAILED, subid,
+								   InvalidXLogRecPtr, sqlerrcode, detail);
+	}
 }
 
 void
@@ -847,7 +857,9 @@ spock_monitor_provider_connected(const char *slot_name, XLogRecPtr start_lsn)
 /*
  * Record a lost provider connection: the counter, the event and the text
  * as the subscription's last error.  Runs inside error reporting on one
- * path, so it allocates nothing and only tries the event lock.
+ * path, so it allocates nothing.  The counter pairs with provider_connects,
+ * which counts apply streams only, so a sync worker's failed connection is
+ * recorded but not counted.
  */
 static void
 spock_monitor_note_disconnect(const char *message, int sqlerrcode)
@@ -863,14 +875,15 @@ spock_monitor_note_disconnect(const char *message, int sqlerrcode)
 	if (message == NULL)
 		message = "missing error text";
 
-	spock_monitor_count(SPOCK_MONITOR_PROVIDER_DISCONNECTS, 1);
+	if (MySpockWorker == NULL || MySpockWorker->worker_type != SPOCK_WORKER_SYNC)
+		spock_monitor_count(SPOCK_MONITOR_PROVIDER_DISCONNECTS, 1);
 	spock_monitor_remember_error(message, InvalidXLogRecPtr, sqlerrcode);
 
 	snprintf(detail, sizeof(detail), "provider %s: %s",
 			 MySubscription ? MySubscription->origin->name : "unknown",
 			 message);
 	spock_monitor_append_event(SPOCK_EVENT_PROVIDER_DISCONNECTED, subid,
-							   InvalidXLogRecPtr, sqlerrcode, detail, true);
+							   InvalidXLogRecPtr, sqlerrcode, detail);
 }
 
 /*
@@ -908,8 +921,9 @@ spock_monitor_is_connection_error(int sqlerrcode)
  * error raised in a walsender running the spock output plugin as a
  * stream_error event.
  *
- * This runs inside error reporting, so it must not allocate memory, must
- * not raise errors of its own and must not block.
+ * This runs inside error reporting, so it must not allocate memory and
+ * must not raise errors of its own.  It may wait for the event ring lock;
+ * see spock_monitor_append_event().
  */
 /* Is this an error the monitor records at all? */
 static bool
@@ -946,7 +960,7 @@ spock_monitor_report_worker_error(SpockWorker *worker, ErrorData *edata,
 
 	spock_monitor_append_event(SPOCK_EVENT_WORKER_ERROR, subid,
 							   replorigin_session_origin_lsn,
-							   edata->sqlerrcode, message, true);
+							   edata->sqlerrcode, message);
 }
 
 void
@@ -990,7 +1004,7 @@ spock_monitor_report_error(ErrorData *edata)
 				 NameStr(spock_monitor_stream_slot), message);
 		spock_monitor_append_event(SPOCK_EVENT_STREAM_ERROR, InvalidOid,
 								   InvalidXLogRecPtr, edata->sqlerrcode,
-								   detail, true);
+								   detail);
 	}
 	else
 		spock_monitor_report_worker_error(worker, edata, message);
@@ -1167,7 +1181,7 @@ spock_get_events(PG_FUNCTION_ARGS)
 
 	/*
 	 * Copy the ring while holding the lock and format afterwards, so that
-	 * workers reporting errors, which only try the lock, are not held off for
+	 * workers reporting errors, which wait for the lock, are not held off for
 	 * the whole result.
 	 */
 	LWLockAcquire(SpockMonitorShm->lock, LW_SHARED);
@@ -2115,7 +2129,8 @@ spock_wal_size_bytes(PG_FUNCTION_ARGS)
 				continue;
 			ereport(ERROR,
 					(errcode_for_file_access(),
-					 errmsg("could not stat file \"%s\": %m", path)));
+					 errmsg("could not stat file \"%s\" in pg_wal: %m",
+							de->d_name)));
 		}
 		if (S_ISREG(st.st_mode))
 			total += st.st_size;
@@ -2123,6 +2138,56 @@ spock_wal_size_bytes(PG_FUNCTION_ARGS)
 	FreeDir(dir);
 
 	PG_RETURN_INT64(total);
+}
+
+/*
+ * spock.replication_origin_status()
+ *
+ * The name and remote progress of every replication origin of this
+ * cluster.  pg_replication_origin_status is superuser only, which would keep
+ * the subscription views from pg_monitor; this reads the same progress
+ * through the origin API.  An origin without progress in shared memory,
+ * which has no row in the core view, has remote_lsn NULL here.
+ */
+Datum
+spock_replication_origin_status(PG_FUNCTION_ARGS)
+{
+	ReturnSetInfo *rsinfo = (ReturnSetInfo *) fcinfo->resultinfo;
+	Relation	rel;
+	TableScanDesc scan;
+	HeapTuple	tuple;
+
+	InitMaterializedSRF(fcinfo, 0);
+	Assert(rsinfo->setDesc->natts == 2);
+
+	rel = table_open(ReplicationOriginRelationId, AccessShareLock);
+	scan = table_beginscan_catalog(rel, 0, NULL);
+	while ((tuple = heap_getnext(scan, ForwardScanDirection)) != NULL)
+	{
+		Form_pg_replication_origin origin;
+		XLogRecPtr	remote_lsn;
+		Datum		values[2] = {0};
+		bool		nulls[2] = {0};
+		bool		isnull;
+
+		origin = (Form_pg_replication_origin) GETSTRUCT(tuple);
+		values[0] = heap_getattr(tuple, Anum_pg_replication_origin_roname,
+								 RelationGetDescr(rel), &isnull);
+		if (isnull)
+			continue;
+
+		remote_lsn = replorigin_get_progress(origin->roident, false);
+		if (XLogRecPtrIsInvalid(remote_lsn))
+			nulls[1] = true;
+		else
+			values[1] = LSNGetDatum(remote_lsn);
+
+		tuplestore_putvalues(rsinfo->setResult, rsinfo->setDesc, values, nulls);
+	}
+	table_endscan(scan);
+	table_close(rel, AccessShareLock);
+
+	return (Datum) 0;
 }
 
 /*
