@@ -58,6 +58,9 @@ export PGDATA
 log() { echo "node-entrypoint[$(hostname)]: $*"; }
 
 mkdir -p "${STATE}"
+# How much disk Antithesis gives the node; logged again after every
+# postgres exit, so a disk-full exit shows what was left.
+log "disk: $(df -h /data | tail -1)"
 
 # .antithesis-init-done is written last, so a container that died part way
 # through first-start setup redoes all of it.
@@ -121,9 +124,11 @@ spock.apply_idle_timeout = ${SPOCK_APPLY_IDLE_TIMEOUT:-120}
 # Crash-recovery properties need applied commits since the last checkpoint.
 # With '1d', WAL stayed under max_wal_size, so no checkpoint ever ran, no WAL
 # was removed and a 30 minute run filled the disk.  5min still leaves most
-# kills landing between checkpoints.
+# kills landing between checkpoints, and max_wal_size 1GB makes a write
+# burst checkpoint early.  WAL a replication slot still needs is kept
+# whatever these say.
 checkpoint_timeout = '5min'
-max_wal_size = '8GB'
+max_wal_size = '1GB'
 
 # Server log goes to a file the workload reads with pg_read_file(); the
 # entrypoint also copies it to stdout for Antithesis.
@@ -192,7 +197,7 @@ while [ "${STOPPING}" = 0 ]; do
 
 	echo "${rc}" > "${STATE}/last_exit"
 	echo "$(date -u +%Y-%m-%dT%H:%M:%S.%3NZ) boot=${boot} exit=${rc}" >> "${STATE}/exits.log"
-	log "postgres exited with ${rc} (boot ${boot})"
+	log "postgres exited with ${rc} (boot ${boot}); disk: $(df -h /data | tail -1)"
 
 	delay=1
 	if [ -e "${STATE}/restart_delay" ]; then

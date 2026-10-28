@@ -2084,8 +2084,8 @@ Evidence: properties/cross-pg-major-links-replicate-identically.md
    read logs with `pg_read_file`; `spock.pause_timeout = 1`. Client sessions
    use `synchronous_commit=on`; apply sessions keep Spock's default
    `synchronous_commit=off` (or a run variant randomises it).
-   `checkpoint_timeout` is 5min (a day filled the disk; see
-   `deployment-topology.md`), `max_wal_size` is large and the workload
+   `checkpoint_timeout` is 5min and `max_wal_size` 1GB (a day and 8GB
+   filled the disk; see `deployment-topology.md`), and the workload
    issues no manual CHECKPOINT. `spock.exception_logging` stays at its
    default `all` (the explained-divergence oracle needs every row). These
    timeouts meet the rule `apply_idle_timeout >= wal_sender_timeout / 2 +

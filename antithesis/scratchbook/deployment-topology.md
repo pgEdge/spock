@@ -102,8 +102,11 @@ Two nodes cannot reach those states, and a fourth always-on node adds state spac
 - `spock.pause_timeout = 1` (USERSET; each apply worker reads its own value).
   Needed to open the add_node pause window
   (`add-node-pause-held-until-progress-read`)
-- `checkpoint_timeout = '5min'` and large `max_wal_size` (sustained writes
-  trigger checkpoints through `max_wal_size` too). The L1 properties need
+- `checkpoint_timeout = '5min'` and `max_wal_size = '1GB'` (sustained
+  writes trigger checkpoints through `max_wal_size` too; it was 8GB until
+  2026-10-28, lowered so a write burst cannot fill the disk between timed
+  checkpoints). The entrypoint logs `df -h /data` at start and after every
+  postgres exit, since the disk size Antithesis gives is not documented. The L1 properties need
   applied commits since the last checkpoint at kill time, and the workload
   issues no manual CHECKPOINT. `checkpoint_timeout` was `1d` until
   2026-10-15: WAL stayed under `max_wal_size`, so no checkpoint ran, no WAL
