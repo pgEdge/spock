@@ -88,6 +88,31 @@ Current catalog line: Priority: P0 · Topology: v1 · Faults: clock skew, partit
 
 - Evaluation note (2026-10-13): the divergence message is split into "divergent key last written by a node within N s after its restart that followed a backward clock skip" (explained by L3), "divergent key whose top versions tie on commit ts" (L2, reported) and "divergent key, unexplained". Only the unexplained message counts as a new finding while L2/L3 are open.
 
+## Implementation (2026-10-28)
+
+- Separate test template `antithesis/test/v1/updates/`, so the conflicts it
+  creates do not trip the conflict-free ledger checks in `main`. Shared
+  helpers (`helper_spock.py`, `helper_barriers.py`, `helper_rows.py`) are
+  symlinks to `main/`; assertion cataloging follows only one symlink, so
+  they are cataloged once.
+- Table `kv(origin text, n bigint, val text, writer text, wseq bigint,
+  PRIMARY KEY (origin, n))`; `n` comes from a per-node sequence, so inserts
+  never conflict. Rows are inserted by the driver rather than pre-seeded.
+- Updates only touch keys the driver finds on every mesh node just before
+  it updates them (decided with the team on 2026-10-28). With no deletes a
+  key on every node stays there, so `update_missing` cannot occur and any
+  divergence or kv `exception_log` row is a finding. Updating keys present
+  on only some nodes would produce documented `update_missing` discards
+  (`docs/conflict_types.md`); that variant is not built.
+- Swarmed per timeline: writer nodes, update share, contested share and
+  hot-set size (1 makes every contested update hit the same key per
+  origin).
+- Checks after the shared barriers: identical md5-per-row dumps on n1-n3,
+  and no kv `exception_log` rows. Reach claims as listed in the catalog.
+- Not yet: the L2/L3 explained/unexplained split, SUT-side assertions in
+  `conflict_resolve_by_timestamp`, commit ts per version in the details,
+  TOAST and delta columns, deletes.
+
 ## Open questions
 
 - Is the applying-node tiebreak (64ea462d), which lets 3 nodes diverge on equal commit ts, intended? `(needs human input)`

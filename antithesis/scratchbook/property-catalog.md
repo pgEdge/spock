@@ -1,6 +1,6 @@
 ---
 sut_path: /home/msharp/dev/pgedgea/spock
-commit: ce49d2b3791a84f3226709f7d4c445e512c43780
+commit: 81aa0aecc4897475a6b6d784e9247cafc2712eba
 updated: 2026-10-28
 external_references: []
 ---
@@ -699,6 +699,7 @@ Priority: P0 · Topology: v1 · Faults: clock skew, partition, latency, node kil
 Confidence: high · Surfaced by: F1 Data Integrity
 Evidence: properties/contested-rows-converge-after-quiesce.md
 Evaluation note (2026-10-13): the divergence message is split into "divergent key last written by a node within N s after its restart that followed a backward clock skip" (explained by L3), "divergent key whose top versions tie on commit ts" (L2, reported) and "divergent key, unexplained". Only the unexplained message counts as a new finding while L2/L3 are open.
+Partly implemented (2026-10-28) in its own template, `test/v1/updates/`, so its conflicts stay apart from the conflict-free ledger in `main`: table `kv(origin, n, val, writer, wseq)`, key `(origin, n)` owned by the inserting node. `parallel_driver_update_kv.py` mixes inserts with updates of keys it has confirmed are on every mesh node (team decision 2026-10-28: an update that reaches a node before the row is `update_missing`, documented as unresolvable, so the check stays strict); per timeline it swarms writer nodes, update share {0.2, 0.6, 0.95}, contested share {0, 0.5, 1} (keys from any origin vs its own) and a hot set of {1, 10, 1000} keys per origin. `eventually_kv_converges.py` runs the shared sync barriers (`main/helper_barriers.py`, symlinked) and asserts `Always("every mesh node holds the same kv rows after sync barriers")` (md5 per row, sorted) and `Always("no kv transaction is discarded on any mesh node")`. Reach claims: `Reachable("kv update committed on keys present on every mesh node")`, `Sometimes("kv update committed on a row another node inserted")`, `Sometimes("a kv row was last updated by a node other than its origin")`. Not yet: the L2/L3 explained/unexplained split, the SUT-side equal-commit-ts `Sometimes` and `Unreachable`, per-version commit ts in the details, TOAST and delta columns (separate later work), deletes (known divergence).
 
 ### luw-final-version-has-max-commit-ts — Contested rows end at the max-commit-ts version on every node
 

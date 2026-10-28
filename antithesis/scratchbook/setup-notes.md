@@ -86,7 +86,13 @@ assertion.
   whole tree (a command present in several containers may run in any of
   them, and node images have no Python). Node-side commands live in
   `antithesis/node/test/v1/<template>/` and the node stage copies that tree
-  (first one: `parallel_driver_graceful_restart.sh`). Workload commands use `python3.12` (the system
+  (first one: `parallel_driver_graceful_restart.sh`).
+- Templates: `main` (insert-only ledger, graceful restarts, sync barriers)
+  and `updates` (kv inserts and updates, convergence). A timeline runs one
+  template. Helpers shared between templates live in `main/` and are
+  symlinked from the others; assertion cataloging (`/opt/antithesis/catalog`
+  -> `test/v1`) follows only one symlink, so shared assertions are cataloged
+  once. Each template keeps its own per-timeline params file in /tmp. Workload commands use `python3.12` (the system
   `python3` is 3.9 and has neither psycopg nor the SDK).
 
 ## Workload container
