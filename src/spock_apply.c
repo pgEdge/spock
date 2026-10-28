@@ -826,6 +826,12 @@ handle_begin(StringInfo s)
 			MyApplyWorker->use_try_block = false;
 
 			/*
+			 * A test can hold workers here, after the search above has missed
+			 * and before the search under the lock.
+			 */
+			SPOCK_EXCEPTION_SLOT_STALL();
+
+			/*
 			 * Let's acquire an exclusive lock to ensure no changes are made
 			 * by another process while we attempt to check again subscription
 			 * name exists, if so, we'll take that. Otherwise, remember the
@@ -858,17 +864,37 @@ handle_begin(StringInfo s)
 				}
 			}
 
-			/* TODO: What to do if we can't find a free slot? */
-			if (free_slot_index == -1)
-			{
-				/* no free entries found. */
-				elog(ERROR, "SPOCK %s: unable to find an empty exception log slot.",
-					 MySubscription->name);
-			}
-
 			/* We didn't find a slot, but we have a valid index. */
 			if (!slot_found)
 			{
+				/*
+				 * Raise only when we need a new entry.  When the search under
+				 * the lock finds our name, free_slot_index can still be -1
+				 * with entries to spare: entries are taken lowest index first
+				 * and never given back, so the loop stops at our entry before
+				 * it reaches a free one.  That happens whenever another
+				 * worker takes the name between the search above and the
+				 * lock -- entries are matched by name only, and subscriptions
+				 * in different databases of this instance can share a name.
+				 *
+				 * Release the lock before raising: we are outside any
+				 * transaction, so the error recovery in apply_work() does not
+				 * release it, and every process that needs SpockCtx->lock --
+				 * the managers, sub_create(), this worker's own exit callback
+				 * -- would wait for it forever.  As a class 53 error it takes
+				 * the transient path in apply_work(): the worker exits and is
+				 * restarted after restart_delay_default instead of replaying
+				 * with no entry assigned.
+				 */
+				if (free_slot_index == -1)
+				{
+					LWLockRelease(SpockCtx->lock);
+					ereport(ERROR,
+							(errcode(ERRCODE_CONFIGURATION_LIMIT_EXCEEDED),
+							 errmsg("SPOCK %s: unable to find an empty exception log slot.",
+									MySubscription->name)));
+				}
+
 				/*
 				 * TODO: What happens if a subscription is dropped? Memory
 				 * leak
