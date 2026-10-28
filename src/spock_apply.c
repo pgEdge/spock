@@ -894,10 +894,9 @@ begin_replication_step(void)
 		 * fires during add_node (a rare operation).  The fast path is a
 		 * single atomic read that almost always sees 0.
 		 *
-		 * Runs before StartTransactionCommand so the worker has no xid
-		 * while paused — pause_apply_workers can detect completion via
-		 * xid polling.  The previous transaction's commit is fully
-		 * complete, so progress reflects only committed state.
+		 * Runs before StartTransactionCommand, so the previous transaction's
+		 * commit is complete and progress reflects only committed state;
+		 * pause_apply_workers() waits for the paused flag.
 		 */
 		maybe_pause_for_slot_creation();
 
@@ -3424,6 +3423,14 @@ stream_replay:
 				ConfigReloadPending = false;
 				ProcessConfigFile(PGC_SIGHUP);
 			}
+
+			/*
+			 * add_node pauses apply workers.  The checks in handle_begin()
+			 * and handle_commit() only run when data arrives, so an idle
+			 * worker pauses from here, between transactions.
+			 */
+			if (!in_remote_transaction)
+				maybe_pause_for_slot_creation();
 
 			/* emergency bailout if postmaster has died */
 			if (rc & WL_POSTMASTER_DEATH)

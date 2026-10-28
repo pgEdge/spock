@@ -3265,13 +3265,21 @@ spock_pause_apply_workers(PG_FUNCTION_ARGS)
 	/* Signal apply workers to pause at their next between-transaction point. */
 	pg_atomic_write_u32(&SpockCtx->pause_apply, 1);
 
+	/* Wake idle workers so they see the flag now, not at their next timeout. */
+	for (i = 0; i < SpockCtx->total_workers; i++)
+	{
+		SpockWorker *w = &SpockCtx->workers[i];
+
+		if (w->worker_type == SPOCK_WORKER_APPLY && w->dboid == MyDatabaseId &&
+			w->proc != NULL)
+			SetLatch(&w->proc->procLatch);
+	}
+
 	/*
-	 * Wait until all apply workers in this database have either:
-	 * - no active transaction (xid invalid = between transactions or idle), or
-	 * - set their paused flag (spinning on the pause_apply flag).
-	 *
-	 * Either state means the worker has committed its last transaction and
-	 * cannot apply new DML until the flag is cleared.
+	 * Wait until every apply worker in this database has set its paused
+	 * flag.  A worker only does that between transactions, so one inside a
+	 * remote transaction, whether or not it has an xid yet, is waited for
+	 * until it commits.
 	 */
 	while (waited_ms < max_wait_ms)
 	{
@@ -3288,15 +3296,10 @@ spock_pause_apply_workers(PG_FUNCTION_ARGS)
 			if (w->proc == NULL)
 				continue;
 
-			/* Worker is paused (spinning on flag) — good. */
 			if (w->worker.apply.paused)
 				continue;
 
-			/* Worker has no active transaction — also good. */
-			if (!TransactionIdIsValid(w->proc->xid))
-				continue;
-
-			/* Worker is mid-transaction and not yet paused. */
+			/* Not at its pause point yet. */
 			all_paused = false;
 			break;
 		}
