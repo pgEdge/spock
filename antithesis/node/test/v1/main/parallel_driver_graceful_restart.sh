@@ -133,15 +133,24 @@ poll() {
 wst_s=$(q "SELECT setting::int / 1000 FROM pg_settings
            WHERE name = 'wal_sender_timeout'")
 pm=$(head -n 1 "${PGDATA}/postmaster.pid" 2> /dev/null)
-groups=" ${pm} $(pgrep -P "${pm:-0}" | tr '\n' ' ') "
-old_procs=$(ps -eo pid=,pgid= | while read -r pid pgid; do
-	case "${groups}" in *" ${pgid} "*) echo "${pid}:${pgid}" ;; esac
-done | tr '\n' ' ')
+# Without a postmaster PID, pgrep -P would pick up the container's init;
+# the count is then unknown.
+old_procs=unknown
+if [ -n "${pm}" ]; then
+	groups=" ${pm} $(pgrep -P "${pm}" | tr '\n' ' ') "
+	old_procs=$(ps -eo pid=,pgid= | while read -r pid pgid; do
+		case "${groups}" in *" ${pgid} "*) echo "${pid}:${pgid}" ;; esac
+	done | tr '\n' ' ')
+fi
 
-# Recorded processes still alive in the same group; a reused PID would
-# be in another group.
+# Recorded processes still alive in the same group.  Comparing the group
+# keeps a PID that an unrelated process reused from counting.
 old_left() {
 	local n=0 entry
+	if [ "${old_procs}" = unknown ]; then
+		echo '?'
+		return
+	fi
 	for entry in ${old_procs}; do
 		if [ "$(ps -o pgid= -p "${entry%%:*}" 2> /dev/null | tr -d ' ')" \
 			= "${entry##*:}" ]; then
