@@ -81,3 +81,4 @@ test: 116_lww_frozen_local_row
 test: 112_resync_apply_race
 test: 113_tablesync_same_txn
 test: 117_call_rollback_extended_protocol
+test: 118_monitor_views
