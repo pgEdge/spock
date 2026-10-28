@@ -32,6 +32,7 @@
 #include <stdlib.h>
 #include <unistd.h>
 #ifndef WIN32
+#include <sys/stat.h>
 #include <sys/statvfs.h>
 #include <sys/utsname.h>
 #endif
@@ -44,6 +45,7 @@
 #include "catalog/pg_type.h"
 #include "replication/origin.h"
 #include "replication/slot.h"
+#include "storage/fd.h"
 #include "storage/ipc.h"
 #include "storage/lwlock.h"
 #include "storage/proc.h"
@@ -79,6 +81,7 @@ PG_FUNCTION_INFO_V1(spock_reset_subscription_stats);
 PG_FUNCTION_INFO_V1(spock_get_slot_groups);
 PG_FUNCTION_INFO_V1(spock_get_monitor_summary);
 PG_FUNCTION_INFO_V1(spock_get_system_info);
+PG_FUNCTION_INFO_V1(spock_wal_size_bytes);
 PG_FUNCTION_INFO_V1(spock_get_pending_exceptions);
 PG_FUNCTION_INFO_V1(get_channel_stats);
 PG_FUNCTION_INFO_V1(reset_channel_stats);
@@ -2076,6 +2079,50 @@ spock_get_system_info(PG_FUNCTION_ARGS)
 	tuple = heap_form_tuple(tupdesc, values, nulls);
 
 	PG_RETURN_DATUM(HeapTupleGetDatum(tuple));
+}
+
+/*
+ * spock.wal_size_bytes()
+ *
+ * The size of pg_wal: the sum of the regular files in it, which is what
+ * pg_ls_waldir() lists.  That function is pg_monitor only and the views
+ * need just the total, so compute it here for any role that can read the
+ * views.
+ */
+Datum
+spock_wal_size_bytes(PG_FUNCTION_ARGS)
+{
+	char		walpath[MAXPGPATH];
+	DIR		   *dir;
+	struct dirent *de;
+	int64		total = 0;
+
+	snprintf(walpath, sizeof(walpath), "%s/pg_wal", DataDir);
+	dir = AllocateDir(walpath);
+	while ((de = ReadDir(dir, walpath)) != NULL)
+	{
+		char		path[MAXPGPATH * 2];
+		struct stat st;
+
+		if (strcmp(de->d_name, ".") == 0 || strcmp(de->d_name, "..") == 0)
+			continue;
+
+		snprintf(path, sizeof(path), "%s/%s", walpath, de->d_name);
+		if (stat(path, &st) < 0)
+		{
+			/* a segment recycled or removed since the directory was read */
+			if (errno == ENOENT)
+				continue;
+			ereport(ERROR,
+					(errcode_for_file_access(),
+					 errmsg("could not stat file \"%s\": %m", path)));
+		}
+		if (S_ISREG(st.st_mode))
+			total += st.st_size;
+	}
+	FreeDir(dir);
+
+	PG_RETURN_INT64(total);
 }
 
 /*
