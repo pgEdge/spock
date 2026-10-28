@@ -1277,10 +1277,17 @@ copy_table_data(PGconn *origin_conn, PGconn *target_conn,
 	if (PQresultStatus(res) != PGRES_COMMAND_OK)
 	{
 		char	   *msg = pstrdup(PQerrorMessage(target_conn));
+		const char *sqlstate = PQresultErrorField(res, PG_DIAG_SQLSTATE);
+		int			sqlerrcode = ERRCODE_INTERNAL_ERROR;
 
+		/* Keep the destination's error code, e.g. a constraint violation. */
+		if (sqlstate != NULL && strlen(sqlstate) == 5)
+			sqlerrcode = MAKE_SQLSTATE(sqlstate[0], sqlstate[1], sqlstate[2],
+									   sqlstate[3], sqlstate[4]);
 		PQclear(res);
 		ereport(ERROR,
-				(errmsg("COPY to destination table failed"),
+				(errcode(sqlerrcode),
+				 errmsg("COPY to destination table failed"),
 				 errdetail("destination connection reported: %s", msg)));
 	}
 	PQclear(res);
@@ -2076,9 +2083,14 @@ spock_sync_main(Datum main_arg)
 	status = spock_sync_table(MySubscription, copytable, &status_lsn);
 	if (status == SYNC_STATUS_FAILED)
 	{
+		/*
+		 * spock_sync_table() gives up when an earlier attempt on this table
+		 * failed; that attempt recorded its own sync_failed with the error.
+		 */
 		sync_worker_failed = true;
 		spock_monitor_record_event(SPOCK_EVENT_SYNC_FAILED, MySubscription->id,
-								   InvalidXLogRecPtr, "table %s.%s",
+								   InvalidXLogRecPtr,
+								   "table %s.%s abandoned after an earlier failure",
 								   copytable->schemaname, copytable->relname);
 	}
 	if (status == SYNC_STATUS_SYNCDONE || status == SYNC_STATUS_READY ||

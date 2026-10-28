@@ -139,10 +139,11 @@ time against the column enum.
 
 | Counter | Incremented when |
 |---------|------------------|
-| `worker_starts` | An apply or sync worker attaches to its shared memory slot. |
-| `worker_failures` | A worker detaches after an error exit. |
-| `provider_connects` | `START_REPLICATION` succeeded. |
-| `provider_disconnects` | `apply_work()` classified an error as connection loss. |
+| `worker_starts` | An apply worker attaches to its shared memory slot. |
+| `worker_failures` | An apply worker detaches after an error exit. |
+| `sync_worker_starts`, `sync_worker_failures` | The same for sync workers, so a resync is told apart from an apply worker restart. |
+| `provider_connects` | `START_REPLICATION` succeeded in the apply worker. |
+| `provider_disconnects` | `apply_work()` classified an error as connection loss. A sync worker's failed connection is recorded as an event and as the last error but not counted here, so the two counters pair. |
 | `idle_timeouts` | `spock.apply_idle_timeout` forced a reconnect. |
 | `messages_received`, `bytes_received` | A data message was read from the stream. |
 | `xacts_applied` | A remote transaction committed locally. |
@@ -270,7 +271,7 @@ code checks the column count against its enum with an assertion.
 | `spock.get_slot_groups()` | Slot groups with attached walsenders |
 | `spock.get_monitor_summary()` | One row: start time, supervisor pid, slot and capacity usage |
 | `spock.get_system_info()` | One row: host name, operating system, CPU, memory, load averages, `statvfs()` of the data directory and of `pg_wal`, postmaster start, PostgreSQL and spock versions |
-| `spock.get_pending_exceptions()` | Exception log slots with a recorded error: the transactions being retried |
+| `spock.get_pending_exceptions()` | Exception log slots with a recorded error: the transactions being retried, with `failed_action_number`, the position of the failing change in its transaction |
 | `spock.report_section(title, query, expanded)` | The rows of a query as text, values in PostgreSQL text form |
 | `spock.spock_info(recent)` | The whole node as a text report, one section per view |
 | `spock.reset_events()` | Empties the ring; ids keep increasing |
@@ -286,9 +287,9 @@ the same thing everywhere (`subscription_name`, `provider_node`,
 
 | View | Rows | Built from |
 |------|------|------------|
-| `spock.system_status` | Exactly one | `get_system_info()`, `pg_stat_activity`, `pg_prepared_xacts`, `pg_stat_replication`, `pg_database`, `pg_stat_database`, `pg_stat_archiver`, `pg_ls_waldir()` |
-| `spock.node_status` | Exactly one | `get_monitor_summary()`, `local_node`, `pg_extension`, aggregates over the other views, `pg_ls_waldir()` |
-| `spock.subscription_status` | One per subscription | `subscription`, `node`, `node_interface`, `local_sync_status`, `get_worker_status()` (lateral, running worker preferred), `pg_stat_activity`, `progress`, `pg_replication_origin_status`, `subscription_stats` |
+| `spock.system_status` | Exactly one | `get_system_info()`, `pg_stat_activity`, `pg_prepared_xacts`, `pg_stat_replication`, `pg_database`, `pg_stat_database`, `pg_stat_archiver`, `spock.wal_size_bytes()` |
+| `spock.node_status` | Exactly one | `get_monitor_summary()`, `local_node`, `pg_extension`, aggregates over the other views, `spock.wal_size_bytes()` |
+| `spock.subscription_status` | One per subscription | `subscription`, `node`, `node_interface`, `local_sync_status`, `get_worker_status()` (lateral, running worker preferred), `pg_stat_activity`, `progress`, `replication_origin_status()`, `subscription_stats` |
 | `spock.subscription_stats` | One per subscription | `get_apply_stats()` and `channel_summary_stats`, counters coalesced to zero |
 | `spock.worker_status` | One per worker | `get_worker_status()`, `pg_stat_activity`, `pg_blocking_pids()` for the session holding a lock the worker waits for |
 | `spock.slot_status` | One per spock slot | `pg_replication_slots`, `pg_stat_replication`, `get_slot_groups()`, current or replay WAL position |
@@ -366,14 +367,18 @@ Values that vary between runs are compared, not printed. The full suite of
 
 ## 10. Limitations and future work
 
-* `spock.node_status` and `spock.system_status` both call `pg_ls_waldir()`
-  and therefore need the `pg_monitor` role or a superuser, unless that role
-  has been granted `EXECUTE` on the function explicitly. Versions of either
-  without the WAL size column would be readable by any user.
+* The views and the functions they call (`get_system_info()`,
+  `get_events()`, `get_apply_stats()`, `get_pending_exceptions()`,
+  `replication_origin_status()`, which stands in for the superuser-only
+  `pg_replication_origin_status`) are granted to `pg_monitor`; a superuser or a member of that role reads them.
+  `wal_size_bytes()` stays callable by any role, as the total WAL size is
+  not sensitive. The reset functions are superuser only.
 * The subscription stats hash is bounded at `max(64, 4 * max_worker_processes)`
   entries.  Past that, `spock_monitor_attach_stats()` returns NULL and logs
   it; the worker carries on and the subscription operates normally, but its
-  counters are not recorded and `spock.subscription_stats` has no row for it.
+  counters are not recorded: `spock.subscription_stats` still has its row,
+  with every counter read as 0 and every timestamp as NULL, so a
+  subscription past the bound looks idle rather than unrecorded.
   `spock.node_status.channel_stats_full` reports the same condition for the
   channel counter hash.
 * The ring is cluster wide, so a database with heavy activity can age out

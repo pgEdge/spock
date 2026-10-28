@@ -90,8 +90,15 @@ ok(poll_query_until(2,
 is_true(2, "SELECT count(*) >= 1 FROM spock.events " .
            "WHERE event_type = 'provider_disconnected'",
         'provider_disconnected is recorded');
-is_true(2, "SELECT last_error_message NOT LIKE '%password=$db_password%' FROM $stats",
-        'the connection error keeps the password out');
+# The first failure is the lost stream, whose message has no DSN.  The
+# password can only leak from the reconnect attempt, so wait for that one.
+ok(poll_query_until(2,
+       "SELECT last_error_message LIKE 'could not connect to the postgresql server%' " .
+       "FROM $stats", 't', 60),
+   'the failed reconnect is the last error');
+is_true(2, "SELECT last_error_message LIKE '%password=X%' " .
+           "AND last_error_message NOT LIKE '%password=$db_password%' FROM $stats",
+        'the connection error shows the password masked');
 is_true(2, "SELECT status <> 'replicating' FROM $status",
         'the subscription no longer reads as replicating');
 is(scalar_query(2, "SELECT subscriptions_replicating FROM spock.node_status"),
@@ -192,6 +199,34 @@ my $port2 = $node_ports->[1];
 my $wal = `"$pg_bin/psql" -X -p $port2 -d $dbname -U mon_plain -At -c "SELECT spock.wal_size_bytes() > 0" 2>&1`;
 chomp $wal;
 is($wal, 't', 'wal_size_bytes() works without pg_monitor');
+
+# =============================================================================
+# A role whose only grant is pg_monitor reads the views
+# =============================================================================
+psql_or_bail(2, "CREATE ROLE mon_role LOGIN");
+psql_or_bail(2, "GRANT pg_monitor TO mon_role");
+sub as_monitor {
+    my ($query) = @_;
+    my $out = `"$pg_bin/psql" -X -p $port2 -d $dbname -U mon_role -At -c "$query" 2>&1`;
+    chomp $out;
+    return $out;
+}
+is(as_monitor("SELECT subscriptions FROM spock.node_status"), '1',
+   'pg_monitor reads node_status');
+# pg_monitor includes pg_read_all_settings, so the data directory is shown.
+is(as_monitor("SELECT hostname IS NOT NULL AND data_directory IS NOT NULL FROM spock.system_status"), 't',
+   'pg_monitor reads system_status, with the data directory');
+is(as_monitor("SELECT status FROM spock.subscription_status WHERE subscription_name = 'sub_n2_n1'"),
+   'replicating', 'pg_monitor reads subscription_status');
+# The sections on spock.tables, lag_tracker, exception_log and resolutions
+# are not part of the grant and show as one error line each; every function
+# the report calls is.
+is(as_monitor("SELECT count(*) FILTER (WHERE line LIKE '== % ==') > 10 " .
+              "AND count(*) FILTER (WHERE line LIKE '(error: permission denied for function%') = 0 " .
+              "FROM spock.spock_info(5) AS line"), 't',
+   'spock_info() runs every function it calls for pg_monitor');
+like(as_monitor("SELECT spock.reset_events()"), qr/permission denied/,
+     'pg_monitor cannot reset the events');
 
 destroy_cluster('Destroy test cluster');
 done_testing();

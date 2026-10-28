@@ -1041,6 +1041,22 @@ replace_symbols(char *strpos)
 }
 
 /*
+ * Replace what follows a "password" keyword in str, if any.  No memory
+ * allocations are allowed here; the text is changed in place.
+ */
+static void
+mask_password(const char *str)
+{
+	char	   *strpos;
+
+	if (str == NULL)
+		return;
+	strpos = pg_strcasestr(str, SPOCK_PSWD_KEYWORD);
+	if (strpos != NULL)
+		replace_symbols(strpos + sizeof(SPOCK_PSWD_KEYWORD) - 1);
+}
+
+/*
  * Spock-specific filters on log messages.
  *
  * Remember, this function may be called in the case of severe limitations and
@@ -1064,26 +1080,16 @@ log_message_filter(ErrorData *edata)
 
 	if (edata->elevel == ERROR)
 	{
-		char	   *strpos;
-		const int	len = sizeof(SPOCK_PSWD_KEYWORD) - 1;
-
 		/*
-		 * Password may bubble up in the error message and query string. XXX:
-		 * Can it be exposed somewhere else - in the detail_log string, for
-		 * example?
+		 * Password may bubble up in the error message, in its detail (the
+		 * "dsn was:" of a failed connection), in the hint and in the query
+		 * string.
 		 */
-		strpos = pg_strcasestr(edata->message, SPOCK_PSWD_KEYWORD);
-		if (strpos != NULL)
-		{
-			strpos += len;
-			replace_symbols(strpos);
-		}
-		strpos = pg_strcasestr(debug_query_string, SPOCK_PSWD_KEYWORD);
-		if (strpos != NULL)
-		{
-			strpos += len;
-			replace_symbols(strpos);
-		}
+		mask_password(edata->message);
+		mask_password(edata->detail);
+		mask_password(edata->detail_log);
+		mask_password(edata->hint);
+		mask_password(debug_query_string);
 	}
 
 	/*
