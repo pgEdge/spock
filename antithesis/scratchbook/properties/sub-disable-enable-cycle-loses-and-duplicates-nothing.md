@@ -138,6 +138,41 @@ Current catalog line: Priority: P1 · Topology: v1 (admin-churn phase) · Faults
 
 - "Empty `exception_log`" changed to "no rows outside the expected-exception registry".
 
+## Implementation (2026-10-28)
+
+- Template `main`, so the existing ledger writer, barriers and ledger
+  checks are reused; the subscription changes are a second lifecycle
+  disturbance next to graceful restarts.
+- `test/v1/main/parallel_driver_sub_cycle.py`: runs in a per-timeline share
+  {0, 30, 100}% of its calls, picks a live subscription on a random mesh
+  node (one driver per subscription, `flock`), watches up to {0, 2, 10} s
+  for its apply worker (`application_name = 'spock apply <dboid>:<subid>'`)
+  to hold a transaction, then does one of:
+  - `sub_disable(sub, immediate)`, wait {0, 1, 5, 30} s, `sub_enable(sub)`
+    (retried for 120 s);
+  - `sub_alter_interface` to a second interface of the origin with the same
+    DSN, created on first use, alternating back on the next call (the same
+    interface returns false without any change).
+- `helper_subcycle.py`: a disabled subscription is recorded before
+  `sub_disable` and the record removed after `sub_enable`. The eventually
+  command terminates the driver's sessions (so a `sub_disable` in flight
+  cannot commit later), re-enables recorded subscriptions, then runs the
+  barriers. A disabled subscription with no record is not the driver's.
+- Checks (`eventually_mesh_barriers.py`), in timelines with at least one
+  change issued and no crash recovery on any mesh node: every subscription
+  enabled (and every recorded one re-enabled), no `insert_exists` on the
+  ledger, no ledger `exception_log` row, same ledger rows on every node.
+- SUT-side `Sometimes("apply worker SIGTERM landed inside a remote
+  transaction")` evaluated with `in_remote_transaction` where `apply_work()`
+  clears transient state on `got_SIGTERM`. Postmaster shutdown SIGTERMs
+  (graceful restarts) reach it too.
+- Local check: 8 changes of all three kinds under writes on all nodes gave
+  91323 identical ledger rows per node and every Always held; a
+  subscription left disabled with a record was re-enabled by the eventually
+  command.
+- Not yet: delta counters, the `use_try_block` Reachable (needs the
+  conflict variant), other `sub_alter_*` calls.
+
 ## Open questions
 
 - None open. (Checked against the PG 17 source tree at `~/dev/pg/postgresql`;

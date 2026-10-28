@@ -93,6 +93,7 @@
 #include "spock.h"
 #include "spock_injection.h"
 #include "spock_jsonb_utils.h"
+#include "spock_antithesis.h"
 
 #include "spock_compat.h"
 
@@ -4497,7 +4498,11 @@ stream_replay:
 	 * recorded).
 	 */
 	if (got_SIGTERM)
+	{
+		SPOCK_ANT_SOMETIMES(SPOCK_ANT_SIGTERM_IN_REMOTE_XACT,
+							in_remote_transaction, NULL);
 		clear_transient_exception_state("subscription worker restart");
+	}
 
 	elog(LOG, "SPOCK %s: falling out of apply_work() sigterm=%s",
 		 MySubscription->name, (got_SIGTERM) ? "true" : "false");

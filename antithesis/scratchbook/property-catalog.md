@@ -1,6 +1,6 @@
 ---
 sut_path: /home/msharp/dev/pgedgea/spock
-commit: 81aa0aecc4897475a6b6d784e9247cafc2712eba
+commit: c5f74b01af701f917adc0d7402262ee99e86fd1b
 updated: 2026-10-28
 external_references: []
 ---
@@ -1300,6 +1300,7 @@ None
 Priority: P1 · Topology: v1 (admin-churn phase) · Faults: admin churn, partition, thread pause
 Confidence: high · Surfaced by: F8 Lifecycle
 Evidence: properties/sub-disable-enable-cycle-loses-and-duplicates-nothing.md
+Implemented (2026-10-28) in template `main`, on the ledger workload: `parallel_driver_sub_cycle.py` picks a live subscription on a random mesh node, watches for up to {0, 2, 10} s for its apply worker to hold a transaction, then either disables it (plain or `immediate`) and re-enables it after {0, 1, 5, 30} s, or switches it to a second interface with the same DSN (re-setting the current interface is a no-op, `spock_functions.c` returns false). Cycle share per timeline {0, 30, 100}%. A disabled subscription is recorded before `sub_disable` and the record dropped after `sub_enable`; the eventually command ends the driver's sessions and re-enables recorded ones before the barriers. In timelines with at least one change and no crash recovery: `Reachable("exactly-once checked after subscription disable/enable cycles with no crash")`, `Always("every subscription is enabled after subscription disable/enable cycles")`, `Always("no ledger row applied twice across subscription disable/enable cycles")`, `Always("every mesh node holds the same ledger rows after subscription disable/enable cycles")`, `Always("no ledger transaction discarded across subscription disable/enable cycles")`. Workload reach: `Reachable("subscription disabled and re-enabled under load")`, `Reachable("subscription interface re-set under load")`. SUT-side `Sometimes("apply worker SIGTERM landed inside a remote transaction")` at the `got_SIGTERM` clear site in `apply_work()` (also reached by graceful restarts). Not yet: delta counters, the `use_try_block` Reachable (conflict variant only), `sub_alter_*` calls other than the interface.
 
 ### readonly-toggle-resumes-without-loss — readonly on/off cycles lose and duplicate nothing
 

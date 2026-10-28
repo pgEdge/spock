@@ -25,16 +25,27 @@ insert_exists resolution on the ledger, no ledger exception_log row, every
 subscription enabled, and the same ledger rows on every node.  A crash
 anywhere skips these checks, since crash redo (lead L1) can legitimately
 explain a resend there.
+
+Property sub-disable-enable-cycle-loses-and-duplicates-nothing.
+
+parallel_driver_sub_cycle.py disables and re-enables subscriptions, or
+switches their interface, under load.  This command first ends that
+driver's sessions and re-enables what it recorded as left disabled.  In a
+timeline where it issued at least one change and no mesh node crashed, the
+same four checks run under their own names: every subscription enabled, no
+insert_exists resolution on the ledger, no ledger exception_log row, and
+the same ledger rows on every node.
 """
 
 import time
 
 from antithesis.assertions import always, reachable, sometimes
 
-from helper_barriers import run_barriers
+from helper_barriers import end_writers, run_barriers
 from helper_restarts import node_history
 from helper_rows import diff_rows, row_hashes
 from helper_spock import MESH, connect, log, retry_until
+from helper_subcycle import DRIVER_APP, cycles_issued, reenable_recorded
 
 # How long to read the data once the barriers have passed.
 READ_SECS = 120
@@ -91,25 +102,56 @@ def compare_ledgers():
             "ledger_exception_log_rows": exceptions}
 
 
-def check_graceful_restarts(ledger):
+def read_history():
+    """Each mesh node's restart history (helper_restarts.py), or None."""
     deadline = time.monotonic() + READ_SECS
     history = {}
     for node in MESH:
         ok, val = retry_until(deadline, f"restart history on {node}",
                               lambda: node_history(node))
         if not ok:
-            log(f"graceful restarts not checked: no history from {node}")
-            return
+            log(f"lifecycle checks skipped: no restart history from {node}")
+            return None
         history[node] = val
     log("restart history: " + ", ".join(
         f"{n}: {h['clean_exits']} clean exits, {h['recoveries']} recoveries"
         for n, h in history.items()))
+    return history
 
+
+def read_after_state():
+    """Disabled subscriptions and ledger insert_exists resolutions on each
+    mesh node, or None."""
+    deadline = time.monotonic() + READ_SECS
+    disabled = {}
+    twice = {}
+    for node in MESH:
+        def fn():
+            with connect(node) as conn:
+                d = conn.execute(
+                    "SELECT coalesce(array_agg(sub_name::text), '{}')"
+                    " FROM spock.subscription WHERE NOT sub_enabled"
+                ).fetchone()[0]
+                t = conn.execute(
+                    "SELECT count(*) FROM spock.resolutions"
+                    " WHERE conflict_type = 'insert_exists'"
+                    " AND relname = 'public.ledger'").fetchone()[0]
+            return d, t
+
+        ok, val = retry_until(deadline, f"subscriptions on {node}", fn)
+        if not ok:
+            log(f"lifecycle checks skipped: could not read {node}")
+            return None
+        disabled[node], twice[node] = val
+    return {"disabled": disabled, "insert_exists_rows": twice}
+
+
+def check_restart_records(history):
     for node, h in history.items():
         for r in h["graceful"]:
             if r.get("stop_rc") != "0":
                 continue
-            # The other checks below skip crashes; so does the timing.
+            # The exactly-once checks skip crashes; so does the timing.
             if h["recoveries"]:
                 continue
             ready = r.get("ready_s", "")
@@ -133,46 +175,20 @@ def check_graceful_restarts(ledger):
                       "graceful stop cut short an apply worker's remote transaction",
                       {"node": node, **r})
 
+
+def check_graceful_restarts(history, after, ledger):
     clean = {n: h["clean_exits"] for n, h in history.items()}
-    recoveries = {n: h["recoveries"] for n, h in history.items()}
     if sum(clean.values()) == 0:
         return
-    if any(recoveries.values()):
-        log(f"exactly-once after graceful restarts not checked: crash"
-            f" recoveries {recoveries}")
-        return
-
-    disabled = {}
-    twice = {}
-    for node in MESH:
-        def fn():
-            with connect(node) as conn:
-                d = conn.execute(
-                    "SELECT coalesce(array_agg(sub_name::text), '{}')"
-                    " FROM spock.subscription WHERE NOT sub_enabled"
-                ).fetchone()[0]
-                t = conn.execute(
-                    "SELECT count(*) FROM spock.resolutions"
-                    " WHERE conflict_type = 'insert_exists'"
-                    " AND relname = 'public.ledger'").fetchone()[0]
-            return d, t
-
-        ok, val = retry_until(deadline, f"subscriptions on {node}", fn)
-        if not ok:
-            log(f"exactly-once after graceful restarts not checked:"
-                f" could not read {node}")
-            return
-        disabled[node], twice[node] = val
-
     details = {"clean_exits": clean}
     reachable("exactly-once checked after a graceful restart with no crash",
               details)
-    always(not any(disabled.values()),
+    always(not any(after["disabled"].values()),
            "every subscription is enabled after graceful restarts",
-           {**details, "disabled": disabled})
-    always(not any(twice.values()),
+           {**details, "disabled": after["disabled"]})
+    always(not any(after["insert_exists_rows"].values()),
            "no ledger row applied twice across graceful restarts",
-           {**details, "insert_exists_rows": twice})
+           {**details, "insert_exists_rows": after["insert_exists_rows"]})
     if ledger is None:
         log("ledger rows after graceful restarts not checked: no comparison")
         return
@@ -184,12 +200,63 @@ def check_graceful_restarts(ledger):
            {**details, **ledger})
 
 
+def check_sub_cycles(after, ledger, not_reenabled):
+    cycles = cycles_issued()
+    if cycles == 0:
+        return
+    details = {"cycles": cycles}
+    reachable("exactly-once checked after subscription disable/enable cycles with no crash",
+              details)
+    always(not any(after["disabled"].values()) and not not_reenabled,
+           "every subscription is enabled after subscription disable/enable cycles",
+           {**details, "disabled": after["disabled"],
+            "not_reenabled": not_reenabled})
+    always(not any(after["insert_exists_rows"].values()),
+           "no ledger row applied twice across subscription disable/enable cycles",
+           {**details, "insert_exists_rows": after["insert_exists_rows"]})
+    if ledger is None:
+        log("ledger rows after subscription cycles not checked: no comparison")
+        return
+    always(ledger["differing_rows"] == 0,
+           "every mesh node holds the same ledger rows after subscription disable/enable cycles",
+           {**details, **ledger})
+    always(not any(ledger["ledger_exception_log_rows"].values()),
+           "no ledger transaction discarded across subscription disable/enable cycles",
+           {**details, **ledger})
+
+
 def main():
+    # Subscriptions a killed sub-cycle driver left disabled are re-enabled
+    # first, after ending its sessions so a sub_disable still running
+    # cannot commit afterwards.
+    # A node may still be restarting when faults stop, so allow it time to
+    # come back before calling its sessions unknown.
+    deadline = time.monotonic() + READ_SECS
+    left = {node: end_writers(node, deadline, [DRIVER_APP]) for node in MESH}
+    not_reenabled = reenable_recorded(time.monotonic() + READ_SECS)
+
     ledger = None
     if run_barriers(["parallel_driver_write_ledger.py"]):
         ledger = compare_ledgers()
 
-    check_graceful_restarts(ledger)
+    history = read_history()
+    if history is None:
+        return
+    check_restart_records(history)
+    recoveries = {n: h["recoveries"] for n, h in history.items()}
+    if any(recoveries.values()):
+        # Crash redo (lead L1) can legitimately explain a resend.
+        log(f"exactly-once checks skipped: crash recoveries {recoveries}")
+        return
+    after = read_after_state()
+    if after is None:
+        return
+    if any(n != 0 for n in left.values()):
+        # A sub_disable may still land, so subscription state is not final.
+        log(f"exactly-once checks skipped: driver sessions left {left}")
+        return
+    check_graceful_restarts(history, after, ledger)
+    check_sub_cycles(after, ledger, not_reenabled)
 
 
 if __name__ == "__main__":

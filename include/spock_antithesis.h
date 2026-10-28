@@ -41,7 +41,10 @@
 						"src/spock_manager.c", "spock_manager_main") \
 	SPOCK_ANT_ASSERTION(SPOCK_ANT_SHUTDOWN_DRAIN_TIMED_OUT, SOMETIMES, \
 						"supervisor shutdown drain timed out with apply workers still attached", \
-						"src/spock.c", "spock_supervisor_on_exit")
+						"src/spock.c", "spock_supervisor_on_exit") \
+	SPOCK_ANT_ASSERTION(SPOCK_ANT_SIGTERM_IN_REMOTE_XACT, SOMETIMES, \
+						"apply worker SIGTERM landed inside a remote transaction", \
+						"src/spock_apply.c", "apply_work")
 
 #ifdef USE_ANTITHESIS
 
