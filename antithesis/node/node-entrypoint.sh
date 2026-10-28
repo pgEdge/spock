@@ -20,6 +20,11 @@
 #   exits.log   one line per postmaster exit
 #   stay_down   if present, the loop does not restart postgres until it is
 #               removed
+#   restart_delay  seconds to wait before the next start, read and removed
+#               after postgres exits (the graceful-restart driver writes it
+#               before pg_ctl stop; the wait ends even if that command is
+#               killed)
+#   graceful.log   one line per graceful restart, written by the driver
 #
 # Settings that vary between run configurations come from the environment:
 #   SPOCK_CAPACITY                worker, slot, sender and origin limits (32)
@@ -189,7 +194,18 @@ while [ "${STOPPING}" = 0 ]; do
 	echo "$(date -u +%Y-%m-%dT%H:%M:%S.%3NZ) boot=${boot} exit=${rc}" >> "${STATE}/exits.log"
 	log "postgres exited with ${rc} (boot ${boot})"
 
-	[ "${STOPPING}" = 0 ] && sleep 1
+	delay=1
+	if [ -e "${STATE}/restart_delay" ]; then
+		# The file can be gone or empty by now (removed, or a write that
+		# hit a full disk); either must not end this loop under set -e.
+		delay=$(cat "${STATE}/restart_delay" 2>/dev/null || true)
+		rm -f "${STATE}/restart_delay"
+		case "${delay}" in
+		'' | *[!0-9]*) delay=1 ;;
+		esac
+		log "restarting postgres in ${delay}s"
+	fi
+	[ "${STOPPING}" = 0 ] && sleep "${delay}"
 done
 
 log "stopped"

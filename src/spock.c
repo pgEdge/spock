@@ -883,6 +883,7 @@ static void
 spock_supervisor_on_exit(int code, Datum arg)
 {
 	int			retries = SPOCK_SHUTDOWN_DRAIN_MAX_RETRIES;
+	bool		timed_out;
 
 	if (code != 0)
 		return;
@@ -893,7 +894,9 @@ spock_supervisor_on_exit(int code, Datum arg)
 		pg_usleep(SPOCK_SHUTDOWN_DRAIN_INTERVAL_US);
 	}
 
-	if (spock_any_apply_worker_running())
+	timed_out = spock_any_apply_worker_running();
+	SPOCK_ANT_SOMETIMES(SPOCK_ANT_SHUTDOWN_DRAIN_TIMED_OUT, timed_out, NULL);
+	if (timed_out)
 		elog(LOG, "spock supervisor: shutdown drain timed out, "
 			 "SHUTDOWN forensic snapshot may be incomplete");
 

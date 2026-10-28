@@ -24,7 +24,7 @@ know about the harness.
 
 | Component | Language | Instrumented | SDK | Symbols | Bootstrap property |
 |---|---|---|---|---|---|
-| `spock.so` | C | yes: clang `-fsanitize-coverage=trace-pc-guard` (no `pc-table`: the SDK header lacks the `__sanitizer_cov_pcs_init` hook it needs, so `spock.so` would not load), hooks from `antithesis_instrumentation.h` (C++ SDK v0.5.0, C-compatible) | fallback SDK: JSONL writer in `src/spock_antithesis.c` | `/symbols/spock.so` → unstripped `spock.so` | `Reachable: "spock manager worker started"` in `spock_manager_main` |
+| `spock.so` | C | yes: clang `-fsanitize-coverage=trace-pc-guard` (no `pc-table`: the SDK header lacks the `__sanitizer_cov_pcs_init` hook it needs, so `spock.so` would not load), hooks from `antithesis_instrumentation.h` (C++ SDK v0.5.0, C-compatible) | fallback SDK: JSONL writer in `src/spock_antithesis.c` | `/symbols/spock.so` → unstripped `spock.so` | `Reachable: "spock manager worker started"` in `spock_manager_main`; also `Sometimes: "supervisor shutdown drain timed out with apply workers still attached"` in `spock_supervisor_on_exit` |
 | `spock_output.so` | C | no: it would need its own copy of the hooks; small (output plugin glue) | none | none | none |
 | PostgreSQL core | C | no: keeps the coverage signal on Spock (deployment-topology) | none | none | none |
 | workload | bash now, Python later | cataloging only (Python) | `antithesis==0.4.0` installed for Python 3.12 | n/a; `/opt/antithesis/catalog` → `/opt/antithesis/test/v1` | none (setup emits `setup_complete` via `setup-complete.sh`) |
@@ -84,8 +84,9 @@ assertion.
 - Node-side test commands (pg_ctl stop, kill -9 postmaster) can go in
   `antithesis/test/v1/<template>/`, but the node image does not copy the
   whole tree (a command present in several containers may run in any of
-  them, and node images have no Python). Copy node-side commands into the
-  node stage one by one. Workload commands use `python3.12` (the system
+  them, and node images have no Python). Node-side commands live in
+  `antithesis/node/test/v1/<template>/` and the node stage copies that tree
+  (first one: `parallel_driver_graceful_restart.sh`). Workload commands use `python3.12` (the system
   `python3` is 3.9 and has neither psycopg nor the SDK).
 
 ## Workload container

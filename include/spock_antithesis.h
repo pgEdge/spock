@@ -38,7 +38,10 @@
 #define SPOCK_ANT_CATALOG \
 	SPOCK_ANT_ASSERTION(SPOCK_ANT_MANAGER_STARTED, REACHABLE, \
 						"spock manager worker started", \
-						"src/spock_manager.c", "spock_manager_main")
+						"src/spock_manager.c", "spock_manager_main") \
+	SPOCK_ANT_ASSERTION(SPOCK_ANT_SHUTDOWN_DRAIN_TIMED_OUT, SOMETIMES, \
+						"supervisor shutdown drain timed out with apply workers still attached", \
+						"src/spock.c", "spock_supervisor_on_exit")
 
 #ifdef USE_ANTITHESIS
 

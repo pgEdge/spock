@@ -1,7 +1,7 @@
 ---
 sut_path: /home/msharp/dev/pgedgea/spock
-commit: 46144e984c992c49e8f54f140debf0d1d1f92be3
-updated: 2026-10-15
+commit: ce49d2b3791a84f3226709f7d4c445e512c43780
+updated: 2026-10-28
 external_references: []
 ---
 
@@ -304,7 +304,7 @@ Evaluation note (2026-10-13): the FAILED-table path uses resyncs of a dedicated 
 |---|---|
 | **Type** | Safety |
 | **Property** | Across `pg_ctl stop -m fast` and restart of any node under writes, every node ends with exactly one copy of each committed ledger row, exact delta counters, no exception rows outside the expected-exception registry, all subs enabled, and the restarted node accepts connections within a bound. |
-| **Invariant** | Workload `Always` at quiescence (graceful-stop variant only, or windows touched by a kill excluded). `Always` because the shutdown checkpoint makes origins durable, so even if crash restart is not exact (L1), graceful restart must be. Coverage marker (SUT-side): `Sometimes("supervisor shutdown drain timed out with apply workers still attached")` at `src/spock.c:891`. |
+| **Invariant** | Workload `Always` at quiescence (graceful-stop variant only, or windows touched by a kill excluded). `Always` because the shutdown checkpoint makes origins durable, so even if crash restart is not exact (L1), graceful restart must be. Coverage marker (SUT-side): `Sometimes("supervisor shutdown drain timed out with apply workers still attached")` at `spock_supervisor_on_exit` (`src/spock.c`). |
 | **Antithesis Angle** | Stops at random points: mid large transaction, during table sync or add_node, while peers reconnect. Exercises the SIGTERM path, the 5 s supervisor drain, `resource.dat` dump/load and reconcile at apply start. Fast mode only: smart shutdown waits for every client backend, including peers' plain connections. A stopping node's logical walsender waits for the subscriber's flush confirm, bounded by `wal_sender_timeout` (`WalSndDone`). The helper is a required harness component: a test command inside the node container runs `pg_ctl stop -m fast`, and the node wrapper loop restarts postgres (`COPY ... TO PROGRAM` is not a safe route for `pg_ctl`: it is a child of a backend and is signalled at shutdown). |
 | **Why It Matters** | Baseline for upgrades and maintenance; separates "restart is broken" from "crash redo is broken" (L1), which otherwise look the same in a failing run. |
 
@@ -316,6 +316,7 @@ Priority: P1 · Topology: v1 · Faults: graceful stop (test command), partition
 Confidence: medium · Surfaced by: F8 Lifecycle
 Evidence: properties/graceful-restart-preserves-exactly-once.md
 Evaluation note (2026-10-13): "windows touched by a kill" are found through the node wrapper's boot counter and last-exit kind, which the workload reads with `pg_read_file` (Antithesis does not announce kills).
+Implemented (2026-10-28): node-side driver `node/test/v1/main/parallel_driver_graceful_restart.sh` (Bash: the node image has no Python; it makes no assertions) runs `pg_ctl stop -m fast` on a mesh node (n4 skipped) and leaves the restart to `node-entrypoint.sh` after a delay from the menu {0, 1, 4, 5, 6, 30} s (around `spock.restart_delay_default` = 5 s), passed through the one-shot `/data/state/restart_delay` so the node comes back even if the driver is killed. Restart weight swarmed per node and timeline: {0, 20, 100}%, with at least 60 s between restarts of one node. Each restart is a `/data/state/graceful.log` line (stop time, delay, seconds to accept connections, writer sessions and apply workers with `backend_xid` at the stop). Assertions in `test/v1/main/eventually_mesh_barriers.py`: per record `Always("a gracefully stopped node accepts connections within 2 minutes of starting again")`; reach claims `Sometimes("graceful stop landed while a ledger writer was active on the node")` and `Sometimes("graceful stop landed while an apply worker was inside a remote transaction")`. In a timeline with at least one clean postmaster exit (`exit=0` in `exits.log`) and no crash recovery on any mesh node (`automatic recovery in progress` in the server log; this also catches a backend crash, which restarts the postmaster in place with no `exits.log` line): `Reachable("exactly-once checked after a graceful restart with no crash")`, `Always("every subscription is enabled after graceful restarts")`, `Always("no ledger row applied twice across graceful restarts")` (no `insert_exists` row for `public.ledger` in `spock.resolutions`), and, when the sync barriers passed, `Always("every mesh node holds the same ledger rows after graceful restarts")` and `Always("no ledger transaction discarded across graceful restarts")`. SUT-side `Sometimes("supervisor shutdown drain timed out with apply workers still attached")` in `spock_supervisor_on_exit`. Not yet: delta counters (no counters table), the expected-exception registry (the ledger expects none), stops during table sync or add_node (no such drivers yet).
 
 ### no-change-applied-on-its-origin-node — No replication echo
 

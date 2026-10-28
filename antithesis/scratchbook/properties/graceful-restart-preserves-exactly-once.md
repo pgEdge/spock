@@ -96,9 +96,41 @@ Current catalog line: Priority: P1 · Topology: v1 · Faults: graceful stop (tes
 - Evaluation note (2026-10-13): "windows touched by a kill" are found through the node wrapper's boot counter and last-exit kind, which the workload reads with `pg_read_file` (Antithesis does not announce kills).
 - "No exception rows" now means none outside the expected-exception registry. The earlier note in this file about running `pg_ctl stop` through `COPY ... TO PROGRAM` is superseded: `pg_ctl` started that way is a child of a backend and gets signalled at shutdown, so the helper runs as a node-container test command.
 
+## Implementation (2026-10-28)
+
+- `antithesis/node/test/v1/main/parallel_driver_graceful_restart.sh`, copied
+  into the node image only, so Antithesis runs it in a node container. It
+  skips n4, takes a per-node lock, rolls against a per-node, per-timeline
+  restart weight drawn from {0, 20, 100}% (kept in
+  `/data/state/graceful_percent`), records how many ledger writers and apply
+  workers inside a remote transaction the stop lands on, writes a restart
+  delay from {0, 1, 4, 5, 6, 30} s to `/data/state/restart_delay`, and runs
+  `pg_ctl stop -m fast -W` as postgres, then waits up to 330 s (above the 5min `wal_sender_timeout` variant plus the drain) for the entrypoint's `exits.log` line for that boot and takes the exit code from it. `pg_ctl -w` is not used: with a short delay the new postmaster writes its pid file before `pg_ctl` polls again, and `pg_ctl` waits on the new one. `node-entrypoint.sh` reads and
+  removes the delay after the postmaster exits, so a driver killed by an
+  `eventually_` command cannot leave the node down. The driver then times
+  how long the new postmaster takes to accept connections and appends a line
+  to `/data/state/graceful.log`.
+- Kill windows: the earlier plan used the boot counter and exit codes, but a
+  backend crash (for example the ENOSPC PANIC in run
+  9705b08734ec5df06d6637244b6466ed-63-13) restarts the postmaster in place
+  and leaves no `exits.log` line. The check instead counts `automatic
+  recovery in progress` in the server log, which every unclean stop writes.
+  Any recovery on a mesh node skips the exactly-once checks for the
+  timeline.
+- Assertions are in `test/v1/main/eventually_mesh_barriers.py` (history read
+  by `helper_restarts.py`); see the catalog entry for the list. The
+  duplicate check uses oracle (2) of `ledger-row-applied-exactly-once-per-peer`:
+  a redelivered ledger INSERT becomes an `insert_exists` resolution.
+- SUT-side `Sometimes("supervisor shutdown drain timed out with apply
+  workers still attached")` in `spock_supervisor_on_exit` (`src/spock.c`).
+- Not covered yet: delta counters (no counters table in the harness), stops
+  during table sync or add_node (no drivers for those), and a combined
+  "partition while a peer restarts" schedule beyond what the fault injector
+  does on its own.
+
 ## Open questions
 
-- None open at the code level. The graceful-stop helper does not exist yet and must be built with the harness (see Fault requirements); until then the property is not exercised.
+- None open at the code level. The graceful-stop helper was built on 2026-10-28 (see Implementation).
 
 Resolved (see Investigation Log): helper availability (not built; two
 designs above), smart vs fast (fast only), and the provider-side wait (a

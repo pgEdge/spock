@@ -132,10 +132,11 @@ RUN set -eux; \
 	chown postgres:postgres /data
 
 COPY --chmod=755 antithesis/node/node-entrypoint.sh /usr/local/bin/
-# No test tree here: a command found in several containers may run in any of
+# Node-side test commands only (pg_ctl, postmaster kill), kept apart from
+# antithesis/test: a command found in several containers may run in any of
 # them, and the workload's Python commands cannot run in a node image (no
-# Python).  Node-side commands (pg_ctl, postmaster kill) get copied in one by
-# one when they exist.
+# Python).
+COPY --chmod=755 antithesis/node/test/ /opt/antithesis/test/
 
 # The entrypoint starts as root and drops to postgres itself.
 VOLUME /data
