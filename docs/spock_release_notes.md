@@ -352,8 +352,8 @@ replication state through a set of views in the `spock` schema:
   slots, replication lag, last events.
 * `spock.subscription_status`: configuration, status, serving worker,
   replication position and lag, and the last error of every subscription.
-* `spock.subscription_stats`: worker starts and failures, provider
-  connects, messages, transactions, tuple and conflict counters.
+* `spock.subscription_stats`: apply and sync worker starts and failures,
+  provider connects, messages, transactions, tuple and conflict counters.
 * `spock.worker_status`: supervisor, manager, apply and sync workers,
   including workers waiting for a restart.
 * `spock.slot_status`: provider side: spock slots with their walsender,

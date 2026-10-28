@@ -87,7 +87,7 @@ been created.
 | `pending_exceptions` | Transactions currently being retried under `spock.exception_behaviour`. |
 | `replicated_tables`, `unreplicated_tables` | Tables of this node in some replication set, and tables in none. |
 | `current_wal_lsn` | Current WAL position, replay position on a standby. |
-| `wal_size_bytes` | Size of `pg_wal`. |
+| `wal_size_bytes` | Size of `pg_wal`, read through `spock.wal_size_bytes()`, which runs as the extension owner so that a role without `pg_monitor` can read it. |
 | `data_disk_free_bytes`, `wal_disk_free_bytes` | Free space on the volumes holding the data directory and `pg_wal`. |
 | `max_retained_wal_bytes` | WAL held back by the slowest spock slot. |
 | `max_replication_lag_bytes`, `max_replication_lag` | Largest lag over all subscriptions. |
@@ -146,7 +146,8 @@ timestamp of its most recent change.
 
 | Column | Description |
 |--------|-------------|
-| `worker_starts`, `worker_failures` | Worker starts, and exits with an error. |
+| `worker_starts`, `worker_failures` | Apply worker starts, and exits with an error. |
+| `sync_worker_starts`, `sync_worker_failures` | The same for the sync workers that copy tables; a resync adds one start per table. |
 | `provider_connects`, `provider_disconnects`, `idle_timeouts` | Connections to the provider, connection losses, and reconnects forced by `spock.apply_idle_timeout`. |
 | `messages_received`, `bytes_received` | Data messages received from the provider. |
 | `xacts_applied`, `xacts_skipped`, `xacts_discarded` | Transactions committed locally, skipped through `sub_skip_lsn`, and discarded under `transdiscard`. |
@@ -249,7 +250,7 @@ Event types:
 | `worker_error` | An error is raised inside an apply or sync worker. The detail carries the message with DETAIL and CONTEXT. |
 | `provider_connected`, `provider_disconnected` | The replication connection to the named provider is established, with the start LSN, or lost, with the error. |
 | `transaction_skipped`, `transaction_discarded` | A transaction is skipped through `sub_skip_lsn` or discarded under `transdiscard`. |
-| `sync_started`, `sync_finished`, `sync_failed` | Initial copy of a table. |
+| `sync_started`, `sync_finished`, `sync_failed` | Initial copy of a table. `sync_failed` carries the error that ended the copy. |
 | `slot_created`, `stream_started`, `stream_stopped`, `stream_error` | Provider side: a spock slot is created, a walsender starts streaming to a subscriber (its address, spock version and protocol in the detail, the slot position in `lsn`), stops, or fails with an error while decoding. |
 | `apply_paused`, `apply_resumed` | `spock.pause_apply_workers()` and `spock.resume_apply_workers()`. |
 | `repair_mode_enabled`, `repair_mode_disabled` | `spock.repair_mode()`. |
@@ -275,8 +276,8 @@ replication slots, replication sets, tables in no replication set, table
 synchronization, lag by node pair, recent exceptions, recent conflict
 resolutions and recent events. Wide views are printed one row per block,
 lists as aligned tables. A section whose query fails, for example
-`node_status` for a user without `pg_monitor`, prints one error line and
-the report continues.
+`node_status` for a role without `EXECUTE` on the functions behind it,
+prints one error line and the report continues.
 
 ```sql
 SELECT * FROM spock.spock_info();
@@ -362,8 +363,10 @@ SELECT subscription_name, deadlocks, lock_timeouts,
 
 ### Is a worker restarting in a loop?
 
-`worker_starts` and `worker_failures` climb together when a worker crashes
-on every attempt. The events show the interval and the reason.
+`worker_starts` and `worker_failures` climb together when the apply worker
+crashes on every attempt. The events show the interval and the reason. Sync
+workers have their own pair of counters, so a resync of many tables does
+not look like a restart loop here.
 
 ```sql
 SELECT subscription_name, worker_starts, worker_failures,
@@ -473,7 +476,9 @@ The views are plain SQL, so any monitoring agent can poll them. Poll
 `spock.events` by `event_id` to fetch only new rows, and treat a gap in
 ids as history that was dropped because `spock.event_history_size` was too
 small for the polling interval. `spock.get_monitor_summary()` reports how
-full the event ring and the counters table are.
+full the event ring and the counters table are. A monitoring role needs
+`EXECUTE` on the functions listed below that the views call; the views
+themselves need no `pg_monitor` membership.
 
 ## Underlying functions
 
@@ -488,7 +493,7 @@ contents. They are useful for tooling that wants unfiltered rows.
 | `spock.get_slot_groups()` | Slot groups with attached walsenders. |
 | `spock.get_monitor_summary()` | Capacity and usage of the shared memory structures. |
 | `spock.get_system_info()` | Host name, operating system, CPU, memory, load averages, disk space of the data and WAL volumes, postmaster start, PostgreSQL and spock versions. |
-| `spock.get_pending_exceptions()` | Transactions being retried under exception handling, with their first error. |
+| `spock.get_pending_exceptions()` | Transactions being retried under exception handling, with their first error and the position of the failing change in the transaction. |
 | `spock.reset_events()` | Clears the event history of the current database. |
 | `spock.reset_subscription_stats(subid)` | Resets the activity and conflict counters of one or all subscriptions. |
 | `spock.redact_dsn(text)` | Returns a connection string with its password hidden. |

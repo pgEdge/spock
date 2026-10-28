@@ -560,77 +560,85 @@ spock_monitor_remember_error(const char *message, XLogRecPtr lsn,
 }
 
 /*
- * Message, detail and context of an error on one line.  Runs inside error
- * reporting, so it writes into the caller's buffer and allocates nothing.
+ * The masking below runs inside error reporting, so it works on the
+ * caller's buffer and allocates nothing.
+ */
+static char *
+spock_monitor_skip_blanks(char *q)
+{
+	while (*q == ' ' || *q == '\t')
+		q++;
+	return q;
+}
+
+/* Mask a value up to the next blank; returns the position after it. */
+static char *
+spock_monitor_mask_bare(char *q)
+{
+	while (*q != '\0' && *q != ' ' && *q != '\t')
+		*q++ = 'X';
+	return q;
+}
+
+/*
+ * Mask a quoted value, q pointing at the opening quote.  The quotes stay,
+ * what they hold is masked, including an escaped quote inside.  Returns the
+ * position after the closing quote.
+ */
+static char *
+spock_monitor_mask_quoted(char *q)
+{
+	q++;
+	while (*q != '\0' && *q != '\'')
+	{
+		if (*q == '\\' && q[1] != '\0')
+			*q++ = 'X';
+		*q++ = 'X';
+	}
+	if (*q == '\'')
+		q++;
+	return q;
+}
+
+/*
+ * Mask every "password = value" of a keyword/value connection string.
+ *
+ * libpq accepts whitespace around the '=' and a quoted value that may hold
+ * spaces or an escaped quote, so stopping at the first space would leave
+ * part of the secret behind, or all of it where the space follows the
+ * keyword.  Mask only when the keyword is followed by '=', which leaves
+ * prose such as "password authentication failed" readable.
  */
 static void
-spock_monitor_format_error(ErrorData *edata, char *buf, Size len)
+spock_monitor_mask_keyword_passwords(char *buf)
 {
-	int			n;
-	char	   *p;
+	char	   *p = buf;
 
-	n = snprintf(buf, len, "%s", edata->message);
-	if (edata->detail != NULL && n >= 0 && n < len)
-		n += snprintf(buf + n, len - n, " DETAIL: %s", edata->detail);
-	if (edata->context != NULL && n >= 0 && n < len)
-		snprintf(buf + n, len - n, " CONTEXT: %s", edata->context);
-
-	/*
-	 * A connection string carries its password, and a failure to connect
-	 * quotes the whole DSN back in the message, the detail or the context.
-	 * The emit_log_hook masks what goes to the log, but these rows are
-	 * readable through the monitoring views, and the apply worker reports
-	 * errors it caught here directly, which never reach that hook at all.
-	 * Mask what we are about to store, which covers every field and every
-	 * caller.
-	 *
-	 * libpq accepts whitespace around the '=' and a quoted value that may
-	 * hold spaces or an escaped quote, so stopping at the first space would
-	 * leave part of the secret behind, or all of it where the space follows
-	 * the keyword.  Mask only when the keyword is followed by '=', which
-	 * leaves prose such as "password authentication failed" readable.
-	 *
-	 * Operates on our own buffer and allocates nothing, as an error path must
-	 * not.
-	 */
-	p = buf;
 	while ((p = pg_strcasestr(p, SPOCK_PSWD_KEYWORD)) != NULL)
 	{
 		char	   *q = p + sizeof(SPOCK_PSWD_KEYWORD) - 1;
 
-		while (*q == ' ' || *q == '\t')
-			q++;
+		q = spock_monitor_skip_blanks(q);
 		if (*q != '=')
 		{
 			p = q;
 			continue;
 		}
-		q++;
-		while (*q == ' ' || *q == '\t')
-			q++;
+		q = spock_monitor_skip_blanks(q + 1);
 
 		if (*q == '\'')
-		{
-			/* Keep the quotes, mask what they hold. */
-			q++;
-			while (*q != '\0' && *q != '\'')
-			{
-				if (*q == '\\' && q[1] != '\0')
-					*q++ = 'X';
-				*q++ = 'X';
-			}
-			if (*q == '\'')
-				q++;
-		}
+			p = spock_monitor_mask_quoted(q);
 		else
-			while (*q != '\0' && *q != ' ' && *q != '\t')
-				*q++ = 'X';
-
-		p = q;
+			p = spock_monitor_mask_bare(q);
 	}
+}
 
-	/* A URI DSN has no keyword: mask the userinfo of scheme://user:secret@ */
-	p = buf;
+/* A URI DSN has no keyword: mask the userinfo of scheme://user:secret@ */
+static void
+spock_monitor_mask_uri_passwords(char *buf)
+{
+	char	   *p = buf;
+
 	while ((p = strstr(p, "://")) != NULL)
 	{
 		char	   *at,
@@ -642,7 +650,7 @@ spock_monitor_format_error(ErrorData *edata, char *buf, Size len)
 		at = strchr(p, '@');
 		if (at == NULL || (slash != NULL && at > slash))
 		{
-			p = slash ? slash + 1 : p + strlen(p);
+			p = slash ? slash + 1 : strchr(p, '\0');
 			continue;
 		}
 		colon = memchr(p, ':', at - p);
@@ -651,6 +659,32 @@ spock_monitor_format_error(ErrorData *edata, char *buf, Size len)
 				*colon = 'X';
 		p = at;
 	}
+}
+
+/*
+ * Message, detail and context of an error on one line, with any password
+ * in them masked.
+ *
+ * A connection string carries its password, and a failure to connect quotes
+ * the whole DSN back in the message, the detail or the context.  The
+ * emit_log_hook masks what goes to the log, but these rows are readable
+ * through the monitoring views, and the apply worker reports errors it
+ * caught here directly, which never reach that hook at all.  Mask what we
+ * are about to store, which covers every field and every caller.
+ */
+static void
+spock_monitor_format_error(ErrorData *edata, char *buf, Size len)
+{
+	int			n;
+
+	n = snprintf(buf, len, "%s", edata->message);
+	if (edata->detail != NULL && n >= 0 && n < len)
+		n += snprintf(buf + n, len - n, " DETAIL: %s", edata->detail);
+	if (edata->context != NULL && n >= 0 && n < len)
+		snprintf(buf + n, len - n, " CONTEXT: %s", edata->context);
+
+	spock_monitor_mask_keyword_passwords(buf);
+	spock_monitor_mask_uri_passwords(buf);
 }
 
 /*
@@ -684,9 +718,15 @@ spock_monitor_worker_attached(void)
 			break;
 
 		case SPOCK_WORKER_SYNC:
+
+			/*
+			 * A sync worker shares the subscription's counters, but a resync
+			 * of ten tables is not ten apply worker restarts, so it keeps its
+			 * own start and failure counts.
+			 */
 			MySpockMonitorStats =
 				spock_monitor_attach_stats(worker->worker.apply.subid);
-			spock_monitor_count(SPOCK_MONITOR_WORKER_STARTS, 1);
+			spock_monitor_count(SPOCK_MONITOR_SYNC_WORKER_STARTS, 1);
 			spock_monitor_record_event(SPOCK_EVENT_WORKER_STARTED,
 									   worker->worker.apply.subid,
 									   InvalidXLogRecPtr,
@@ -703,6 +743,58 @@ spock_monitor_worker_attached(void)
 /*
  * Called by spock_worker_detach() before the worker slot is released.
  */
+/*
+ * Count a worker's error exit and record it, with the error that caused it
+ * when this process raised one.
+ */
+static void
+spock_monitor_worker_failed(SpockWorker *worker, Oid subid)
+{
+	char		message[SPOCK_MONITOR_MESSAGE_LEN];
+	SpockMonitorCounter failures = SPOCK_MONITOR_WORKER_FAILURES;
+	bool		is_sync = worker->worker_type == SPOCK_WORKER_SYNC;
+
+	if (is_sync)
+		failures = SPOCK_MONITOR_SYNC_WORKER_FAILURES;
+
+	message[0] = '\0';
+	if (MySpockMonitorStats != NULL)
+	{
+		TimestampTz now = GetCurrentTimestamp();
+
+		SpinLockAcquire(&MySpockMonitorStats->mutex);
+		MySpockMonitorStats->counter[failures]++;
+		MySpockMonitorStats->counter_time[failures] = now;
+
+		/* Only an error this process raised explains this exit. */
+		if (MySpockMonitorStats->last_error_pid == MyProcPid)
+			strlcpy(message, MySpockMonitorStats->last_error_message,
+					sizeof(message));
+		SpinLockRelease(&MySpockMonitorStats->mutex);
+	}
+
+	spock_monitor_record_event(SPOCK_EVENT_WORKER_FAILED, subid,
+							   InvalidXLogRecPtr,
+							   "%s worker exited with error%s%s",
+							   spock_worker_type_name(worker->worker_type),
+							   message[0] != '\0' ? ": " : "",
+							   message);
+
+	/*
+	 * A sync worker that dies has failed to copy its table.  Say so under the
+	 * table's own event, with the reason, rather than only when the next
+	 * attempt gives up.
+	 */
+	if (is_sync)
+		spock_monitor_record_event(SPOCK_EVENT_SYNC_FAILED, subid,
+								   InvalidXLogRecPtr,
+								   "table %s.%s%s%s",
+								   NameStr(worker->worker.sync.nspname),
+								   NameStr(worker->worker.sync.relname),
+								   message[0] != '\0' ? ": " : "",
+								   message);
+}
+
 void
 spock_monitor_worker_detached(bool crash)
 {
@@ -717,32 +809,7 @@ spock_monitor_worker_detached(bool crash)
 		subid = worker->worker.apply.subid;
 
 	if (crash)
-	{
-		char		message[SPOCK_MONITOR_MESSAGE_LEN];
-
-		message[0] = '\0';
-		if (MySpockMonitorStats != NULL)
-		{
-			TimestampTz now = GetCurrentTimestamp();
-
-			SpinLockAcquire(&MySpockMonitorStats->mutex);
-			MySpockMonitorStats->counter[SPOCK_MONITOR_WORKER_FAILURES]++;
-			MySpockMonitorStats->counter_time[SPOCK_MONITOR_WORKER_FAILURES] = now;
-
-			/* Only an error this process raised explains this exit. */
-			if (MySpockMonitorStats->last_error_pid == MyProcPid)
-				strlcpy(message, MySpockMonitorStats->last_error_message,
-						sizeof(message));
-			SpinLockRelease(&MySpockMonitorStats->mutex);
-		}
-
-		spock_monitor_record_event(SPOCK_EVENT_WORKER_FAILED, subid,
-								   InvalidXLogRecPtr,
-								   "%s worker exited with error%s%s",
-								   spock_worker_type_name(worker->worker_type),
-								   message[0] != '\0' ? ": " : "",
-								   message);
-	}
+		spock_monitor_worker_failed(worker, subid);
 	else
 		spock_monitor_record_event(SPOCK_EVENT_WORKER_STOPPED, subid,
 								   InvalidXLogRecPtr,
@@ -765,7 +832,9 @@ spock_monitor_provider_connected(const char *slot_name, XLogRecPtr start_lsn)
 		 MySpockWorker->worker_type == SPOCK_WORKER_SYNC))
 		subid = MySpockWorker->worker.apply.subid;
 
-	spock_monitor_count(SPOCK_MONITOR_PROVIDER_CONNECTS, 1);
+	/* Every sync worker connects too; count the apply stream only. */
+	if (MySpockWorker == NULL || MySpockWorker->worker_type == SPOCK_WORKER_APPLY)
+		spock_monitor_count(SPOCK_MONITOR_PROVIDER_CONNECTS, 1);
 	spock_monitor_record_event(SPOCK_EVENT_PROVIDER_CONNECTED, subid, start_lsn,
 							   "streaming from provider %s through slot %s",
 							   MySubscription ? MySubscription->origin->name : "unknown",
@@ -839,21 +908,52 @@ spock_monitor_is_connection_error(int sqlerrcode)
  * This runs inside error reporting, so it must not allocate memory, must
  * not raise errors of its own and must not block.
  */
+/* Is this an error the monitor records at all? */
+static bool
+spock_monitor_error_wanted(ErrorData *edata)
+{
+	if (SpockMonitorShm == NULL)
+		return false;
+	if (MySpockWorker == NULL && !spock_monitor_in_stream)
+		return false;
+	if (edata->elevel < ERROR || edata->elevel >= PANIC)
+		return false;
+	return edata->message != NULL;
+}
+
+/* An error in an apply or sync worker: the last error and an event. */
+static void
+spock_monitor_report_worker_error(SpockWorker *worker, ErrorData *edata,
+								  const char *message)
+{
+	Oid			subid = InvalidOid;
+
+	if (worker->worker_type == SPOCK_WORKER_APPLY)
+	{
+		subid = worker->worker.apply.subid;
+		spock_monitor_set_error(message, replorigin_session_origin_lsn,
+								edata->sqlerrcode, SPOCK_MONITOR_APPLY_ERRORS);
+	}
+	else if (worker->worker_type == SPOCK_WORKER_SYNC)
+	{
+		subid = worker->worker.apply.subid;
+		spock_monitor_set_error(message, replorigin_session_origin_lsn,
+								edata->sqlerrcode, SPOCK_MONITOR_SYNC_ERRORS);
+	}
+
+	spock_monitor_append_event(SPOCK_EVENT_WORKER_ERROR, subid,
+							   replorigin_session_origin_lsn,
+							   edata->sqlerrcode, message, true);
+}
+
 void
 spock_monitor_report_error(ErrorData *edata)
 {
 	static bool in_report = false;
 	SpockWorker *worker = MySpockWorker;
 	char		message[SPOCK_MONITOR_MESSAGE_LEN];
-	Oid			subid = InvalidOid;
 
-	if (in_report || SpockMonitorShm == NULL)
-		return;
-	if (worker == NULL && !spock_monitor_in_stream)
-		return;
-	if (edata->elevel < ERROR || edata->elevel >= PANIC)
-		return;
-	if (edata->message == NULL)
+	if (in_report || !spock_monitor_error_wanted(edata))
 		return;
 
 	/* The apply worker reported this connection loss before rethrowing. */
@@ -878,11 +978,8 @@ spock_monitor_report_error(ErrorData *edata)
 	{
 		if (worker != NULL)
 			spock_monitor_note_disconnect(message, edata->sqlerrcode);
-		in_report = false;
-		return;
 	}
-
-	if (worker == NULL)
+	else if (worker == NULL)
 	{
 		char		detail[SPOCK_MONITOR_MESSAGE_LEN];
 
@@ -891,26 +988,9 @@ spock_monitor_report_error(ErrorData *edata)
 		spock_monitor_append_event(SPOCK_EVENT_STREAM_ERROR, InvalidOid,
 								   InvalidXLogRecPtr, edata->sqlerrcode,
 								   detail, true);
-		in_report = false;
-		return;
 	}
-
-	if (worker->worker_type == SPOCK_WORKER_APPLY)
-	{
-		subid = worker->worker.apply.subid;
-		spock_monitor_set_error(message, replorigin_session_origin_lsn,
-								edata->sqlerrcode, SPOCK_MONITOR_APPLY_ERRORS);
-	}
-	else if (worker->worker_type == SPOCK_WORKER_SYNC)
-	{
-		subid = worker->worker.apply.subid;
-		spock_monitor_set_error(message, replorigin_session_origin_lsn,
-								edata->sqlerrcode, SPOCK_MONITOR_SYNC_ERRORS);
-	}
-
-	spock_monitor_append_event(SPOCK_EVENT_WORKER_ERROR, subid,
-							   replorigin_session_origin_lsn,
-							   edata->sqlerrcode, message, true);
+	else
+		spock_monitor_report_worker_error(worker, edata, message);
 
 	in_report = false;
 }
@@ -1013,29 +1093,70 @@ check_monitor_shmem(void)
  *
  * The recorded events, oldest first.
  */
+/* Columns of spock.get_events(). */
+enum
+{
+	EV_EVENT_ID = 0,
+	EV_EVENT_TIME,
+	EV_EVENT_TYPE,
+	EV_SEVERITY,
+	EV_SQLSTATE,
+	EV_DATABASE_ID,
+	EV_SUBSCRIPTION_ID,
+	EV_PID,
+	EV_LSN,
+	EV_DETAIL,
+	EV_NUM_COLUMNS
+};
+
+/* One row of spock.get_events(). */
+static void
+spock_event_row(const SpockMonitorEvent *event, Datum *values, bool *nulls)
+{
+	const SpockMonitorEventInfo *info = &SpockMonitorEventInfos[event->event_type];
+
+	values[EV_EVENT_ID] = Int64GetDatum((int64) event->event_id);
+	values[EV_EVENT_TIME] = TimestampTzGetDatum(event->event_time);
+	values[EV_EVENT_TYPE] = CStringGetTextDatum(info->name);
+	values[EV_SEVERITY] =
+		CStringGetTextDatum(SpockMonitorSeverityNames[info->severity]);
+
+	if (event->sqlerrcode != 0)
+		values[EV_SQLSTATE] =
+			CStringGetTextDatum(unpack_sql_state(event->sqlerrcode));
+	else
+		nulls[EV_SQLSTATE] = true;
+
+	if (OidIsValid(event->dboid))
+		values[EV_DATABASE_ID] = ObjectIdGetDatum(event->dboid);
+	else
+		nulls[EV_DATABASE_ID] = true;
+
+	if (OidIsValid(event->subid))
+		values[EV_SUBSCRIPTION_ID] = ObjectIdGetDatum(event->subid);
+	else
+		nulls[EV_SUBSCRIPTION_ID] = true;
+
+	values[EV_PID] = Int32GetDatum(event->pid);
+
+	if (!XLogRecPtrIsInvalid(event->lsn))
+		values[EV_LSN] = LSNGetDatum(event->lsn);
+	else
+		nulls[EV_LSN] = true;
+
+	if (event->detail[0] != '\0')
+		values[EV_DETAIL] = CStringGetTextDatum(event->detail);
+	else
+		nulls[EV_DETAIL] = true;
+}
+
 Datum
 spock_get_events(PG_FUNCTION_ARGS)
 {
 	ReturnSetInfo *rsinfo = (ReturnSetInfo *) fcinfo->resultinfo;
-	int			i;
-
-	enum
-	{
-		EV_EVENT_ID = 0,
-		EV_EVENT_TIME,
-		EV_EVENT_TYPE,
-		EV_SEVERITY,
-		EV_SQLSTATE,
-		EV_DATABASE_ID,
-		EV_SUBSCRIPTION_ID,
-		EV_PID,
-		EV_LSN,
-		EV_DETAIL,
-		EV_NUM_COLUMNS
-	};
-
 	SpockMonitorEvent *events;
 	int			nevents;
+	int			i;
 
 	check_monitor_shmem();
 	InitMaterializedSRF(fcinfo, 0);
@@ -1060,45 +1181,10 @@ spock_get_events(PG_FUNCTION_ARGS)
 
 	for (i = 0; i < nevents; i++)
 	{
-		SpockMonitorEvent *event = &events[i];
-		Datum		values[EV_NUM_COLUMNS];
+		Datum		values[EV_NUM_COLUMNS] = {0};
 		bool		nulls[EV_NUM_COLUMNS] = {0};
 
-		values[EV_EVENT_ID] = Int64GetDatum((int64) event->event_id);
-		values[EV_EVENT_TIME] = TimestampTzGetDatum(event->event_time);
-		values[EV_EVENT_TYPE] =
-			CStringGetTextDatum(SpockMonitorEventInfos[event->event_type].name);
-		values[EV_SEVERITY] =
-			CStringGetTextDatum(SpockMonitorSeverityNames[SpockMonitorEventInfos[event->event_type].severity]);
-
-		if (event->sqlerrcode != 0)
-			values[EV_SQLSTATE] =
-				CStringGetTextDatum(unpack_sql_state(event->sqlerrcode));
-		else
-			nulls[EV_SQLSTATE] = true;
-
-		if (OidIsValid(event->dboid))
-			values[EV_DATABASE_ID] = ObjectIdGetDatum(event->dboid);
-		else
-			nulls[EV_DATABASE_ID] = true;
-
-		if (OidIsValid(event->subid))
-			values[EV_SUBSCRIPTION_ID] = ObjectIdGetDatum(event->subid);
-		else
-			nulls[EV_SUBSCRIPTION_ID] = true;
-
-		values[EV_PID] = Int32GetDatum(event->pid);
-
-		if (!XLogRecPtrIsInvalid(event->lsn))
-			values[EV_LSN] = LSNGetDatum(event->lsn);
-		else
-			nulls[EV_LSN] = true;
-
-		if (event->detail[0] != '\0')
-			values[EV_DETAIL] = CStringGetTextDatum(event->detail);
-		else
-			nulls[EV_DETAIL] = true;
-
+		spock_event_row(&events[i], values, nulls);
 		tuplestore_putvalues(rsinfo->setResult, rsinfo->setDesc, values, nulls);
 	}
 
@@ -1129,9 +1215,9 @@ spock_reset_events(PG_FUNCTION_ARGS)
 	 * start of the ring, since packing in place would overwrite entries not
 	 * yet read once the head has wrapped.
 	 */
-	kept = palloc(sizeof(SpockMonitorEvent) * SpockMonitorShm->event_capacity);
-
 	LWLockAcquire(SpockMonitorShm->lock, LW_EXCLUSIVE);
+	kept = palloc(sizeof(SpockMonitorEvent) *
+				  Max(SpockMonitorShm->event_count, 1));
 	for (i = 0; i < SpockMonitorShm->event_count; i++)
 	{
 		int			idx = (SpockMonitorShm->event_head + i) %
@@ -1142,8 +1228,8 @@ spock_reset_events(PG_FUNCTION_ARGS)
 			continue;
 		kept[nkept++] = *event;
 	}
-	if (nkept > 0)
-		memcpy(SpockMonitorShm->events, kept, sizeof(SpockMonitorEvent) * nkept);
+	for (i = 0; i < nkept; i++)
+		SpockMonitorShm->events[i] = kept[i];
 	SpockMonitorShm->event_head = 0;
 	SpockMonitorShm->event_count = nkept;
 	LWLockRelease(SpockMonitorShm->lock);
@@ -1158,29 +1244,142 @@ spock_reset_events(PG_FUNCTION_ARGS)
 static const char *
 spock_worker_status_name(SpockWorker *worker)
 {
+	static const char *const names[] = {
+		[SPOCK_WORKER_STATUS_NONE] = "starting",
+		[SPOCK_WORKER_STATUS_IDLE] = "idle",
+		[SPOCK_WORKER_STATUS_RUNNING] = "running",
+		[SPOCK_WORKER_STATUS_STOPPING] = "stopping",
+		[SPOCK_WORKER_STATUS_STOPPED] = "stopped",
+		[SPOCK_WORKER_STATUS_FAILED] = "failed"
+	};
+	int			status = (int) worker->worker_status;
+
 	if (worker->proc == NULL)
 		return worker->terminated_at != 0 ? "restart pending" : "starting";
 
 	if (worker->worker_type == SPOCK_WORKER_MANAGER)
 		return "running";
 
-	switch (worker->worker_status)
-	{
-		case SPOCK_WORKER_STATUS_NONE:
-			return "starting";
-		case SPOCK_WORKER_STATUS_IDLE:
-			return "idle";
-		case SPOCK_WORKER_STATUS_RUNNING:
-			return "running";
-		case SPOCK_WORKER_STATUS_STOPPING:
-			return "stopping";
-		case SPOCK_WORKER_STATUS_STOPPED:
-			return "stopped";
-		case SPOCK_WORKER_STATUS_FAILED:
-			return "failed";
-	}
+	if (status >= 0 && status < lengthof(names) && names[status] != NULL)
+		return names[status];
 
 	return "unknown";
+}
+
+/* Columns of spock.get_worker_status(). */
+enum
+{
+	WS_WORKER_SLOT = 0,
+	WS_WORKER_TYPE,
+	WS_PID,
+	WS_DATABASE_ID,
+	WS_SUBSCRIPTION_ID,
+	WS_WORKER_STATUS,
+	WS_GENERATION,
+	WS_TERMINATED_AT,
+	WS_RESTART_DELAY,
+	WS_PAUSED,
+	WS_IN_EXCEPTION_HANDLING,
+	WS_SYNC_PENDING,
+	WS_REPLAY_STOP_LSN,
+	WS_REMOTE_WAL_INSERT_LSN,
+	WS_SYNC_SCHEMA_NAME,
+	WS_SYNC_TABLE_NAME,
+	WS_NUM_COLUMNS
+};
+
+/* The supervisor has no worker slot; it gets a row of its own. */
+static void
+spock_worker_status_supervisor_row(ReturnSetInfo *rsinfo)
+{
+	Datum		values[WS_NUM_COLUMNS] = {0};
+	bool		nulls[WS_NUM_COLUMNS];
+
+	memset(nulls, true, sizeof(nulls));
+	values[WS_WORKER_TYPE] = CStringGetTextDatum("supervisor");
+	nulls[WS_WORKER_TYPE] = false;
+	values[WS_PID] = Int32GetDatum(SpockCtx->supervisor->pid);
+	nulls[WS_PID] = false;
+	values[WS_WORKER_STATUS] = CStringGetTextDatum("running");
+	nulls[WS_WORKER_STATUS] = false;
+
+	tuplestore_putvalues(rsinfo->setResult, rsinfo->setDesc, values, nulls);
+}
+
+/* The columns an apply or sync worker has and the others leave NULL. */
+static void
+spock_worker_status_apply_columns(SpockWorker *worker, Datum *values,
+								  bool *nulls)
+{
+	SpockApplyWorker *apply = &worker->worker.apply;
+
+	if (worker->worker_type != SPOCK_WORKER_APPLY &&
+		worker->worker_type != SPOCK_WORKER_SYNC)
+	{
+		nulls[WS_SUBSCRIPTION_ID] = true;
+		nulls[WS_PAUSED] = true;
+		nulls[WS_IN_EXCEPTION_HANDLING] = true;
+		nulls[WS_SYNC_PENDING] = true;
+		nulls[WS_REPLAY_STOP_LSN] = true;
+		nulls[WS_REMOTE_WAL_INSERT_LSN] = true;
+		return;
+	}
+
+	values[WS_SUBSCRIPTION_ID] = ObjectIdGetDatum(apply->subid);
+	values[WS_PAUSED] = BoolGetDatum(apply->paused);
+	values[WS_IN_EXCEPTION_HANDLING] = BoolGetDatum(apply->use_try_block);
+	values[WS_SYNC_PENDING] = BoolGetDatum(apply->sync_pending);
+
+	if (!XLogRecPtrIsInvalid(apply->replay_stop_lsn))
+		values[WS_REPLAY_STOP_LSN] = LSNGetDatum(apply->replay_stop_lsn);
+	else
+		nulls[WS_REPLAY_STOP_LSN] = true;
+
+	if (!XLogRecPtrIsInvalid(worker->remote_wal_insert_lsn))
+		values[WS_REMOTE_WAL_INSERT_LSN] =
+			LSNGetDatum(worker->remote_wal_insert_lsn);
+	else
+		nulls[WS_REMOTE_WAL_INSERT_LSN] = true;
+}
+
+/* One row of spock.get_worker_status() for the worker in slot i. */
+static void
+spock_worker_status_row(int i, SpockWorker *worker, Datum *values,
+						bool *nulls)
+{
+	values[WS_WORKER_SLOT] = Int32GetDatum(i);
+	values[WS_WORKER_TYPE] =
+		CStringGetTextDatum(spock_worker_type_name(worker->worker_type));
+
+	if (worker->proc != NULL)
+		values[WS_PID] = Int32GetDatum(worker->proc->pid);
+	else
+		nulls[WS_PID] = true;
+
+	if (OidIsValid(worker->dboid))
+		values[WS_DATABASE_ID] = ObjectIdGetDatum(worker->dboid);
+	else
+		nulls[WS_DATABASE_ID] = true;
+
+	values[WS_WORKER_STATUS] =
+		CStringGetTextDatum(spock_worker_status_name(worker));
+	values[WS_GENERATION] = Int32GetDatum((int32) worker->generation);
+	values[WS_TERMINATED_AT] =
+		timestamptz_or_null(worker->terminated_at, &nulls[WS_TERMINATED_AT]);
+	values[WS_RESTART_DELAY] = Int32GetDatum(worker->restart_delay);
+
+	spock_worker_status_apply_columns(worker, values, nulls);
+
+	if (worker->worker_type == SPOCK_WORKER_SYNC)
+	{
+		values[WS_SYNC_SCHEMA_NAME] = NameGetDatum(&worker->worker.sync.nspname);
+		values[WS_SYNC_TABLE_NAME] = NameGetDatum(&worker->worker.sync.relname);
+	}
+	else
+	{
+		nulls[WS_SYNC_SCHEMA_NAME] = true;
+		nulls[WS_SYNC_TABLE_NAME] = true;
+	}
 }
 
 /*
@@ -1196,27 +1395,6 @@ spock_get_worker_status(PG_FUNCTION_ARGS)
 	ReturnSetInfo *rsinfo = (ReturnSetInfo *) fcinfo->resultinfo;
 	int			i;
 
-	enum
-	{
-		WS_WORKER_SLOT = 0,
-		WS_WORKER_TYPE,
-		WS_PID,
-		WS_DATABASE_ID,
-		WS_SUBSCRIPTION_ID,
-		WS_WORKER_STATUS,
-		WS_GENERATION,
-		WS_TERMINATED_AT,
-		WS_RESTART_DELAY,
-		WS_PAUSED,
-		WS_IN_EXCEPTION_HANDLING,
-		WS_SYNC_PENDING,
-		WS_REPLAY_STOP_LSN,
-		WS_REMOTE_WAL_INSERT_LSN,
-		WS_SYNC_SCHEMA_NAME,
-		WS_SYNC_TABLE_NAME,
-		WS_NUM_COLUMNS
-	};
-
 	check_monitor_shmem();
 	InitMaterializedSRF(fcinfo, 0);
 	Assert(rsinfo->setDesc->natts == WS_NUM_COLUMNS);
@@ -1224,20 +1402,7 @@ spock_get_worker_status(PG_FUNCTION_ARGS)
 	LWLockAcquire(SpockCtx->lock, LW_SHARED);
 
 	if (SpockCtx->supervisor != NULL)
-	{
-		Datum		values[WS_NUM_COLUMNS] = {0};
-		bool		nulls[WS_NUM_COLUMNS];
-
-		memset(nulls, true, sizeof(nulls));
-		values[WS_WORKER_TYPE] = CStringGetTextDatum("supervisor");
-		nulls[WS_WORKER_TYPE] = false;
-		values[WS_PID] = Int32GetDatum(SpockCtx->supervisor->pid);
-		nulls[WS_PID] = false;
-		values[WS_WORKER_STATUS] = CStringGetTextDatum("running");
-		nulls[WS_WORKER_STATUS] = false;
-
-		tuplestore_putvalues(rsinfo->setResult, rsinfo->setDesc, values, nulls);
-	}
+		spock_worker_status_supervisor_row(rsinfo);
 
 	for (i = 0; i < SpockCtx->total_workers; i++)
 	{
@@ -1248,71 +1413,7 @@ spock_get_worker_status(PG_FUNCTION_ARGS)
 		if (worker->worker_type == SPOCK_WORKER_NONE)
 			continue;
 
-		values[WS_WORKER_SLOT] = Int32GetDatum(i);
-		values[WS_WORKER_TYPE] =
-			CStringGetTextDatum(spock_worker_type_name(worker->worker_type));
-
-		if (worker->proc != NULL)
-			values[WS_PID] = Int32GetDatum(worker->proc->pid);
-		else
-			nulls[WS_PID] = true;
-
-		if (OidIsValid(worker->dboid))
-			values[WS_DATABASE_ID] = ObjectIdGetDatum(worker->dboid);
-		else
-			nulls[WS_DATABASE_ID] = true;
-
-		values[WS_WORKER_STATUS] =
-			CStringGetTextDatum(spock_worker_status_name(worker));
-		values[WS_GENERATION] = Int32GetDatum((int32) worker->generation);
-		values[WS_TERMINATED_AT] =
-			timestamptz_or_null(worker->terminated_at, &nulls[WS_TERMINATED_AT]);
-		values[WS_RESTART_DELAY] = Int32GetDatum(worker->restart_delay);
-
-		if (worker->worker_type == SPOCK_WORKER_APPLY ||
-			worker->worker_type == SPOCK_WORKER_SYNC)
-		{
-			SpockApplyWorker *apply = &worker->worker.apply;
-
-			values[WS_SUBSCRIPTION_ID] = ObjectIdGetDatum(apply->subid);
-			values[WS_PAUSED] = BoolGetDatum(apply->paused);
-			values[WS_IN_EXCEPTION_HANDLING] = BoolGetDatum(apply->use_try_block);
-			values[WS_SYNC_PENDING] = BoolGetDatum(apply->sync_pending);
-
-			if (!XLogRecPtrIsInvalid(apply->replay_stop_lsn))
-				values[WS_REPLAY_STOP_LSN] = LSNGetDatum(apply->replay_stop_lsn);
-			else
-				nulls[WS_REPLAY_STOP_LSN] = true;
-
-			if (!XLogRecPtrIsInvalid(worker->remote_wal_insert_lsn))
-				values[WS_REMOTE_WAL_INSERT_LSN] =
-					LSNGetDatum(worker->remote_wal_insert_lsn);
-			else
-				nulls[WS_REMOTE_WAL_INSERT_LSN] = true;
-		}
-		else
-		{
-			nulls[WS_SUBSCRIPTION_ID] = true;
-			nulls[WS_PAUSED] = true;
-			nulls[WS_IN_EXCEPTION_HANDLING] = true;
-			nulls[WS_SYNC_PENDING] = true;
-			nulls[WS_REPLAY_STOP_LSN] = true;
-			nulls[WS_REMOTE_WAL_INSERT_LSN] = true;
-		}
-
-		if (worker->worker_type == SPOCK_WORKER_SYNC)
-		{
-			values[WS_SYNC_SCHEMA_NAME] =
-				NameGetDatum(&worker->worker.sync.nspname);
-			values[WS_SYNC_TABLE_NAME] =
-				NameGetDatum(&worker->worker.sync.relname);
-		}
-		else
-		{
-			nulls[WS_SYNC_SCHEMA_NAME] = true;
-			nulls[WS_SYNC_TABLE_NAME] = true;
-		}
-
+		spock_worker_status_row(i, worker, values, nulls);
 		tuplestore_putvalues(rsinfo->setResult, rsinfo->setDesc, values, nulls);
 	}
 
@@ -1327,103 +1428,188 @@ spock_get_worker_status(PG_FUNCTION_ARGS)
  * The activity counters of every subscription of the current database,
  * with the conflict counters of the pgstat subsystem where available.
  */
-Datum
-spock_get_apply_stats(PG_FUNCTION_ARGS)
+/* Columns of spock.get_apply_stats(). */
+enum
 {
-	ReturnSetInfo *rsinfo = (ReturnSetInfo *) fcinfo->resultinfo;
+	AS_DATABASE_ID = 0,
+	AS_SUBSCRIPTION_ID,
+	AS_WORKER_STARTS,
+	AS_WORKER_FAILURES,
+	AS_SYNC_WORKER_STARTS,
+	AS_SYNC_WORKER_FAILURES,
+	AS_PROVIDER_CONNECTS,
+	AS_PROVIDER_DISCONNECTS,
+	AS_IDLE_TIMEOUTS,
+	AS_MESSAGES_RECEIVED,
+	AS_BYTES_RECEIVED,
+	AS_XACTS_APPLIED,
+	AS_XACTS_SKIPPED,
+	AS_XACTS_DISCARDED,
+	AS_APPLY_ERRORS,
+	AS_SYNC_ERRORS,
+	AS_DEADLOCKS,
+	AS_LOCK_TIMEOUTS,
+	AS_CONSTRAINT_VIOLATIONS,
+	AS_RESOURCE_ERRORS,
+	AS_TABLES_SYNCED,
+	AS_CONFL_FIRST,
+	AS_CONFL_LAST = AS_CONFL_FIRST + SPOCK_CONFLICT_NUM_TYPES - 1,
+	AS_LAST_WORKER_START,
+	AS_LAST_WORKER_FAILURE,
+	AS_LAST_PROVIDER_CONNECT,
+	AS_LAST_PROVIDER_DISCONNECT,
+	AS_LAST_MESSAGE_RECEIVED,
+	AS_LAST_XACT_APPLIED,
+	AS_LAST_APPLY_ERROR,
+	AS_LAST_SYNC_ERROR,
+	AS_LAST_TABLE_SYNCED,
+	AS_LAST_ERROR_MESSAGE,
+	AS_LAST_ERROR_LSN,
+	AS_LAST_ERROR_SQLSTATE,
+	AS_LAST_ERROR_PID,
+	AS_STATS_RESET,
+	AS_NUM_COLUMNS
+};
+
+/* Counter feeding each of the plain count columns, in column order. */
+static const SpockMonitorCounter apply_stats_count_columns[] = {
+	SPOCK_MONITOR_WORKER_STARTS,
+	SPOCK_MONITOR_WORKER_FAILURES,
+	SPOCK_MONITOR_SYNC_WORKER_STARTS,
+	SPOCK_MONITOR_SYNC_WORKER_FAILURES,
+	SPOCK_MONITOR_PROVIDER_CONNECTS,
+	SPOCK_MONITOR_PROVIDER_DISCONNECTS,
+	SPOCK_MONITOR_IDLE_TIMEOUTS,
+	SPOCK_MONITOR_MESSAGES_RECEIVED,
+	SPOCK_MONITOR_BYTES_RECEIVED,
+	SPOCK_MONITOR_XACTS_APPLIED,
+	SPOCK_MONITOR_XACTS_SKIPPED,
+	SPOCK_MONITOR_XACTS_DISCARDED,
+	SPOCK_MONITOR_APPLY_ERRORS,
+	SPOCK_MONITOR_SYNC_ERRORS,
+	SPOCK_MONITOR_DEADLOCKS,
+	SPOCK_MONITOR_LOCK_TIMEOUTS,
+	SPOCK_MONITOR_CONSTRAINT_VIOLATIONS,
+	SPOCK_MONITOR_RESOURCE_ERRORS,
+	SPOCK_MONITOR_TABLES_SYNCED
+};
+
+/* Counter whose last change feeds each of the timestamp columns. */
+static const SpockMonitorCounter apply_stats_time_columns[] = {
+	SPOCK_MONITOR_WORKER_STARTS,
+	SPOCK_MONITOR_WORKER_FAILURES,
+	SPOCK_MONITOR_PROVIDER_CONNECTS,
+	SPOCK_MONITOR_PROVIDER_DISCONNECTS,
+	SPOCK_MONITOR_MESSAGES_RECEIVED,
+	SPOCK_MONITOR_XACTS_APPLIED,
+	SPOCK_MONITOR_APPLY_ERRORS,
+	SPOCK_MONITOR_SYNC_ERRORS,
+	SPOCK_MONITOR_TABLES_SYNCED
+};
+
+StaticAssertDecl(lengthof(apply_stats_count_columns) == AS_CONFL_FIRST - AS_WORKER_STARTS,
+				 "count column list out of sync");
+StaticAssertDecl(lengthof(apply_stats_time_columns) == AS_LAST_ERROR_MESSAGE - AS_LAST_WORKER_START,
+				 "timestamp column list out of sync");
+
+/*
+ * The conflict counters come from the pgstat subsystem, which has them from
+ * PostgreSQL 18 on.  Before that the columns are NULL.
+ */
+static void
+spock_apply_stats_conflicts(Oid subid, Datum *values, bool *nulls)
+{
+	int			col;
+
+	for (col = AS_CONFL_FIRST; col <= AS_CONFL_LAST; col++)
+		nulls[col] = true;
+#if PG_VERSION_NUM >= 180000
+	{
+		Spock_Stat_StatSubEntry *confl;
+		int			i;
+
+		confl = spock_stat_fetch_stat_subscription(subid);
+		for (i = 0; i < SPOCK_CONFLICT_NUM_TYPES; i++)
+		{
+			col = AS_CONFL_FIRST + i;
+			values[col] = Int64GetDatum(confl ? confl->conflict_count[i] : 0);
+			nulls[col] = false;
+		}
+	}
+#endif
+}
+
+/* The last error columns of one spock.get_apply_stats() row. */
+static void
+spock_apply_stats_last_error(const SpockMonitorStatsEntry *copy,
+							 Datum *values, bool *nulls)
+{
+	if (copy->last_error_message[0] != '\0')
+		values[AS_LAST_ERROR_MESSAGE] =
+			CStringGetTextDatum(copy->last_error_message);
+	else
+		nulls[AS_LAST_ERROR_MESSAGE] = true;
+
+	if (!XLogRecPtrIsInvalid(copy->last_error_lsn))
+		values[AS_LAST_ERROR_LSN] = LSNGetDatum(copy->last_error_lsn);
+	else
+		nulls[AS_LAST_ERROR_LSN] = true;
+
+	if (copy->last_error_sqlerrcode != 0)
+		values[AS_LAST_ERROR_SQLSTATE] =
+			CStringGetTextDatum(unpack_sql_state(copy->last_error_sqlerrcode));
+	else
+		nulls[AS_LAST_ERROR_SQLSTATE] = true;
+
+	if (copy->last_error_pid != 0)
+		values[AS_LAST_ERROR_PID] = Int32GetDatum(copy->last_error_pid);
+	else
+		nulls[AS_LAST_ERROR_PID] = true;
+}
+
+/* One row of spock.get_apply_stats() from a copied entry. */
+static void
+spock_apply_stats_row(const SpockMonitorStatsEntry *copy, Datum *values,
+					  bool *nulls)
+{
+	int			col;
+	int			i;
+
+	values[AS_DATABASE_ID] = ObjectIdGetDatum(copy->key.dboid);
+	values[AS_SUBSCRIPTION_ID] = ObjectIdGetDatum(copy->key.subid);
+
+	col = AS_WORKER_STARTS;
+	for (i = 0; i < lengthof(apply_stats_count_columns); i++)
+		values[col++] = Int64GetDatum(copy->counter[apply_stats_count_columns[i]]);
+
+	spock_apply_stats_conflicts(copy->key.subid, values, nulls);
+
+	col = AS_LAST_WORKER_START;
+	for (i = 0; i < lengthof(apply_stats_time_columns); i++)
+	{
+		values[col] = timestamptz_or_null(copy->counter_time[apply_stats_time_columns[i]],
+										  &nulls[col]);
+		col++;
+	}
+
+	spock_apply_stats_last_error(copy, values, nulls);
+
+	values[AS_STATS_RESET] =
+		timestamptz_or_null(copy->stats_reset, &nulls[AS_STATS_RESET]);
+}
+
+/*
+ * Copy the entries of this database out of shared memory while holding the
+ * lock, so that the pgstat lookups and the formatting run without it.
+ */
+static SpockMonitorStatsEntry *
+spock_apply_stats_copy(int *nentries)
+{
 	HASH_SEQ_STATUS hash_seq;
 	SpockMonitorStatsEntry *entry;
 	SpockMonitorStatsEntry *entries;
-	int			nentries = 0;
-	int			e;
+	int			n = 0;
 
-	enum
-	{
-		AS_DATABASE_ID = 0,
-		AS_SUBSCRIPTION_ID,
-		AS_WORKER_STARTS,
-		AS_WORKER_FAILURES,
-		AS_PROVIDER_CONNECTS,
-		AS_PROVIDER_DISCONNECTS,
-		AS_IDLE_TIMEOUTS,
-		AS_MESSAGES_RECEIVED,
-		AS_BYTES_RECEIVED,
-		AS_XACTS_APPLIED,
-		AS_XACTS_SKIPPED,
-		AS_XACTS_DISCARDED,
-		AS_APPLY_ERRORS,
-		AS_SYNC_ERRORS,
-		AS_DEADLOCKS,
-		AS_LOCK_TIMEOUTS,
-		AS_CONSTRAINT_VIOLATIONS,
-		AS_RESOURCE_ERRORS,
-		AS_TABLES_SYNCED,
-		AS_CONFL_FIRST,
-		AS_CONFL_LAST = AS_CONFL_FIRST + SPOCK_CONFLICT_NUM_TYPES - 1,
-		AS_LAST_WORKER_START,
-		AS_LAST_WORKER_FAILURE,
-		AS_LAST_PROVIDER_CONNECT,
-		AS_LAST_PROVIDER_DISCONNECT,
-		AS_LAST_MESSAGE_RECEIVED,
-		AS_LAST_XACT_APPLIED,
-		AS_LAST_APPLY_ERROR,
-		AS_LAST_SYNC_ERROR,
-		AS_LAST_TABLE_SYNCED,
-		AS_LAST_ERROR_MESSAGE,
-		AS_LAST_ERROR_LSN,
-		AS_LAST_ERROR_SQLSTATE,
-		AS_LAST_ERROR_PID,
-		AS_STATS_RESET,
-		AS_NUM_COLUMNS
-	};
-
-	/* Counter feeding each of the plain count columns, in column order. */
-	static const SpockMonitorCounter count_columns[] = {
-		SPOCK_MONITOR_WORKER_STARTS,
-		SPOCK_MONITOR_WORKER_FAILURES,
-		SPOCK_MONITOR_PROVIDER_CONNECTS,
-		SPOCK_MONITOR_PROVIDER_DISCONNECTS,
-		SPOCK_MONITOR_IDLE_TIMEOUTS,
-		SPOCK_MONITOR_MESSAGES_RECEIVED,
-		SPOCK_MONITOR_BYTES_RECEIVED,
-		SPOCK_MONITOR_XACTS_APPLIED,
-		SPOCK_MONITOR_XACTS_SKIPPED,
-		SPOCK_MONITOR_XACTS_DISCARDED,
-		SPOCK_MONITOR_APPLY_ERRORS,
-		SPOCK_MONITOR_SYNC_ERRORS,
-		SPOCK_MONITOR_DEADLOCKS,
-		SPOCK_MONITOR_LOCK_TIMEOUTS,
-		SPOCK_MONITOR_CONSTRAINT_VIOLATIONS,
-		SPOCK_MONITOR_RESOURCE_ERRORS,
-		SPOCK_MONITOR_TABLES_SYNCED
-	};
-
-	/* Counter whose last change feeds each of the timestamp columns. */
-	static const SpockMonitorCounter time_columns[] = {
-		SPOCK_MONITOR_WORKER_STARTS,
-		SPOCK_MONITOR_WORKER_FAILURES,
-		SPOCK_MONITOR_PROVIDER_CONNECTS,
-		SPOCK_MONITOR_PROVIDER_DISCONNECTS,
-		SPOCK_MONITOR_MESSAGES_RECEIVED,
-		SPOCK_MONITOR_XACTS_APPLIED,
-		SPOCK_MONITOR_APPLY_ERRORS,
-		SPOCK_MONITOR_SYNC_ERRORS,
-		SPOCK_MONITOR_TABLES_SYNCED
-	};
-
-	StaticAssertStmt(lengthof(count_columns) == AS_CONFL_FIRST - AS_WORKER_STARTS,
-					 "count column list out of sync");
-	StaticAssertStmt(lengthof(time_columns) == AS_LAST_ERROR_MESSAGE - AS_LAST_WORKER_START,
-					 "timestamp column list out of sync");
-
-	check_monitor_shmem();
-	InitMaterializedSRF(fcinfo, 0);
-	Assert(rsinfo->setDesc->natts == AS_NUM_COLUMNS);
-
-	/*
-	 * Copy the entries of this database while holding the lock; the pgstat
-	 * lookups and the formatting below run without it.
-	 */
 	LWLockAcquire(SpockMonitorShm->lock, LW_SHARED);
 	entries = palloc(Max(hash_get_num_entries(SpockMonitorStatsHash), 1) *
 					 sizeof(SpockMonitorStatsEntry));
@@ -1434,82 +1620,74 @@ spock_get_apply_stats(PG_FUNCTION_ARGS)
 			continue;
 
 		SpinLockAcquire(&entry->mutex);
-		memcpy(&entries[nentries], entry, sizeof(SpockMonitorStatsEntry));
+		entries[n] = *entry;
 		SpinLockRelease(&entry->mutex);
-		nentries++;
+		n++;
 	}
 	LWLockRelease(SpockMonitorShm->lock);
 
+	*nentries = n;
+	return entries;
+}
+
+Datum
+spock_get_apply_stats(PG_FUNCTION_ARGS)
+{
+	ReturnSetInfo *rsinfo = (ReturnSetInfo *) fcinfo->resultinfo;
+	SpockMonitorStatsEntry *entries;
+	int			nentries;
+	int			e;
+
+	check_monitor_shmem();
+	InitMaterializedSRF(fcinfo, 0);
+	Assert(rsinfo->setDesc->natts == AS_NUM_COLUMNS);
+
+	entries = spock_apply_stats_copy(&nentries);
+
 	for (e = 0; e < nentries; e++)
 	{
-		SpockMonitorStatsEntry copy = entries[e];
 		Datum		values[AS_NUM_COLUMNS] = {0};
 		bool		nulls[AS_NUM_COLUMNS] = {0};
-		int			col;
-		int			i;
 
-		values[AS_DATABASE_ID] = ObjectIdGetDatum(copy.key.dboid);
-		values[AS_SUBSCRIPTION_ID] = ObjectIdGetDatum(copy.key.subid);
-
-		col = AS_WORKER_STARTS;
-		for (i = 0; i < lengthof(count_columns); i++)
-			values[col++] = Int64GetDatum(copy.counter[count_columns[i]]);
-
-		for (col = AS_CONFL_FIRST; col <= AS_CONFL_LAST; col++)
-			nulls[col] = true;
-#if PG_VERSION_NUM >= 180000
-		{
-			Spock_Stat_StatSubEntry *confl;
-
-			confl = spock_stat_fetch_stat_subscription(copy.key.subid);
-			for (i = 0; i < SPOCK_CONFLICT_NUM_TYPES; i++)
-			{
-				col = AS_CONFL_FIRST + i;
-				values[col] = Int64GetDatum(confl ? confl->conflict_count[i] : 0);
-				nulls[col] = false;
-			}
-		}
-#endif
-
-		col = AS_LAST_WORKER_START;
-		for (i = 0; i < lengthof(time_columns); i++)
-		{
-			values[col] = timestamptz_or_null(copy.counter_time[time_columns[i]],
-											  &nulls[col]);
-			col++;
-		}
-
-		if (copy.last_error_message[0] != '\0')
-			values[AS_LAST_ERROR_MESSAGE] =
-				CStringGetTextDatum(copy.last_error_message);
-		else
-			nulls[AS_LAST_ERROR_MESSAGE] = true;
-
-		if (!XLogRecPtrIsInvalid(copy.last_error_lsn))
-			values[AS_LAST_ERROR_LSN] = LSNGetDatum(copy.last_error_lsn);
-		else
-			nulls[AS_LAST_ERROR_LSN] = true;
-
-		if (copy.last_error_sqlerrcode != 0)
-			values[AS_LAST_ERROR_SQLSTATE] =
-				CStringGetTextDatum(unpack_sql_state(copy.last_error_sqlerrcode));
-		else
-			nulls[AS_LAST_ERROR_SQLSTATE] = true;
-
-		if (copy.last_error_pid != 0)
-			values[AS_LAST_ERROR_PID] = Int32GetDatum(copy.last_error_pid);
-		else
-			nulls[AS_LAST_ERROR_PID] = true;
-
-		values[AS_STATS_RESET] =
-			timestamptz_or_null(copy.stats_reset, &nulls[AS_STATS_RESET]);
-
+		spock_apply_stats_row(&entries[e], values, nulls);
 		tuplestore_putvalues(rsinfo->setResult, rsinfo->setDesc, values, nulls);
 	}
 
 	pfree(entries);
 
 	return (Datum) 0;
+}
+
+/*
+ * Reset the pgstat conflict counters of one subscription, or of every
+ * subscription of this database for InvalidOid.  They exist from
+ * PostgreSQL 18 on.
+ */
+static void
+spock_monitor_reset_conflicts(Oid subid)
+{
+#if PG_VERSION_NUM >= 180000
+	SpockLocalNode *node;
+	List	   *subs;
+	ListCell   *lc;
+
+	if (OidIsValid(subid))
+	{
+		spock_stat_reset_subscription_conflicts(subid);
+		return;
+	}
+
+	/* Only this database's subscriptions, like the counters. */
+	node = get_local_node(false, true);
+	if (node == NULL)
+		return;
+
+	subs = get_node_subscriptions(node->node->id, false);
+	foreach(lc, subs)
+		spock_stat_reset_subscription_conflicts(((SpockSubscription *) lfirst(lc))->id);
+#else
+	(void) subid;
+#endif
 }
 
 /*
@@ -1555,24 +1733,7 @@ spock_reset_subscription_stats(PG_FUNCTION_ARGS)
 
 	LWLockRelease(SpockMonitorShm->lock);
 
-#if PG_VERSION_NUM >= 180000
-	if (OidIsValid(subid))
-		spock_stat_reset_subscription_conflicts(subid);
-	else
-	{
-		/* Only this database's subscriptions, like the counters above. */
-		SpockLocalNode *node = get_local_node(false, true);
-
-		if (node != NULL)
-		{
-			List	   *subs = get_node_subscriptions(node->node->id, false);
-			ListCell   *lc;
-
-			foreach(lc, subs)
-				spock_stat_reset_subscription_conflicts(((SpockSubscription *) lfirst(lc))->id);
-		}
-	}
-#endif
+	spock_monitor_reset_conflicts(subid);
 
 	PG_RETURN_VOID();
 }
@@ -1637,41 +1798,31 @@ spock_get_slot_groups(PG_FUNCTION_ARGS)
  *
  * One row with the state of the shared memory structures of this node.
  */
-Datum
-spock_get_monitor_summary(PG_FUNCTION_ARGS)
+/* Columns of spock.get_monitor_summary(). */
+enum
 {
-	TupleDesc	tupdesc;
-	HeapTuple	tuple;
+	MS_STARTED_AT = 0,
+	MS_SUPERVISOR_PID,
+	MS_WORKER_SLOTS,
+	MS_WORKER_SLOTS_USED,
+	MS_APPLY_PAUSED,
+	MS_EVENTS_CAPACITY,
+	MS_EVENTS_RETAINED,
+	MS_EVENTS_RECORDED,
+	MS_SUBSCRIPTION_STATS_CAPACITY,
+	MS_SUBSCRIPTION_STATS_USED,
+	MS_CHANNEL_STATS_CAPACITY,
+	MS_CHANNEL_STATS_USED,
+	MS_CHANNEL_STATS_FULL,
+	MS_NUM_COLUMNS
+};
+
+/* The worker and channel columns, read under SpockCtx->lock. */
+static void
+spock_monitor_summary_workers(Datum *values, bool *nulls)
+{
 	int			i;
 	int			slots_used = 0;
-
-	enum
-	{
-		MS_STARTED_AT = 0,
-		MS_SUPERVISOR_PID,
-		MS_WORKER_SLOTS,
-		MS_WORKER_SLOTS_USED,
-		MS_APPLY_PAUSED,
-		MS_EVENTS_CAPACITY,
-		MS_EVENTS_RETAINED,
-		MS_EVENTS_RECORDED,
-		MS_SUBSCRIPTION_STATS_CAPACITY,
-		MS_SUBSCRIPTION_STATS_USED,
-		MS_CHANNEL_STATS_CAPACITY,
-		MS_CHANNEL_STATS_USED,
-		MS_CHANNEL_STATS_FULL,
-		MS_NUM_COLUMNS
-	};
-
-	Datum		values[MS_NUM_COLUMNS] = {0};
-	bool		nulls[MS_NUM_COLUMNS] = {0};
-
-	check_monitor_shmem();
-
-	if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)
-		elog(ERROR, "return type must be a row type");
-	tupdesc = BlessTupleDesc(tupdesc);
-	Assert(tupdesc->natts == MS_NUM_COLUMNS);
 
 	LWLockAcquire(SpockCtx->lock, LW_SHARED);
 	for (i = 0; i < SpockCtx->total_workers; i++)
@@ -1693,7 +1844,12 @@ spock_get_monitor_summary(PG_FUNCTION_ARGS)
 	/* SpockCtx->lock is already held here, and LWLocks are not reentrant. */
 	values[MS_CHANNEL_STATS_FULL] = BoolGetDatum(SpockCtx->stats_hash_full);
 	LWLockRelease(SpockCtx->lock);
+}
 
+/* The event and subscription statistics columns, under the monitor lock. */
+static void
+spock_monitor_summary_events(Datum *values)
+{
 	LWLockAcquire(SpockMonitorShm->lock, LW_SHARED);
 	values[MS_STARTED_AT] = TimestampTzGetDatum(SpockMonitorShm->started_at);
 	values[MS_EVENTS_CAPACITY] = Int32GetDatum(SpockMonitorShm->event_capacity);
@@ -1704,6 +1860,25 @@ spock_get_monitor_summary(PG_FUNCTION_ARGS)
 	values[MS_SUBSCRIPTION_STATS_USED] =
 		Int32GetDatum((int32) hash_get_num_entries(SpockMonitorStatsHash));
 	LWLockRelease(SpockMonitorShm->lock);
+}
+
+Datum
+spock_get_monitor_summary(PG_FUNCTION_ARGS)
+{
+	TupleDesc	tupdesc;
+	HeapTuple	tuple;
+	Datum		values[MS_NUM_COLUMNS] = {0};
+	bool		nulls[MS_NUM_COLUMNS] = {0};
+
+	check_monitor_shmem();
+
+	if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)
+		elog(ERROR, "return type must be a row type");
+	tupdesc = BlessTupleDesc(tupdesc);
+	Assert(tupdesc->natts == MS_NUM_COLUMNS);
+
+	spock_monitor_summary_workers(values, nulls);
+	spock_monitor_summary_events(values);
 
 	tuple = heap_form_tuple(tupdesc, values, nulls);
 
@@ -1718,48 +1893,43 @@ spock_get_monitor_summary(PG_FUNCTION_ARGS)
  * size, load, free space on the data and WAL volumes, postmaster start
  * time and the PostgreSQL and spock versions.
  */
-Datum
-spock_get_system_info(PG_FUNCTION_ARGS)
+/* Columns of spock.get_system_info(). */
+enum
 {
-	TupleDesc	tupdesc;
-	HeapTuple	tuple;
+	SI_HOSTNAME = 0,
+	SI_OS_NAME,
+	SI_OS_RELEASE,
+	SI_OS_VERSION,
+	SI_ARCHITECTURE,
+	SI_CPU_COUNT,
+	SI_MEMORY_BYTES,
+	SI_LOAD_AVERAGE_1MIN,
+	SI_LOAD_AVERAGE_5MIN,
+	SI_LOAD_AVERAGE_15MIN,
+	SI_DATA_DIRECTORY,
+	SI_DATA_DISK_TOTAL_BYTES,
+	SI_DATA_DISK_FREE_BYTES,
+	SI_WAL_DISK_TOTAL_BYTES,
+	SI_WAL_DISK_FREE_BYTES,
+	SI_POSTMASTER_PID,
+	SI_POSTMASTER_START_TIME,
+	SI_POSTGRES_VERSION,
+	SI_POSTGRES_VERSION_NUM,
+	SI_SPOCK_VERSION,
+	SI_SPOCK_VERSION_NUM,
+	SI_PROTOCOL_VERSION,
+	SI_MIN_PROTOCOL_VERSION,
+	SI_NUM_COLUMNS
+};
+
+/* Host name and operating system. */
+static void
+spock_system_info_os(Datum *values, bool *nulls)
+{
 	char		hostname[256];
-
-	enum
-	{
-		SI_HOSTNAME = 0,
-		SI_OS_NAME,
-		SI_OS_RELEASE,
-		SI_OS_VERSION,
-		SI_ARCHITECTURE,
-		SI_CPU_COUNT,
-		SI_MEMORY_BYTES,
-		SI_LOAD_AVERAGE_1MIN,
-		SI_LOAD_AVERAGE_5MIN,
-		SI_LOAD_AVERAGE_15MIN,
-		SI_DATA_DIRECTORY,
-		SI_DATA_DISK_TOTAL_BYTES,
-		SI_DATA_DISK_FREE_BYTES,
-		SI_WAL_DISK_TOTAL_BYTES,
-		SI_WAL_DISK_FREE_BYTES,
-		SI_POSTMASTER_PID,
-		SI_POSTMASTER_START_TIME,
-		SI_POSTGRES_VERSION,
-		SI_POSTGRES_VERSION_NUM,
-		SI_SPOCK_VERSION,
-		SI_SPOCK_VERSION_NUM,
-		SI_PROTOCOL_VERSION,
-		SI_MIN_PROTOCOL_VERSION,
-		SI_NUM_COLUMNS
-	};
-
-	Datum		values[SI_NUM_COLUMNS] = {0};
-	bool		nulls[SI_NUM_COLUMNS] = {0};
-
-	if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)
-		elog(ERROR, "return type must be a row type");
-	tupdesc = BlessTupleDesc(tupdesc);
-	Assert(tupdesc->natts == SI_NUM_COLUMNS);
+#ifndef WIN32
+	struct utsname uts;
+#endif
 
 	if (gethostname(hostname, sizeof(hostname)) == 0)
 	{
@@ -1770,80 +1940,90 @@ spock_get_system_info(PG_FUNCTION_ARGS)
 		nulls[SI_HOSTNAME] = true;
 
 #ifndef WIN32
+	if (uname(&uts) == 0)
 	{
-		struct utsname uts;
-
-		if (uname(&uts) == 0)
-		{
-			values[SI_OS_NAME] = CStringGetTextDatum(uts.sysname);
-			values[SI_OS_RELEASE] = CStringGetTextDatum(uts.release);
-			values[SI_OS_VERSION] = CStringGetTextDatum(uts.version);
-			values[SI_ARCHITECTURE] = CStringGetTextDatum(uts.machine);
-		}
-		else
-		{
-			nulls[SI_OS_NAME] = true;
-			nulls[SI_OS_RELEASE] = true;
-			nulls[SI_OS_VERSION] = true;
-			nulls[SI_ARCHITECTURE] = true;
-		}
+		values[SI_OS_NAME] = CStringGetTextDatum(uts.sysname);
+		values[SI_OS_RELEASE] = CStringGetTextDatum(uts.release);
+		values[SI_OS_VERSION] = CStringGetTextDatum(uts.version);
+		values[SI_ARCHITECTURE] = CStringGetTextDatum(uts.machine);
+		return;
 	}
-#else
+#endif
 	nulls[SI_OS_NAME] = true;
 	nulls[SI_OS_RELEASE] = true;
 	nulls[SI_OS_VERSION] = true;
 	nulls[SI_ARCHITECTURE] = true;
-#endif
+}
+
+/* Processors, memory and load averages. */
+static void
+spock_system_info_resources(Datum *values, bool *nulls)
+{
+	long		ncpu = -1;
+	long		pages = -1;
+	long		pagesize = -1;
+	double		loads[3];
+	bool		have_loads = false;
 
 #ifdef _SC_NPROCESSORS_ONLN
-	{
-		long		ncpu = sysconf(_SC_NPROCESSORS_ONLN);
-
-		if (ncpu > 0)
-			values[SI_CPU_COUNT] = Int32GetDatum((int32) ncpu);
-		else
-			nulls[SI_CPU_COUNT] = true;
-	}
-#else
-	nulls[SI_CPU_COUNT] = true;
+	ncpu = sysconf(_SC_NPROCESSORS_ONLN);
 #endif
-
 #if defined(_SC_PHYS_PAGES) && defined(_SC_PAGESIZE)
-	{
-		long		pages = sysconf(_SC_PHYS_PAGES);
-		long		pagesize = sysconf(_SC_PAGESIZE);
-
-		if (pages > 0 && pagesize > 0)
-			values[SI_MEMORY_BYTES] = Int64GetDatum((int64) pages * (int64) pagesize);
-		else
-			nulls[SI_MEMORY_BYTES] = true;
-	}
-#else
-	nulls[SI_MEMORY_BYTES] = true;
+	pages = sysconf(_SC_PHYS_PAGES);
+	pagesize = sysconf(_SC_PAGESIZE);
 #endif
-
 #if defined(__linux__) || defined(__APPLE__) || defined(__FreeBSD__) || defined(__NetBSD__) || defined(__OpenBSD__)
-	{
-		double		loads[3];
-
-		if (getloadavg(loads, 3) == 3)
-		{
-			values[SI_LOAD_AVERAGE_1MIN] = Float8GetDatum(loads[0]);
-			values[SI_LOAD_AVERAGE_5MIN] = Float8GetDatum(loads[1]);
-			values[SI_LOAD_AVERAGE_15MIN] = Float8GetDatum(loads[2]);
-		}
-		else
-		{
-			nulls[SI_LOAD_AVERAGE_1MIN] = true;
-			nulls[SI_LOAD_AVERAGE_5MIN] = true;
-			nulls[SI_LOAD_AVERAGE_15MIN] = true;
-		}
-	}
-#else
-	nulls[SI_LOAD_AVERAGE_1MIN] = true;
-	nulls[SI_LOAD_AVERAGE_5MIN] = true;
-	nulls[SI_LOAD_AVERAGE_15MIN] = true;
+	have_loads = getloadavg(loads, 3) == 3;
 #endif
+
+	if (ncpu > 0)
+		values[SI_CPU_COUNT] = Int32GetDatum((int32) ncpu);
+	else
+		nulls[SI_CPU_COUNT] = true;
+
+	if (pages > 0 && pagesize > 0)
+		values[SI_MEMORY_BYTES] = Int64GetDatum((int64) pages * (int64) pagesize);
+	else
+		nulls[SI_MEMORY_BYTES] = true;
+
+	if (have_loads)
+	{
+		values[SI_LOAD_AVERAGE_1MIN] = Float8GetDatum(loads[0]);
+		values[SI_LOAD_AVERAGE_5MIN] = Float8GetDatum(loads[1]);
+		values[SI_LOAD_AVERAGE_15MIN] = Float8GetDatum(loads[2]);
+	}
+	else
+	{
+		nulls[SI_LOAD_AVERAGE_1MIN] = true;
+		nulls[SI_LOAD_AVERAGE_5MIN] = true;
+		nulls[SI_LOAD_AVERAGE_15MIN] = true;
+	}
+}
+
+/* Total and free space of the volume holding path, or NULLs. */
+static void
+spock_system_info_volume(const char *path, Datum *values, bool *nulls,
+						 int total_col, int free_col)
+{
+#ifndef WIN32
+	struct statvfs fs;
+
+	if (statvfs(path, &fs) == 0)
+	{
+		values[total_col] = Int64GetDatum((int64) fs.f_blocks * (int64) fs.f_frsize);
+		values[free_col] = Int64GetDatum((int64) fs.f_bavail * (int64) fs.f_frsize);
+		return;
+	}
+#endif
+	nulls[total_col] = true;
+	nulls[free_col] = true;
+}
+
+/* The data directory and the space on the volumes holding it and pg_wal. */
+static void
+spock_system_info_storage(Datum *values, bool *nulls)
+{
+	char		walpath[MAXPGPATH];
 
 	/*
 	 * PostgreSQL treats data_directory as a privileged setting: only a role
@@ -1858,45 +2038,31 @@ spock_get_system_info(PG_FUNCTION_ARGS)
 	else
 		nulls[SI_DATA_DIRECTORY] = true;
 
-#ifndef WIN32
-	{
-		struct statvfs fs;
-		char		walpath[MAXPGPATH];
+	spock_system_info_volume(DataDir, values, nulls,
+							 SI_DATA_DISK_TOTAL_BYTES, SI_DATA_DISK_FREE_BYTES);
 
-		if (statvfs(DataDir, &fs) == 0)
-		{
-			values[SI_DATA_DISK_TOTAL_BYTES] =
-				Int64GetDatum((int64) fs.f_blocks * (int64) fs.f_frsize);
-			values[SI_DATA_DISK_FREE_BYTES] =
-				Int64GetDatum((int64) fs.f_bavail * (int64) fs.f_frsize);
-		}
-		else
-		{
-			nulls[SI_DATA_DISK_TOTAL_BYTES] = true;
-			nulls[SI_DATA_DISK_FREE_BYTES] = true;
-		}
+	/* pg_wal may be a symlink to another volume, so measure it apart. */
+	snprintf(walpath, sizeof(walpath), "%s/pg_wal", DataDir);
+	spock_system_info_volume(walpath, values, nulls,
+							 SI_WAL_DISK_TOTAL_BYTES, SI_WAL_DISK_FREE_BYTES);
+}
 
-		/* pg_wal may be a symlink to another volume, so measure it apart. */
-		snprintf(walpath, sizeof(walpath), "%s/pg_wal", DataDir);
-		if (statvfs(walpath, &fs) == 0)
-		{
-			values[SI_WAL_DISK_TOTAL_BYTES] =
-				Int64GetDatum((int64) fs.f_blocks * (int64) fs.f_frsize);
-			values[SI_WAL_DISK_FREE_BYTES] =
-				Int64GetDatum((int64) fs.f_bavail * (int64) fs.f_frsize);
-		}
-		else
-		{
-			nulls[SI_WAL_DISK_TOTAL_BYTES] = true;
-			nulls[SI_WAL_DISK_FREE_BYTES] = true;
-		}
-	}
-#else
-	nulls[SI_DATA_DISK_TOTAL_BYTES] = true;
-	nulls[SI_DATA_DISK_FREE_BYTES] = true;
-	nulls[SI_WAL_DISK_TOTAL_BYTES] = true;
-	nulls[SI_WAL_DISK_FREE_BYTES] = true;
-#endif
+Datum
+spock_get_system_info(PG_FUNCTION_ARGS)
+{
+	TupleDesc	tupdesc;
+	HeapTuple	tuple;
+	Datum		values[SI_NUM_COLUMNS] = {0};
+	bool		nulls[SI_NUM_COLUMNS] = {0};
+
+	if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)
+		elog(ERROR, "return type must be a row type");
+	tupdesc = BlessTupleDesc(tupdesc);
+	Assert(tupdesc->natts == SI_NUM_COLUMNS);
+
+	spock_system_info_os(values, nulls);
+	spock_system_info_resources(values, nulls);
+	spock_system_info_storage(values, nulls);
 
 	values[SI_POSTMASTER_PID] = Int32GetDatum((int32) PostmasterPid);
 	values[SI_POSTMASTER_START_TIME] = TimestampTzGetDatum(PgStartTime);
@@ -2035,13 +2201,11 @@ get_channel_stats(PG_FUNCTION_ARGS)
 	LWLockRelease(SpockCtx->lock);
 
 	/*
-	 * Clearing the flag is a write, so it needs the exclusive lock.  Take it
-	 * only after releasing the shared one above: LWLocks are not reentrant
-	 * and a shared hold cannot be upgraded in place.
+	 * stats_hash_full stays set until spock.reset_channel_stats() clears it.
+	 * This function sits under the status views, so clearing it here would
+	 * hide a full table from get_monitor_summary() between two polls and cost
+	 * every poll an exclusive lock while the table is full.
 	 */
-	LWLockAcquire(SpockCtx->lock, LW_EXCLUSIVE);
-	SpockCtx->stats_hash_full = false;
-	LWLockRelease(SpockCtx->lock);
 
 	return (Datum) 0;
 }
@@ -2152,70 +2316,83 @@ get_apply_group_progress(PG_FUNCTION_ARGS)
  * waiting across a subscription restart.  There is no timeout; use
  * statement_timeout.
  */
+/* A slot in use, and the one named when a name was given. */
+static bool
+spock_slot_is_wanted(ReplicationSlot *s, Name slot_name)
+{
+	if (!s->in_use)
+		return false;
+	return slot_name == NULL ||
+		strncmp(NameStr(*slot_name), NameStr(s->data.name), NAMEDATALEN) == 0;
+}
+
+/*
+ * The lowest confirmed_flush of the slots in use, or of the one named.
+ * Takes ReplicationSlotControlLock.
+ */
+static XLogRecPtr
+spock_oldest_confirmed_lsn(Name slot_name, XLogRecPtr target_lsn)
+{
+	XLogRecPtr	oldest_confirmed_lsn = InvalidXLogRecPtr;
+	int			oldest_slot_pos = -1;
+	int			i;
+
+	LWLockAcquire(ReplicationSlotControlLock, LW_SHARED);
+	for (i = 0; i < max_replication_slots; i++)
+	{
+		ReplicationSlot *s = &ReplicationSlotCtl->replication_slots[i];
+
+		if (!spock_slot_is_wanted(s, slot_name))
+			continue;
+
+		if (oldest_confirmed_lsn == InvalidXLogRecPtr ||
+			(s->data.confirmed_flush != InvalidXLogRecPtr &&
+			 s->data.confirmed_flush < oldest_confirmed_lsn))
+		{
+			oldest_confirmed_lsn = s->data.confirmed_flush;
+			oldest_slot_pos = i;
+		}
+	}
+
+	if (oldest_slot_pos >= 0)
+		elog(DEBUG2, "oldest confirmed lsn is %X/%X on slot '%s', %u bytes left until %X/%X",
+			 LSN_FORMAT_ARGS(oldest_confirmed_lsn),
+			 NameStr(ReplicationSlotCtl->replication_slots[oldest_slot_pos].data.name),
+			 (uint32) (target_lsn - oldest_confirmed_lsn),
+			 LSN_FORMAT_ARGS(target_lsn));
+
+	LWLockRelease(ReplicationSlotControlLock);
+
+	return oldest_confirmed_lsn;
+}
+
+/* The LSN to wait for: the argument, else this session's last commit. */
+static XLogRecPtr
+spock_wait_target_lsn(FunctionCallInfo fcinfo)
+{
+	if (!PG_ARGISNULL(1))
+		return PG_GETARG_LSN(1);
+	if (XLogRecPtrIsInvalid(XactLastCommitEnd))
+		return GetXLogInsertRecPtr();
+	return XactLastCommitEnd;
+}
+
 Datum
 spock_wait_slot_confirm_lsn(PG_FUNCTION_ARGS)
 {
-	XLogRecPtr	target_lsn;
-	Name		slot_name;
-	int			i;
+	XLogRecPtr	target_lsn = spock_wait_target_lsn(fcinfo);
+	Name		slot_name = NULL;
 
-	if (PG_ARGISNULL(0))
-		slot_name = NULL;
-	else
+	if (!PG_ARGISNULL(0))
 		slot_name = PG_GETARG_NAME(0);
-
-	if (PG_ARGISNULL(1))
-	{
-		if (XLogRecPtrIsInvalid(XactLastCommitEnd))
-			target_lsn = GetXLogInsertRecPtr();
-		else
-			target_lsn = XactLastCommitEnd;
-	}
-	else
-		target_lsn = PG_GETARG_LSN(1);
 
 	elog(DEBUG1, "waiting for %s to pass confirmed_flush position %X/%X",
 		 slot_name == NULL ? "all local slots" : NameStr(*slot_name),
 		 LSN_FORMAT_ARGS(target_lsn));
 
-	do
+	while (spock_oldest_confirmed_lsn(slot_name, target_lsn) < target_lsn)
 	{
-		XLogRecPtr	oldest_confirmed_lsn = InvalidXLogRecPtr;
-		int			oldest_slot_pos = -1;
 		int			rc;
-
-		LWLockAcquire(ReplicationSlotControlLock, LW_SHARED);
-		for (i = 0; i < max_replication_slots; i++)
-		{
-			ReplicationSlot *s = &ReplicationSlotCtl->replication_slots[i];
-
-			if (!s->in_use)
-				continue;
-
-			if (slot_name != NULL &&
-				strncmp(NameStr(*slot_name), NameStr(s->data.name), NAMEDATALEN) != 0)
-				continue;
-
-			if (oldest_confirmed_lsn == InvalidXLogRecPtr ||
-				(s->data.confirmed_flush != InvalidXLogRecPtr &&
-				 s->data.confirmed_flush < oldest_confirmed_lsn))
-			{
-				oldest_confirmed_lsn = s->data.confirmed_flush;
-				oldest_slot_pos = i;
-			}
-		}
-
-		if (oldest_slot_pos >= 0)
-			elog(DEBUG2, "oldest confirmed lsn is %X/%X on slot '%s', %u bytes left until %X/%X",
-				 LSN_FORMAT_ARGS(oldest_confirmed_lsn),
-				 NameStr(ReplicationSlotCtl->replication_slots[oldest_slot_pos].data.name),
-				 (uint32) (target_lsn - oldest_confirmed_lsn),
-				 LSN_FORMAT_ARGS(target_lsn));
-
-		LWLockRelease(ReplicationSlotControlLock);
-
-		if (oldest_confirmed_lsn >= target_lsn)
-			break;
 
 		rc = WaitLatch(&MyProc->procLatch,
 					   WL_LATCH_SET | WL_TIMEOUT | WL_POSTMASTER_DEATH,
@@ -2227,8 +2404,7 @@ spock_wait_slot_confirm_lsn(PG_FUNCTION_ARGS)
 			proc_exit(1);
 
 		CHECK_FOR_INTERRUPTS();
-
-	} while (1);
+	}
 
 	PG_RETURN_VOID();
 }

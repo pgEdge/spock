@@ -355,8 +355,10 @@ SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
 -- A provider that cannot be reached is a lost connection, not an apply error
 SELECT spock.reset_subscription_stats();
 SELECT spock.reset_events();
+-- The password is there to be masked: it must show up as ******** in the
+-- views and never in clear, in the DSN, the error message or the event.
 SELECT spock.node_add_interface('test_provider', 'unreachable',
-                                'host=127.0.0.1 port=1 dbname=regression connect_timeout=1');
+                                'host=127.0.0.1 port=1 dbname=regression connect_timeout=1 password=topsecret');
 SELECT spock.sub_alter_interface('test_subscription', 'unreachable');
 
 -- The disconnect is counted when the connection attempt fails; the worker
@@ -381,11 +383,23 @@ $$;
 SELECT provider_disconnects >= 1 AS disconnects_counted,
        apply_errors, worker_failures >= 1 AS worker_failed,
        last_error_sqlstate,
-       last_error_message LIKE 'could not connect to the postgresql server%' AS has_message
+       last_error_message LIKE 'could not connect to the postgresql server%' AS has_message,
+       last_error_message LIKE '%password=X%' AS password_masked,
+       last_error_message NOT LIKE '%topsecret%' AS password_hidden
   FROM spock.subscription_stats;
 
+SELECT provider_dsn LIKE '%password=********%' AS dsn_masked,
+       provider_dsn NOT LIKE '%topsecret%' AS dsn_hidden
+  FROM spock.subscription_status;
+
+SELECT dsn LIKE '%password=********%' AS dsn_masked,
+       dsn NOT LIKE '%topsecret%' AS dsn_hidden
+  FROM spock.peer_status
+ WHERE node_name = 'test_provider';
+
 SELECT DISTINCT event_type, severity, sqlstate,
-       detail LIKE '%could not connect%' AS names_cause
+       detail LIKE '%could not connect%' AS names_cause,
+       detail NOT LIKE '%topsecret%' AS password_hidden
   FROM spock.events
  WHERE event_type IN ('provider_disconnected', 'worker_failed', 'worker_error')
  ORDER BY event_type;
