@@ -46,6 +46,7 @@ The following user functions are available via the Spock extension:
 | [spock.replicate_ddl](functions/spock_replicate_ddl.md) | Enable DDL replication. |
 | spock_version | Returns the Spock version in a major/minor version form: `4.0.10`. Defined in the public schema so invoked without the `spock.` prefix. |
 | spock_version_num | Returns the Spock version in a single numeric form: `40010`. Defined in the public schema so invoked without the `spock.` prefix. |
+| spock.core_patchset | Returns the generation of the Spock core patch set on the server, or 0 if the server reports none. |
 | spock.get_channel_stats | Returns tuple traffic statistics. |
 | spock.get_country | Returns the country code if explicitly set; returns `??` if not set. |
 | spock.lag_tracker | Returns a list of slots, with commit_lsn and commit_timestamp for each. |

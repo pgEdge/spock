@@ -17,9 +17,9 @@
 #include "catalog/namespace.h"
 #include "catalog/partition.h"
 #include "catalog/pg_trigger.h"
+#include "commands/defrem.h"
 
 #include "nodes/makefuncs.h"
-#include "utils/attoptcache.h"
 #include "utils/builtins.h"
 #include "utils/catcache.h"
 #include "utils/hsearch.h"
@@ -43,6 +43,7 @@ static void relcache_build_ancestors(Relation rel, List **oids,
 									 List **names);
 static void relcache_free_ancestor_names(List *names);
 static int	tupdesc_get_att_by_name(TupleDesc desc, const char *attname);
+static char *get_delta_apply_function_name(Oid relid, AttrNumber attnum);
 
 /*
  * relcache_free_entry
@@ -222,7 +223,7 @@ spock_relation_open(uint32 remoteid, LOCKMODE lockmode)
 
 		for (i = 0; i < entry->natts; i++)
 		{
-			AttributeOpts *aopt;
+			char	   *fname;
 
 			entry->attmap[i] = tupdesc_get_att_by_name(desc, entry->attnames[i]);
 
@@ -247,29 +248,36 @@ spock_relation_open(uint32 remoteid, LOCKMODE lockmode)
 			}
 
 			/*
-			 * If we find attribute options for this column and the
-			 * delta_apply_function is set, lookup the oid for it.
+			 * If the delta_apply_function attribute option is set for this
+			 * column, lookup the oid for it.  Delta apply needs the core
+			 * patches; if the option is set on a server without them, fail
+			 * rather than silently apply plain overwrites to the column.
 			 */
-			aopt = get_attribute_options(entry->rel->rd_id,
-										 entry->attmap[i] + 1);
-			if (aopt != NULL && aopt->delta_apply_function != 0)
+			fname = get_delta_apply_function_name(entry->rel->rd_id,
+												  entry->attmap[i] + 1);
+			if (fname != NULL)
 			{
-				char	   *fname;
 				Form_pg_attribute att;
 				Oid			dfunc;
 
+				if (spock_subxact_setts == NULL)
+					ereport(ERROR,
+							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+							 errmsg("SPOCK: column %s.%s.%s is configured for "
+									"delta_apply_function %s, but delta apply "
+									"requires the Spock core patches",
+									entry->nspname, entry->relname,
+									entry->attnames[i], fname)));
+
 				att = TupleDescAttr(desc, entry->attmap[i]);
-				fname = pstrdup(GET_STRING_RELOPTION(aopt,
-													 delta_apply_function));
 				dfunc = spock_lookup_delta_function(fname, att->atttypid);
-				pfree(fname);
 
 				if (dfunc == InvalidOid)
 					elog(ERROR, "SPOCK: column %s.%s.%s is configured for "
 						 "delta_apply_function %s - function not found",
 						 entry->nspname, entry->relname,
-						 entry->attnames[i],
-						 GET_STRING_RELOPTION(aopt, delta_apply_function));
+						 entry->attnames[i], fname);
+				pfree(fname);
 
 
 				entry->has_delta_columns = true;
@@ -593,6 +601,35 @@ tupdesc_get_att_by_name(TupleDesc desc, const char *attname)
 	}
 
 	return -1;
+}
+
+/*
+ * Return the column's delta_apply_function attribute option, or NULL if it
+ * is not set.
+ *
+ * This reads the raw pg_attribute.attoptions text instead of core's parsed
+ * AttributeOpts.  The delta_apply_function field only exists in the Spock
+ * core patches, so using the struct would not compile against stock headers,
+ * and on a stock server it would read past the end of core's smaller struct.
+ */
+static char *
+get_delta_apply_function_name(Oid relid, AttrNumber attnum)
+{
+	Datum		attoptions = get_attoptions(relid, attnum);
+	ListCell   *lc;
+
+	if (attoptions == (Datum) 0)
+		return NULL;
+
+	foreach(lc, untransformRelOptions(attoptions))
+	{
+		DefElem    *def = lfirst_node(DefElem, lc);
+
+		if (strcmp(def->defname, "delta_apply_function") == 0)
+			return pstrdup(defGetString(def));
+	}
+
+	return NULL;
 }
 
 

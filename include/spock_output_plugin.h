@@ -87,6 +87,8 @@ typedef struct SpockOutputData
 	int			startup_params_format;
 	const char *spock_version;
 	int			spock_version_num;
+	bool		client_core_patches_set;
+	bool		client_core_patches;
 
 	/* Protocol version negotiation */
 	uint32		negotiated_proto_version;

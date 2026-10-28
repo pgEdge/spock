@@ -83,6 +83,9 @@ will be removed at general availability.
 * New `spock.reserved_object_remove(p_name name, p_kind text)`.
 * New `spock.slot_enable_failover() RETURNS integer`, called by the 5.x
   upgrade.
+* New `spock.core_patchset() RETURNS integer`, the generation of the Spock
+  core patch set found on the server, or 0 if the server does not report
+  one.
 * Removed `spock.wait_for_apply_worker(p_subbid bigint, timeout int)`.
 * `spock.repset_add_all_tables()` now skips a table it cannot add, with a
   warning, instead of failing the whole call.
@@ -103,6 +106,9 @@ will be removed at general availability.
   with `resource manager with ID 144 not registered`.
 * Bug fixes from 5.0.11 and 5.0.12.
 * Builds against PostgreSQL 19 beta 3 and 4.
+* Spock builds and runs on PostgreSQL without the Spock core patches, with
+  delta apply disabled and no logical commit clock.  A subscription between
+  a patched node and an unpatched node is refused.
 
 ## Spock 6.0.0
 
@@ -150,6 +156,13 @@ see *Upgrading* below before running `ALTER EXTENSION spock UPDATE`.
   Spock builds against PostgreSQL 19 beta 3 and 4. This support is preliminary:
   PostgreSQL 19 is still in beta, and Spock on 19 is not supported for
   production use.
+* **Runs on unpatched PostgreSQL** - Spock builds and starts on PostgreSQL
+  without the Spock core patches, with delta apply disabled and no logical
+  commit clock. A WARNING at startup says so. Every node must be patched or
+  none: a subscription between a patched node and an unpatched node is
+  refused. The new
+  `spock.core_patchset()` reports the server's core patch-set generation,
+  or 0 for an unpatched server or one with patches older than this release.
 
 ### Catastrophic node failure recovery
 

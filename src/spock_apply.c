@@ -253,6 +253,9 @@ static dlist_head sync_replica_lsn = DLIST_STATIC_INIT(sync_replica_lsn);
 static XLogRecPtr skip_xact_finish_lsn = InvalidXLogRecPtr;
 #define is_skipping_changes() (unlikely(!XLogRecPtrIsInvalid(skip_xact_finish_lsn)))
 
+/* Whether the publisher has the Spock core patches, from its startup msg */
+static bool remote_core_patches = true;
+
 /* How often the apply worker runs spock_cleanup_resolutions() (milliseconds). */
 #define RESOLUTIONS_CLEANUP_INTERVAL_MS (86400L * 1000L)
 
@@ -1157,8 +1160,15 @@ handle_commit(StringInfo s)
 			Assert(XactReadOnly);
 		}
 
-		/* Have the commit code adjust our logical clock if needed */
-		remoteTransactionStopTimestamp = commit_time;
+		/*
+		 * Have the commit code adjust our logical clock if needed. Written
+		 * through the dlsym-resolved pointer so spock.so has no hard
+		 * link-time reference to the patch-provided symbol (see spock.h).
+		 * NULL on unpatched PostgreSQL, where commits just use the local
+		 * clock.
+		 */
+		if (spock_remote_ts_ptr != NULL)
+			*spock_remote_ts_ptr = commit_time;
 
 		CommitTransactionCommand();
 
@@ -1168,7 +1178,8 @@ handle_commit(StringInfo s)
 		if (WalSndCtl->sync_standbys_status & SYNC_STANDBY_DEFINED)
 			append_feedback_position(XactLastCommitEnd, end_lsn);
 
-		remoteTransactionStopTimestamp = 0;
+		if (spock_remote_ts_ptr != NULL)
+			*spock_remote_ts_ptr = 0;
 
 		MemoryContextSwitchTo(TopMemoryContext);
 
@@ -2376,6 +2387,12 @@ handle_startup(StringInfo s)
 			 MySubscription->name, SPOCK_STARTUP_MSG_FORMAT_FLAT, msgver);
 
 	/*
+	 * A publisher that does not send core_patches predates the key, and every
+	 * such Spock build required the core patches to run.
+	 */
+	remote_core_patches = true;
+
+	/*
 	 * The startup message consists of null-terminated strings as key/value
 	 * pairs. The first entry is always the format identifier.
 	 */
@@ -2404,6 +2421,29 @@ handle_startup(StringInfo s)
 
 		handle_startup_param(k, v);
 	} while (!getmsgisend(s));
+
+	/*
+	 * Refuse to replicate between a server with the Spock core patches and
+	 * one without.  Delta-apply columns diverge silently in such a pair: the
+	 * unpatched side neither sends old values nor applies deltas.
+	 *
+	 * TODO: this also blocks mixed pairs that have no delta columns, such as
+	 * a cluster moving node by node from patched to stock PostgreSQL.  Narrow
+	 * it to raise the error only for changes to tables with delta columns.
+	 */
+	if (remote_core_patches != (spock_subxact_setts != NULL))
+		ereport(ERROR,
+				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+				 errmsg("SPOCK %s: cannot replicate between servers with and "
+						"without the Spock core patches",
+						MySubscription->name),
+				 errdetail("The publisher %s the Spock core patches; this "
+						   "subscriber %s.",
+						   remote_core_patches ? "has" : "does not have",
+						   spock_subxact_setts != NULL ? "has them" :
+						   "does not"),
+				 errhint("Use PostgreSQL built with the Spock patch set on "
+						 "every node, or on none.")));
 
 	Assert(MyApplyWorker->apply_group != NULL);
 
@@ -2559,6 +2599,9 @@ handle_startup_param(const char *key, const char *value)
 		elog(LOG, "SPOCK %s: using protocol version %u from publisher",
 			 MySubscription->name, proto_version);
 	}
+
+	if (strcmp(key, "core_patches") == 0)
+		remote_core_patches = parse_bool_param(key, value);
 
 	/*
 	 * We just ignore a bunch of parameters here because we specify what we

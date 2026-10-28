@@ -325,6 +325,10 @@ RETURNS boolean
 AS 'MODULE_PATHNAME', 'spock_alter_subscription_options'
 LANGUAGE C STRICT VOLATILE;
 
+CREATE FUNCTION spock.core_patchset() RETURNS integer
+AS 'MODULE_PATHNAME', 'spock_core_patchset'
+LANGUAGE c;
+
 -- ----
 -- Enable the "failover" flag on spock's existing logical replication slots.
 --
