@@ -89,6 +89,33 @@ Current catalog line: Priority: P2 · Topology: v1 · Faults: graceful stop (tes
 
 - Evaluation note (2026-10-13): runs as a test command inside the node container (`pg_ctl stop -m fast -t <bound>`); "no processes from the old postmaster remain" needs `ps` in the node image. The node wrapper restarts postgres afterwards.
 
+## Implementation (2026-10-28)
+
+- Measured on the stops of `parallel_driver_graceful_restart.sh` (node
+  containers). Before the stop it records `wal_sender_timeout` and every
+  process in the process group of the postmaster or of one of its
+  children, whatever its name (children call `setsid()`, so a `pg_dump`
+  a sync worker forks stays in that worker's group), as `pid:pgid`. It
+  signals with `pg_ctl stop -m fast -W` and takes the stop time from the
+  entrypoint's `exits.log` line for that boot, waiting up to 420 s (past
+  the 5min variant's 360 s bound). Then it counts recorded processes still
+  alive in the same group. The postmaster reaps its own children before
+  exiting, so in this workload, which starts no table syncs or add_node,
+  that count is 0 by construction; it guards the forked-child case.
+- `eventually_mesh_barriers.py` checks every signalled stop, including on
+  nodes that crashed later: `Always` within `wal_sender_timeout + 60 s`,
+  `Always` no old process left, reach claim `Sometimes` slower than 5 s.
+  Stops during a node pause (the driver saw a clock gap over 5 s) are not
+  timed.
+- Run cc5efb7fc91df5442f7ccf293e30703b-64-9 already showed one slow path:
+  an apply worker in a blocking libpq call during a partition ignored
+  SIGTERM past the supervisor's 5 s drain.
+- Gap: a stop still hanging when the eventually command starts writes no
+  record (the driver is killed and the node cannot be read). It is caught
+  by the sync barrier `Always` (the node never answers), not by this
+  property's.
+- Not yet: stops aimed at table syncs, `sub_drop` or add_node.
+
 ## Open questions
 
 - None remaining from discovery. (Both resolved above; the scenario list

@@ -26,6 +26,13 @@ subscription enabled, and the same ledger rows on every node.  A crash
 anywhere skips these checks, since crash redo (lead L1) can legitimately
 explain a resend there.
 
+Property fast-shutdown-completes-within-bound.
+
+Every stop the graceful-restart driver signalled must end, measured by the
+entrypoint's exits.log line, within the node's wal_sender_timeout plus 60
+seconds, and no process of the old postmaster may still be alive then.
+Stops during a node pause are not timed.
+
 Property sub-disable-enable-cycle-loses-and-duplicates-nothing.
 
 parallel_driver_sub_cycle.py disables and re-enables subscriptions, or
@@ -146,9 +153,39 @@ def read_after_state():
     return {"disabled": disabled, "insert_exists_rows": twice}
 
 
+def check_fast_shutdown(node, r):
+    """Property fast-shutdown-completes-within-bound, for one stop the
+    graceful-restart driver signalled and saw finish or time out.  A stop
+    still hanging when this command starts leaves no record; that node then
+    never answers and fails the sync barrier instead."""
+    wst = r.get("wst_s", "")
+    if not wst.isdigit():
+        log(f"stop on {node} not timed: wal_sender_timeout unknown {r}")
+        return
+    bound = int(wst) + 60
+    exited = r["stop_rc"] != "timeout"
+    in_bound = exited and float(r["stop_s"]) <= bound
+    # A node pause stretched the driver's clock; not Spock's time.
+    if r.get("paused") == "1" and not in_bound:
+        log(f"stop on {node} not timed: node paused {r}")
+        return
+    details = {"node": node, "bound_s": bound, **r}
+    always(in_bound,
+           "a fast shutdown finishes within wal_sender_timeout plus 60 seconds",
+           details)
+    if exited and r.get("old_left", "").isdigit():
+        always(r["old_left"] == "0",
+               "no process of the old postmaster outlives a fast shutdown",
+               details)
+    sometimes(exited and float(r["stop_s"]) > 5,
+              "a fast shutdown took more than 5 seconds", details)
+
+
 def check_restart_records(history):
     for node, h in history.items():
         for r in h["graceful"]:
+            if "stop_s" in r:
+                check_fast_shutdown(node, r)
             if r.get("stop_rc") != "0":
                 continue
             # The exactly-once checks skip crashes; so does the timing.

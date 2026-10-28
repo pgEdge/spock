@@ -1436,6 +1436,7 @@ None
 Priority: P2 · Topology: v1 · Faults: graceful stop (test command), pause, admin churn
 Confidence: medium · Surfaced by: F8 Lifecycle
 Evidence: properties/fast-shutdown-completes-within-bound.md
+Implemented (2026-10-28) on the graceful-restart driver's stops: the driver records the node's `wal_sender_timeout`, every process in the process group of the postmaster or one of its children before the stop (catches a forked `pg_dump`; 0 by construction while the workload starts no syncs), the time until the entrypoint's `exits.log` line for that boot (waiting up to 420 s, past the 5min variant's bound) and how many recorded processes are still alive after it. `eventually_mesh_barriers.py`: `Always("a fast shutdown finishes within wal_sender_timeout plus 60 seconds")`, `Always("no process of the old postmaster outlives a fast shutdown")`, reach claim `Sometimes("a fast shutdown took more than 5 seconds")`. Stops during a node pause are not timed. A stop still hanging when the eventually command starts leaves no record and is caught by the sync-barrier `Always` instead. Not yet: stops aimed at table syncs, `sub_drop` or add_node (no drivers for those).
 Evaluation note (2026-10-13): runs as a test command inside the node container (`pg_ctl stop -m fast -t <bound>`); "no processes from the old postmaster remain" needs `ps` in the node image. The node wrapper restarts postgres afterwards.
 
 ### sync-worker-sigterm-never-skips-catchup — A SIGTERMed table-sync worker never marks its table done without catch-up

@@ -123,6 +123,34 @@ poll() {
 	prev=${t}
 }
 
+# For fast-shutdown-completes-within-bound: the bound is wal_sender_timeout
+# plus 60 s, and no process of the old postmaster may outlive it.  The
+# postmaster reaps its own children before it exits, so what can outlive
+# it is something a child forked (pg_dump from a sync worker), which
+# stays in that child's process group (children call setsid()).  So
+# record every process in the postmaster's or a child's group, whatever
+# its name, as pid:pgid.
+wst_s=$(q "SELECT setting::int / 1000 FROM pg_settings
+           WHERE name = 'wal_sender_timeout'")
+pm=$(head -n 1 "${PGDATA}/postmaster.pid" 2> /dev/null)
+groups=" ${pm} $(pgrep -P "${pm:-0}" | tr '\n' ' ') "
+old_procs=$(ps -eo pid=,pgid= | while read -r pid pgid; do
+	case "${groups}" in *" ${pgid} "*) echo "${pid}:${pgid}" ;; esac
+done | tr '\n' ' ')
+
+# Recorded processes still alive in the same group; a reused PID would
+# be in another group.
+old_left() {
+	local n=0 entry
+	for entry in ${old_procs}; do
+		if [ "$(ps -o pgid= -p "${entry%%:*}" 2> /dev/null | tr -d ' ')" \
+			= "${entry##*:}" ]; then
+			n=$((n + 1))
+		fi
+	done
+	echo "${n}"
+}
+
 # pg_ctl -w cannot be trusted to see the stop: with a short delay the new
 # postmaster writes its pid file before pg_ctl looks again, and pg_ctl
 # waits on it.  So signal without waiting, and take the outcome from the
@@ -138,9 +166,10 @@ fi
 
 # A stop waits for walsenders to get their flush confirmed, bounded by
 # wal_sender_timeout (60 s, 5min in one variant), plus the supervisor's
-# 5 s drain.
+# 5 s drain.  Wait past the 5min variant's bound (360 s) so a slow stop is
+# measured rather than cut off.
 stop_rc=timeout
-while awk -v a="$(now)" -v s="${start}" 'BEGIN { exit !(a - s < 330) }'; do
+while awk -v a="$(now)" -v s="${start}" 'BEGIN { exit !(a - s < 420) }'; do
 	rc=$(sed -n "s/.* boot=${boot} exit=\([0-9]*\)\$/\1/p" \
 		"${STATE}/exits.log" 2> /dev/null | tail -n 1)
 	if [ -n "${rc}" ]; then
@@ -150,8 +179,11 @@ while awk -v a="$(now)" -v s="${start}" 'BEGIN { exit !(a - s < 330) }'; do
 	poll
 done
 stop_s=$(elapsed "${start}")
+left=?
+[ "${stop_rc}" != timeout ] && left=$(old_left)
+stop_fields="stop_s=${stop_s} wst_s=${wst_s:-?} old_left=${left}"
 if [ "${stop_rc}" != 0 ]; then
-	echo "boot=${boot} stop_rc=${stop_rc} stop_s=${stop_s} paused=${paused}" \
+	echo "boot=${boot} stop_rc=${stop_rc} ${stop_fields} paused=${paused}" \
 		>> "${STATE}/graceful.log"
 	exit 0
 fi
@@ -163,7 +195,7 @@ now > "${STATE}/graceful_last"
 deadline=$(awk -v a="$(now)" -v d="${delay}" 'BEGIN { print a + d + 120 }')
 while [ "$(cat "${STATE}/boot_count")" = "${boot}" ]; do
 	if awk -v a="$(now)" -v d="${deadline}" 'BEGIN { exit !(a > d) }'; then
-		echo "boot=${boot} stop_rc=0 stop_s=${stop_s} delay=${delay} ready_s=not_started" \
+		echo "boot=${boot} stop_rc=0 ${stop_fields} delay=${delay} ready_s=not_started" \
 			"paused=${paused}" >> "${STATE}/graceful.log"
 		exit 0
 	fi
@@ -182,7 +214,7 @@ while awk -v a="$(now)" -v r="${restart}" 'BEGIN { exit !(a - r < 300) }'; do
 	fi
 	poll
 done
-echo "boot=${boot} stop_rc=0 stop_s=${stop_s} delay=${delay} ready_s=${ready_s}" \
+echo "boot=${boot} stop_rc=0 ${stop_fields} delay=${delay} ready_s=${ready_s}" \
 	"paused=${paused} aim=${aim} writer_xids=${writer_xids:-none}" \
 	"writers_cut=${writers_cut:-?} apply_xids=${apply_xids:-none}" \
 	"apply_cut=${apply_cut:-?}" >> "${STATE}/graceful.log"
