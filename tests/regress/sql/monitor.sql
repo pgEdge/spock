@@ -529,12 +529,17 @@ SET spock.enable_ddl_replication = off;
 ALTER TABLE monitor_dml ADD CONSTRAINT monitor_dml_no_copy CHECK (id < 0) NOT VALID;
 RESET spock.enable_ddl_replication;
 SELECT spock.sub_resync_table('test_subscription', 'monitor_dml', true);
+-- The event comes from the sync worker that died; the table is marked
+-- failed by the next one, so wait for both
 DO $$
 BEGIN
     FOR i IN 1..600 LOOP
         IF EXISTS (SELECT 1 FROM spock.events
                     WHERE event_type = 'sync_failed'
-                      AND detail LIKE '%violates check constraint%') THEN
+                      AND detail LIKE '%violates check constraint%')
+           AND EXISTS (SELECT 1 FROM spock.table_sync_status
+                        WHERE table_name = 'monitor_dml'
+                          AND sync_status = 'failed') THEN
             RETURN;
         END IF;
         PERFORM pg_sleep(0.1);
@@ -610,11 +615,18 @@ SELECT apply_errors, constraint_violations, xacts_discarded, xacts_skipped
   FROM spock.subscription_stats;
 
 SELECT skiplsn_and_enable_sub('test_subscription', :remote_xid);
+-- Clearing the skip LSN alters the subscription, which restarts the apply
+-- worker after the skip; wait until the restarted worker has connected
 DO $$
 BEGIN
     FOR i IN 1..600 LOOP
         IF EXISTS (SELECT 1 FROM spock.subscription_stats
                     WHERE xacts_skipped >= 1)
+           AND EXISTS (SELECT 1 FROM spock.events
+                        WHERE event_type = 'provider_connected'
+                          AND event_id > (SELECT max(event_id)
+                                            FROM spock.events
+                                           WHERE event_type = 'transaction_skipped'))
            AND EXISTS (SELECT 1 FROM spock.subscription_status
                         WHERE status = 'replicating') THEN
             RETURN;
