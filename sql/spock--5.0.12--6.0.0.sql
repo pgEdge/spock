@@ -652,12 +652,10 @@ CREATE VIEW spock.settings AS
 -- come before any replication question: disk, load, connections, long
 -- transactions, wraparound, archiving and WAL volume.
 -- pg_ls_waldir() is restricted to pg_monitor.  The views only need the
--- total, so read it as the extension owner and let a plain monitoring role
--- see it without the file list.
+-- total, so compute it in C and let a plain monitoring role see it without
+-- the file list.
 CREATE FUNCTION spock.wal_size_bytes() RETURNS bigint
-LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog AS $$
-    SELECT sum(size)::bigint FROM pg_catalog.pg_ls_waldir()
-$$;
+LANGUAGE c STRICT STABLE AS 'MODULE_PATHNAME', 'spock_wal_size_bytes';
 
 CREATE VIEW spock.system_status AS
     SELECT si.hostname,

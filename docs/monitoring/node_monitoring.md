@@ -87,7 +87,7 @@ been created.
 | `pending_exceptions` | Transactions currently being retried under `spock.exception_behaviour`. |
 | `replicated_tables`, `unreplicated_tables` | Tables of this node in some replication set, and tables in none. |
 | `current_wal_lsn` | Current WAL position, replay position on a standby. |
-| `wal_size_bytes` | Size of `pg_wal`, read through `spock.wal_size_bytes()`, which runs as the extension owner so that a role without `pg_monitor` can read it. |
+| `wal_size_bytes` | Size of `pg_wal`, read through `spock.wal_size_bytes()`, which sums the files itself so that a role without `pg_monitor` can read it. |
 | `data_disk_free_bytes`, `wal_disk_free_bytes` | Free space on the volumes holding the data directory and `pg_wal`. |
 | `max_retained_wal_bytes` | WAL held back by the slowest spock slot. |
 | `max_replication_lag_bytes`, `max_replication_lag` | Largest lag over all subscriptions. |
