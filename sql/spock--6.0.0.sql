@@ -1167,6 +1167,8 @@ CREATE FUNCTION spock.get_apply_stats(
     OUT subscription_id             oid,
     OUT worker_starts               bigint,
     OUT worker_failures             bigint,
+    OUT sync_worker_starts          bigint,
+    OUT sync_worker_failures        bigint,
     OUT provider_connects           bigint,
     OUT provider_disconnects        bigint,
     OUT idle_timeouts               bigint,
@@ -1261,7 +1263,7 @@ LANGUAGE c AS 'MODULE_PATHNAME', 'spock_get_system_info';
 CREATE FUNCTION spock.get_pending_exceptions(
     OUT subscription_name name,
     OUT commit_lsn        pg_lsn,
-    OUT failed_action     integer,
+    OUT failed_action_number integer,   -- position of the failing change in the transaction, from 1
     OUT error_message     text)
 RETURNS SETOF record STABLE
 LANGUAGE c AS 'MODULE_PATHNAME', 'spock_get_pending_exceptions';
@@ -1302,6 +1304,14 @@ CREATE VIEW spock.settings AS
 -- Health of the host and of the PostgreSQL instance, for the checks that
 -- come before any replication question: disk, load, connections, long
 -- transactions, wraparound, archiving and WAL volume.
+-- pg_ls_waldir() is restricted to pg_monitor.  The views only need the
+-- total, so read it as the extension owner and let a plain monitoring role
+-- see it without the file list.
+CREATE FUNCTION spock.wal_size_bytes() RETURNS bigint
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog AS $$
+    SELECT sum(size)::bigint FROM pg_catalog.pg_ls_waldir()
+$$;
+
 CREATE VIEW spock.system_status AS
     SELECT si.hostname,
            si.os_name,
@@ -1317,7 +1327,7 @@ CREATE VIEW spock.system_status AS
            si.data_disk_free_bytes,
            si.wal_disk_total_bytes,
            si.wal_disk_free_bytes,
-           (SELECT sum(size) FROM pg_catalog.pg_ls_waldir())::bigint AS wal_size_bytes,
+           spock.wal_size_bytes() AS wal_size_bytes,
            pg_catalog.pg_database_size(pg_catalog.current_database()) AS database_size_bytes,
            si.postgres_version,
            si.postmaster_pid,
@@ -1433,6 +1443,8 @@ CREATE VIEW spock.subscription_stats AS
            s.sub_name AS subscription_name,
            COALESCE(a.worker_starts, 0) AS worker_starts,
            COALESCE(a.worker_failures, 0) AS worker_failures,
+           COALESCE(a.sync_worker_starts, 0) AS sync_worker_starts,
+           COALESCE(a.sync_worker_failures, 0) AS sync_worker_failures,
            COALESCE(a.provider_connects, 0) AS provider_connects,
            COALESCE(a.provider_disconnects, 0) AS provider_disconnects,
            COALESCE(a.idle_timeouts, 0) AS idle_timeouts,
@@ -1720,7 +1732,7 @@ CREATE VIEW spock.node_status AS
            tb.replicated_tables,
            tb.unreplicated_tables,
            cur.lsn AS current_wal_lsn,
-           (SELECT sum(size) FROM pg_catalog.pg_ls_waldir()) AS wal_size_bytes,
+           spock.wal_size_bytes() AS wal_size_bytes,
            si.data_disk_free_bytes,
            si.wal_disk_free_bytes,
            sl.max_retained_wal_bytes,
