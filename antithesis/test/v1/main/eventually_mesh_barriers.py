@@ -33,6 +33,13 @@ entrypoint's exits.log line, within the node's wal_sender_timeout plus 60
 seconds, and no process of the old postmaster may still be alive then.
 Stops during a node pause are not timed.
 
+Property readonly-toggle-resumes-without-loss.
+
+parallel_driver_readonly_toggle.py switches nodes to readonly all or local
+and back.  This command first sets every mesh node back to off.  In a
+timeline with at least one toggle and no crash, the same four checks run
+under their own names, plus the reset itself.
+
 Property sub-disable-enable-cycle-loses-and-duplicates-nothing.
 
 parallel_driver_sub_cycle.py disables and re-enables subscriptions, or
@@ -52,7 +59,10 @@ from helper_barriers import end_writers, run_barriers
 from helper_restarts import node_history
 from helper_rows import diff_rows, row_hashes
 from helper_spock import MESH, connect, log, retry_until
-from helper_subcycle import DRIVER_APP, cycles_issued, reenable_recorded
+from helper_readonly import DRIVER_APP as READONLY_APP
+from helper_readonly import reset_readonly, toggles_made
+from helper_subcycle import DRIVER_APP as SUB_CYCLE_APP
+from helper_subcycle import cycles_issued, reenable_recorded
 
 # How long to read the data once the barriers have passed.
 READ_SECS = 120
@@ -262,14 +272,43 @@ def check_sub_cycles(after, ledger, not_reenabled):
            {**details, **ledger})
 
 
+def check_readonly_toggles(after, ledger, not_reset):
+    toggles = toggles_made()
+    if toggles == 0:
+        return
+    details = {"toggles": toggles}
+    reachable("exactly-once checked after read-only toggles with no crash",
+              details)
+    always(not not_reset,
+           "every node returns to readonly=off after read-only toggles",
+           {**details, "not_reset": not_reset})
+    always(not any(after["disabled"].values()),
+           "every subscription is enabled after read-only toggles",
+           {**details, "disabled": after["disabled"]})
+    always(not any(after["insert_exists_rows"].values()),
+           "no ledger row applied twice across read-only toggles",
+           {**details, "insert_exists_rows": after["insert_exists_rows"]})
+    if ledger is None:
+        log("ledger rows after read-only toggles not checked: no comparison")
+        return
+    always(ledger["differing_rows"] == 0,
+           "every mesh node holds the same ledger rows after read-only toggles",
+           {**details, **ledger})
+    always(not any(ledger["ledger_exception_log_rows"].values()),
+           "no ledger transaction discarded across read-only toggles",
+           {**details, **ledger})
+
+
 def main():
-    # Subscriptions a killed sub-cycle driver left disabled are re-enabled
-    # first, after ending its sessions so a sub_disable still running
-    # cannot commit afterwards.
+    # Undo what killed lifecycle drivers left behind, after ending their
+    # sessions so a sub_disable or ALTER SYSTEM still running cannot land
+    # afterwards.  readonly first, so apply resumes before the barriers.
     # A node may still be restarting when faults stop, so allow it time to
     # come back before calling its sessions unknown.
     deadline = time.monotonic() + READ_SECS
-    left = {node: end_writers(node, deadline, [DRIVER_APP]) for node in MESH}
+    left = {node: end_writers(node, deadline, [SUB_CYCLE_APP, READONLY_APP])
+            for node in MESH}
+    not_reset = reset_readonly(time.monotonic() + READ_SECS)
     not_reenabled = reenable_recorded(time.monotonic() + READ_SECS)
 
     ledger = None
@@ -289,11 +328,13 @@ def main():
     if after is None:
         return
     if any(n != 0 for n in left.values()):
-        # A sub_disable may still land, so subscription state is not final.
+        # A sub_disable or ALTER SYSTEM may still land, so subscription and
+        # readonly state are not final.
         log(f"exactly-once checks skipped: driver sessions left {left}")
         return
     check_graceful_restarts(history, after, ledger)
     check_sub_cycles(after, ledger, not_reenabled)
+    check_readonly_toggles(after, ledger, not_reset)
 
 
 if __name__ == "__main__":

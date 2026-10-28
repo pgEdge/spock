@@ -26,7 +26,8 @@ def main():
     # (the other channels stay idle, so only keepalives cross them), others
     # on all three.  15% of transactions are large: enough to have one in
     # flight when a partition starts, without filling the disk.  Subscription
-    # disable/enable cycles run in none, some or every driver call.
+    # disable/enable cycles and read-only toggles each run in none, some or
+    # every call of their driver.
     writer_nodes = [n for n in MESH if random_choice([True, True, False])]
     if not writer_nodes:
         writer_nodes = [random_choice(MESH)]
@@ -34,6 +35,7 @@ def main():
         "writer_nodes": writer_nodes,
         "big_txn_weight": 0.15,
         "sub_cycle_percent": random_choice([0, 30, 100]),
+        "readonly_percent": random_choice([0, 30, 100]),
     }
     save_params(params)
     log(f"timeline params: {params}")

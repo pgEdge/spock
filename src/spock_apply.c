@@ -3899,6 +3899,8 @@ stream_replay:
 													  (long) spock_apply_idle_timeout * 1000L);
 				if (GetCurrentTimestamp() > timeout)
 				{
+					SPOCK_ANT_SOMETIMES(SPOCK_ANT_IDLE_TIMEOUT_WHILE_READONLY,
+										spock_readonly == READONLY_ALL, NULL);
 					MySpockWorker->worker_status = SPOCK_WORKER_STATUS_STOPPED;
 					ereport(ERROR,
 							(errcode(ERRCODE_CONNECTION_FAILURE),
@@ -3973,6 +3975,8 @@ stream_replay:
 
 						continue;
 					}
+					SPOCK_ANT_SOMETIMES(SPOCK_ANT_READONLY_STOP_IN_REMOTE_XACT,
+										in_remote_transaction, NULL);
 					break;
 				}
 

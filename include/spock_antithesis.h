@@ -44,6 +44,12 @@
 						"src/spock.c", "spock_supervisor_on_exit") \
 	SPOCK_ANT_ASSERTION(SPOCK_ANT_SIGTERM_IN_REMOTE_XACT, SOMETIMES, \
 						"apply worker SIGTERM landed inside a remote transaction", \
+						"src/spock_apply.c", "apply_work") \
+	SPOCK_ANT_ASSERTION(SPOCK_ANT_READONLY_STOP_IN_REMOTE_XACT, SOMETIMES, \
+						"apply loop stopped for readonly=all inside a remote transaction", \
+						"src/spock_apply.c", "apply_work") \
+	SPOCK_ANT_ASSERTION(SPOCK_ANT_IDLE_TIMEOUT_WHILE_READONLY, SOMETIMES, \
+						"apply idle timeout fired while readonly=all", \
 						"src/spock_apply.c", "apply_work")
 
 #ifdef USE_ANTITHESIS

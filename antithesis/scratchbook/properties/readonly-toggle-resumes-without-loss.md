@@ -19,6 +19,36 @@ Current catalog line: Priority: P1 · Topology: v1 · Faults: readonly toggles (
 
 - Evaluation note (2026-10-13): "no unexpected exception rows" means none outside the expected-exception registry. Any non-superuser DDL during readonly=local phases is kept out of this template until `readonly-local-keeps-inbound-ddl-flowing` is fixed.
 
+## Implementation (2026-10-28)
+
+- Template `main`, on the ledger workload. `parallel_driver_readonly_toggle.py`
+  picks a mesh node (one driver per node), chooses `all` or `local`, and for
+  `all` watches up to {0, 2, 10} s for an apply worker with a `backend_xid`
+  before switching. It sets `spock.readonly` with `ALTER SYSTEM` and
+  `pg_reload_conf()`, holds {0, 1, 5, 30, 130} s (130 is past
+  `apply_idle_timeout`, so stopped workers reconnect while read-only), and
+  goes back to `off` or `local`. Per-timeline share {0, 30, 100}%.
+- For local sessions both modes only make non-superusers read-only
+  (`src/spock_readonly.c:96,123`). The ledger writer is a superuser, so it
+  keeps writing on the toggled node in either mode; under `all` only the
+  node's apply workers stop, and its ledger diverges until readonly is
+  lifted and apply catches up.
+- The eventually command ends the driver's sessions, sets every mesh node to
+  `off` (only the driver sets readonly in this harness, so no record is
+  needed), then re-enables recorded subscriptions and runs the barriers, so
+  apply has resumed everywhere before the barriers start.
+- Checks in timelines with a toggle and no crash: every node back to `off`,
+  every subscription enabled, no `insert_exists` on the ledger, no ledger
+  `exception_log` row, same ledger rows on every node.
+- SUT-side: `Sometimes(in_remote_transaction, "apply loop stopped for
+  readonly=all inside a remote transaction")` before the readonly `break`
+  in `apply_work()`, and `Sometimes(spock_readonly == READONLY_ALL, "apply
+  idle timeout fired while readonly=all")` at the idle-timeout reconnect.
+- Not yet: delta counters, the `xact_had_exception` Reachable (conflict
+  variant only), toggles during table sync or add_node. The open question
+  about sync-worker COPY under `readonly=all` does not affect this workload,
+  which runs no table syncs.
+
 ## Open questions
 
 - Is a sync worker's COPY meant to be blocked by readonly=all? `(needs human input)`
