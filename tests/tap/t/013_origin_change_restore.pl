@@ -3,8 +3,7 @@ use warnings;
 use Test::More;
 use lib '.';
 use SpockTest qw(create_cluster destroy_cluster system_or_bail command_ok
-                 get_test_config scalar_query psql_or_bail);
-use Cwd;
+                 get_test_config scalar_query psql_or_bail node_logfile);
 
 # =============================================================================
 # Test: 013_origin_change_restore.pl - Origin-change logging after pg_restore
@@ -58,9 +57,8 @@ my $db_user     = $config->{db_user};
 my $db_password = $config->{db_password};
 my $pg_bin      = $config->{pg_bin};
 
-# Compute path to node 2's PostgreSQL log
-my $parent_dir  = Cwd::abs_path(getcwd() . "/..");
-my $n2_logfile  = "$parent_dir/tap/logs/00$node_ports->[1].log";
+# Node 2's PostgreSQL log, wherever TESTLOGDIR puts it
+my $n2_logfile  = node_logfile(2);
 
 # Verify both nodes are present
 my $n1 = scalar_query(1, "SELECT EXISTS (SELECT 1 FROM spock.node WHERE node_name = 'n1')");
