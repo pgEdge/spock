@@ -279,6 +279,9 @@ SELECT count(*) FILTER (WHERE line LIKE '== % ==') > 0 AS has_sections,
        count(*) FILTER (WHERE line LIKE '(error: permission denied%') > 0
          AS has_denied_sections
   FROM spock.spock_info(0) AS line;
+-- pg_ls_waldir() is pg_monitor only; the wrapper lets this role read the
+-- total, which is all the views need
+SELECT spock.wal_size_bytes() > 0 AS wal_size_readable;
 RESET ROLE;
 REVOKE USAGE ON SCHEMA spock FROM monitor_reader;
 DROP ROLE monitor_reader;
@@ -508,6 +511,65 @@ SELECT event_type, severity, subscription_name, detail
   FROM spock.events
  WHERE event_type IN ('sync_started', 'sync_finished', 'sync_failed')
  ORDER BY event_id;
+
+-- The sync worker is counted as such: the apply worker did not restart and
+-- the provider connection it made is not an apply stream
+SELECT sync_worker_starts, sync_worker_failures,
+       worker_starts, worker_failures, provider_connects
+  FROM spock.subscription_stats;
+
+-- A copy that fails ends the sync worker with an error.  That is recorded
+-- for the table, with the reason, and counted against the sync worker, not
+-- the apply worker.  The constraint is added here only, so it is not sent to
+-- the provider, and NOT VALID, so the rows already here do not stop it from
+-- being added; the copy still has to satisfy it.
+SELECT spock.reset_subscription_stats();
+SELECT spock.reset_events();
+SET spock.enable_ddl_replication = off;
+ALTER TABLE monitor_dml ADD CONSTRAINT monitor_dml_no_copy CHECK (id < 0) NOT VALID;
+RESET spock.enable_ddl_replication;
+SELECT spock.sub_resync_table('test_subscription', 'monitor_dml', true);
+DO $$
+BEGIN
+    FOR i IN 1..600 LOOP
+        IF EXISTS (SELECT 1 FROM spock.events
+                    WHERE event_type = 'sync_failed'
+                      AND detail LIKE '%violates check constraint%') THEN
+            RETURN;
+        END IF;
+        PERFORM pg_sleep(0.1);
+    END LOOP;
+END;
+$$;
+SELECT sync_worker_failures >= 1 AS sync_worker_failed,
+       worker_failures AS apply_worker_failures,
+       sync_errors >= 1 AS sync_errors_counted,
+       last_error_sqlstate,
+       last_error_message LIKE '%violates check constraint%' AS has_message
+  FROM spock.subscription_stats;
+SELECT event_type, severity, subscription_name,
+       detail LIKE 'table public.monitor_dml: %violates check constraint%'
+         AS names_table_and_cause
+  FROM spock.events
+ WHERE event_type = 'sync_failed'
+   AND detail LIKE '%violates check constraint%'
+ LIMIT 1;
+SELECT sync_status
+  FROM spock.table_sync_status
+ WHERE table_name = 'monitor_dml';
+
+-- Without the constraint the next resynchronisation succeeds, and the
+-- table is back as it was
+SET spock.enable_ddl_replication = off;
+ALTER TABLE monitor_dml DROP CONSTRAINT monitor_dml_no_copy;
+RESET spock.enable_ddl_replication;
+SELECT spock.reset_subscription_stats();
+SELECT spock.reset_events();
+SELECT spock.sub_resync_table('test_subscription', 'monitor_dml', true);
+SELECT spock.table_wait_for_sync('test_subscription', 'monitor_dml');
+SELECT id, data FROM monitor_dml ORDER BY id;
+SELECT tables_synced, sync_worker_failures, apply_errors
+  FROM spock.subscription_stats;
 
 -- With exception_behaviour = sub_disable a failing transaction disables the
 -- subscription, which the worker records; skipping that transaction and
