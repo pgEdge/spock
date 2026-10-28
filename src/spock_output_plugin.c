@@ -481,6 +481,34 @@ pg_decode_startup(LogicalDecodingContext *ctx, OutputPluginOptions *opt,
 				 data->spock_version_num, SPOCK_VERSION_NUM);
 
 		/*
+		 * Refuse a spock subscriber whose core-patch state differs from ours;
+		 * the subscriber checks the same in handle_startup(), but an older
+		 * subscriber does not know to.  A subscriber that sends
+		 * spock_version_num but not core_patches predates the key, and every
+		 * such build required the patches.  Other clients, such as
+		 * pg_logical_slot_get_changes() calls, send neither and are not
+		 * checked.
+		 */
+		if (data->client_core_patches_set || data->spock_version_num != 0)
+		{
+			bool		client_patched = data->client_core_patches_set ?
+				data->client_core_patches : true;
+
+			if (client_patched != (spock_subxact_setts != NULL))
+				ereport(ERROR,
+						(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+						 errmsg("cannot replicate between servers with and "
+								"without the Spock core patches"),
+						 errdetail("This publisher %s the Spock core patches; "
+								   "the subscriber %s.",
+								   spock_subxact_setts != NULL ? "has" :
+								   "does not have",
+								   client_patched ? "has them" : "does not"),
+						 errhint("Use PostgreSQL built with the Spock patch "
+								 "set on every node, or on none.")));
+		}
+
+		/*
 		 * It's obviously not possible to send binary representation of data
 		 * unless we use the binary output.
 		 */

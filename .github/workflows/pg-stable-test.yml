@@ -5,6 +5,10 @@ run-name: Check spock against the PostgreSQL ref from postgres-build.conf
 # tests/postgres-build.conf (tag, tip of REL_${PGVER}_STABLE, or an explicit
 # pin) with stock configure flags, applies spock's version-specific patches
 # and builds spock per the README, and runs the regression and TAP suites.
+#
+# The "unpatched" jobs skip the patches, since Spock also builds and runs on
+# unpatched PostgreSQL.  They run the same suites, minus the TAP tests listed
+# in UNPATCHED_TAP_SKIP, which need the patches.
 
 on:
   workflow_dispatch:
@@ -23,6 +27,7 @@ jobs:
       fail-fast: false
       matrix:
         pgver: [15, 16, 17, 18, 19]
+        patches: [patched, unpatched]
 
     runs-on: ubuntu-latest
     timeout-minutes: 60
@@ -30,6 +35,9 @@ jobs:
     env:
       PG_PREFIX: ${{ github.workspace }}/pg-install
       PG_SRCDIR: ${{ github.workspace }}/postgres
+      # TAP tests in tests/tap/schedule that need the Spock core patches,
+      # skipped by the unpatched jobs.  Names as in the schedule.
+      UNPATCHED_TAP_SKIP: ""
 
     steps:
       - name: Checkout spock
@@ -61,6 +69,7 @@ jobs:
       # README step 2: apply spock patches in numerical order.  Glob
       # expansion gives us "pgN-000-...", "pgN-015-...", etc., in order.
       - name: Apply spock patches
+        if: matrix.patches == 'patched'
         run: |
           PATCH_DIR="${GITHUB_WORKSPACE}/spock/patches/${{ matrix.pgver }}"
           if [ -d "$PATCH_DIR" ] && [ -n "$(ls -A "$PATCH_DIR" 2>/dev/null)" ]; then
@@ -105,7 +114,7 @@ jobs:
         if: ${{ failure() }}
         uses: actions/upload-artifact@v4
         with:
-          name: regress-stable-tip-${{ matrix.pgver }}
+          name: regress-stable-tip-${{ matrix.pgver }}-${{ matrix.patches }}
           path: |
             spock/tests/regress/regression_output/**
             spock/tests/regress/regression.diffs
@@ -113,21 +122,36 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
+      # run_tests.sh always runs tests/tap/schedule, so the unpatched jobs
+      # drop the skipped tests from it first.  The checkout is thrown away
+      # after the job, so editing it in place is fine.  A skip entry that
+      # matches no scheduled test fails the job, so stale entries get noticed.
       - name: Run TAP suite
         run: |
           export PATH="$PG_PREFIX/bin:$PATH"
           export PG_CONFIG="$PG_PREFIX/bin/pg_config"
           cd "${GITHUB_WORKSPACE}/spock/tests/tap"
-          # Built with this tree's patches, so test 301 must see the core
-          # patch-set marker rather than accept an older patch set.
-          export SPOCK_EXPECT_CORE_PATCHSET=1
+          if [ "${{ matrix.patches }}" = "patched" ]; then
+            # Built with this tree's patches, so test 301 must see the
+            # core patch-set marker rather than accept an older patch set.
+            export SPOCK_EXPECT_CORE_PATCHSET=1
+          else
+            for t in $UNPATCHED_TAP_SKIP; do
+              if ! grep -Eq "^[[:space:]]*test:[[:space:]]*${t}[[:space:]]*$" schedule; then
+                echo "::error::UNPATCHED_TAP_SKIP entry '$t' is not in tests/tap/schedule"
+                exit 1
+              fi
+              sed -i -E "/^[[:space:]]*test:[[:space:]]*${t}[[:space:]]*$/d" schedule
+              echo "Skipping $t on unpatched PostgreSQL"
+            done
+          fi
           ./run_tests.sh
 
       - name: Upload TAP artifacts on failure
         if: ${{ failure() }}
         uses: actions/upload-artifact@v4
         with:
-          name: pg-stable-test-${{ matrix.pgver }}
+          name: pg-stable-test-${{ matrix.pgver }}-${{ matrix.patches }}
           path: |
             spock/tests/tap/logs/**
             spock/tests/logs/**

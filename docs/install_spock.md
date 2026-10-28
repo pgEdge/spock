@@ -39,8 +39,9 @@ A pgEdge deployment provides quick and easy access to the following features:
 
 Spock is available as an [open-source project](https://github.com/pgEdge/spock) 
 that you can build from source code distributed at the GitHub project page.
-The Spock extension must be built on a version-specific build of Postgres
-that is patched to provide hooks so `spock` can access the Postgres engine.
+For full functionality, build the Spock extension on a version-specific
+build of Postgres that is patched to provide hooks so `spock` can access
+the Postgres engine.
 
 To patch the Postgres source code, download the source code from the
 [Postgres project](https://www.postgresql.org/ftp/source/), and move into
@@ -56,6 +57,15 @@ that match your build version. To apply a patch, use the command:
 ```bash
 patch -p1 < path_to_patch/patch_name
 ```
+
+Spock also builds and runs on PostgreSQL without these patches, with
+reduced functionality. On an unpatched server, Spock disables delta-apply
+columns and has no logical commit clock; last-update-wins conflict
+resolution then depends on synchronized server clocks. Spock logs a
+WARNING at startup when the patches are missing. Spock refuses to start if
+the server has only one of the logical commit clock and per-subtransaction
+commit timestamp patches. Use patched PostgreSQL on every node or on none;
+Spock refuses to replicate between a patched node and an unpatched node.
 
 After applying version-specific patches, you can configure, `make`, and
 `make install` the Postgres server as described in the 

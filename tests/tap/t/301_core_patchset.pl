@@ -14,7 +14,8 @@ use SpockTest qw(create_cluster destroy_cluster scalar_query get_test_config);
 # dynamic symbol table either exports SpockCorePatchsetVersion (patched) or
 # it does not (unpatched, or a patch set that predates the marker).
 #   - patched:   spock reports SPOCK_CORE_PATCHSET_TARGET from include/spock.h
-#   - unpatched: spock still loads and reports 0
+#   - unpatched: spock still starts, reports 0, and warns that it is running
+#                without the core patches
 # =============================================================================
 
 # Read the generation this build targets, so the test follows a bump.
@@ -72,7 +73,58 @@ else
 {
     like($log, qr/SpockCorePatchsetVersion not found/,
          'startup log reports the baseline (generation 0)');
+    like($log, qr/spock is running without the Spock core patches/,
+         'startup log warns that spock runs without the core patches');
 }
+
+# The publisher refuses a subscriber whose core-patch state differs from its
+# own.  Fake subscribers by passing startup options to spock_output through
+# the SQL decoding interface: one that states the opposite state, and one
+# that sends spock_version_num without core_patches, like a subscriber that
+# predates the key (and so was patched).
+my $cfg = get_test_config();
+my $port = $cfg->{node_ports}->[0];
+my $db = $cfg->{db_name};
+my $pg_bin = $cfg->{pg_bin};
+scalar_query(1, "SELECT pg_create_logical_replication_slot('core_patch_check', 'spock_output')");
+
+sub peek_with
+{
+    my ($extra) = @_;
+    my $q = "SELECT count(*) FROM pg_logical_slot_peek_changes('core_patch_check', " .
+            "NULL, NULL, 'min_proto_version', '4', 'max_proto_version', '5', " .
+            "'startup_params_format', '1', 'proto_format', 'json', " .
+            "'spock.replication_set_names', 'default'$extra)";
+    my $out = `"$pg_bin/psql" -X -p $port -d $db -c "$q" 2>&1`;
+    return ($? == 0, $out);
+}
+
+my $own = $patched ? 'true' : 'false';
+my $other = $patched ? 'false' : 'true';
+my $refusal = qr/cannot replicate between servers with and without the Spock core patches/;
+
+my ($ok, $out) = peek_with(", 'core_patches', '$own'");
+ok($ok, "publisher accepts a subscriber with the same core-patch state") or diag($out);
+
+($ok, $out) = peek_with(", 'core_patches', '$other'");
+ok(!$ok, 'publisher refuses a subscriber with a different core-patch state');
+like($out, $refusal, 'refusal names the core-patch mismatch');
+
+($ok, $out) = peek_with(", 'spock_version_num', '50012'");
+if ($patched)
+{
+    ok($ok, 'patched publisher accepts a subscriber that predates the key') or diag($out);
+}
+else
+{
+    ok(!$ok, 'unpatched publisher refuses a subscriber that predates the key');
+    like($out, $refusal, 'refusal names the core-patch mismatch');
+}
+
+($ok, $out) = peek_with('');
+ok($ok, 'publisher does not check a client that is not a spock subscriber') or diag($out);
+
+scalar_query(1, "SELECT pg_drop_replication_slot('core_patch_check')");
 
 destroy_cluster();
 

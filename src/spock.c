@@ -84,6 +84,10 @@ PG_MODULE_MAGIC;
 
 int			spock_detected_patchset = 0;	/* detected; 0 = unpatched/absent */
 
+/* Unpatched Postgres groundwork: resolved via dlsym() in _PG_init(). See spock.h. */
+TimestampTz *spock_remote_ts_ptr = NULL;
+SubTransactionSetCommitTs_fn spock_subxact_setts = NULL;
+
 static const struct config_enum_entry SpockConflictResolvers[] = {
 	/*
 	 * Disabled until we can clearly define their desired behavior. Jan Wieck
@@ -765,6 +769,8 @@ spock_start_replication(PGconn *streamConn, const char *slot_name,
 	appendStringInfo(&command, ", pg_version '%u'", PG_VERSION_NUM);
 	appendStringInfo(&command, ", spock_version '%s'", SPOCK_VERSION);
 	appendStringInfo(&command, ", spock_version_num '%d'", SPOCK_VERSION_NUM);
+	appendStringInfo(&command, ", core_patches '%s'",
+					 spock_subxact_setts != NULL ? "true" : "false");
 
 	appendStringInfoChar(&command, ')');
 
@@ -1157,6 +1163,51 @@ _PG_init(void)
 				 "core patch set is absent or predates generation tracking "
 				 "(generation 0)");
 	}
+
+	/*
+	 * Resolve the patch-provided core symbols by name. Because these lookups
+	 * are the only way spock references the symbols (the by-name uses in the
+	 * apply path were removed), spock.so has no unresolved link-time
+	 * reference to them and therefore loads even on unpatched PostgreSQL.
+	 *
+	 * On unpatched PostgreSQL both are absent and spock runs with less: no
+	 * logical commit clock, so local commits are stamped with the plain local
+	 * clock, and no delta apply (the relcache refuses delta columns). Applied
+	 * transactions still record the remote commit time, as stock logical
+	 * replication does.
+	 */
+	spock_remote_ts_ptr = (TimestampTz *)
+		dlsym(RTLD_DEFAULT, "remoteTransactionStopTimestamp");
+	spock_subxact_setts = (SubTransactionSetCommitTs_fn)
+		dlsym(RTLD_DEFAULT, "SubTransactionIdSetCommitTsData");
+
+	/*
+	 * Both symbols come from the Spock core patch set and must be present
+	 * together or not at all. A partially patched server is a broken build,
+	 * not a supported configuration, so refuse startup if only one resolved.
+	 */
+	if ((spock_remote_ts_ptr == NULL) != (spock_subxact_setts == NULL))
+	{
+		const char *missing = (spock_remote_ts_ptr == NULL)
+			? "remoteTransactionStopTimestamp (logical commit clock)"
+			: "SubTransactionIdSetCommitTsData (delta apply commit timestamp)";
+
+		ereport(FATAL,
+				(errmsg("spock cannot run against a partially patched PostgreSQL"),
+				 errdetail("Spock core patch-set symbol \"%s\" is not present, "
+						   "but other Spock core patch-set symbols are.",
+						   missing),
+				 errhint("Use a PostgreSQL server built with the complete Spock "
+						 "patch set, or with none of it.")));
+	}
+	else if (spock_remote_ts_ptr == NULL)
+		ereport(WARNING,
+				(errmsg("spock is running without the Spock core patches"),
+				 errdetail("Delta apply is disabled. There is no logical commit "
+						   "clock, so last-update-wins conflict resolution "
+						   "depends on the server clocks being in sync."),
+				 errhint("Use a PostgreSQL server built with the Spock patch "
+						 "set for full functionality.")));
 
 	DefineCustomEnumVariable("spock.conflict_resolution",
 							 gettext_noop("Sets method used for conflict resolution for resolvable conflicts."),

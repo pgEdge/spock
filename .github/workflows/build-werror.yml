@@ -23,6 +23,9 @@
 #           unused-variable warnings only in "stock".  Both use -O2, which
 #           enables the flow-sensitive warnings (maybe-uninitialized and
 #           friends) that the -O0 Docker builds never see.
+#           unpatched: plain configure like "stock", but without the Spock
+#           core patches, since Spock also builds and runs on unpatched
+#           PostgreSQL.
 #
 # Switches that are Spock make variables need no PostgreSQL rebuild, so each
 # job compiles Spock several times against the one installation: plain,
@@ -105,7 +108,7 @@ jobs:
       matrix:
         pgver: [15, 16, 17, 18, 19]
         cc: [gcc, clang]
-        config: [stock, full]
+        config: [stock, full, unpatched]
 
     name: PG ${{ matrix.pgver }} ${{ matrix.cc }} ${{ matrix.config }}
 
@@ -180,7 +183,8 @@ jobs:
           export LC_ALL=C
           PATCH_DIR="$GITHUB_WORKSPACE/patches/${{ matrix.pgver }}"
           patches=none
-          if [ -d "$PATCH_DIR" ] && [ -n "$(ls -A "$PATCH_DIR")" ]; then
+          if [ "${{ matrix.config }}" != "unpatched" ] &&
+             [ -d "$PATCH_DIR" ] && [ -n "$(ls -A "$PATCH_DIR")" ]; then
             patches=$(cd "$PATCH_DIR" && sha256sum -- * | sha256sum | cut -c1-16)
           fi
 
@@ -228,7 +232,7 @@ jobs:
           git -C "$PG_SRCDIR" checkout --detach FETCH_HEAD
 
       - name: Apply spock patches
-        if: steps.pg-cache.outputs.cache-hit != 'true'
+        if: steps.pg-cache.outputs.cache-hit != 'true' && matrix.config != 'unpatched'
         run: |
           PATCH_DIR="${GITHUB_WORKSPACE}/patches/${{ matrix.pgver }}"
           if [ -d "$PATCH_DIR" ] && [ -n "$(ls -A "$PATCH_DIR")" ]; then
