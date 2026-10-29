@@ -982,36 +982,45 @@ spock_monitor_report_error(ErrorData *edata)
 		return;
 	}
 
-	in_report = true;
-
-	spock_monitor_format_error(edata, message, sizeof(message));
-
 	/*
-	 * A peer going away or a termination by an administrator is not a fault
-	 * of this node.  In a worker it is a lost provider connection; one raised
-	 * before apply_work() has its own handler, at connect or
-	 * START_REPLICATION time, is seen only here.  In a walsender it is the
-	 * subscriber going away and nothing to record.
+	 * Nothing below should raise, but should it, the flag must not stay set
+	 * and silence the monitor for the rest of the process.
 	 */
-	if (spock_monitor_is_connection_error(edata->sqlerrcode))
+	in_report = true;
+	PG_TRY();
 	{
-		if (worker != NULL)
-			spock_monitor_note_disconnect(message, edata->sqlerrcode);
+		spock_monitor_format_error(edata, message, sizeof(message));
+
+		/*
+		 * A peer going away or a termination by an administrator is not a
+		 * fault of this node.  In a worker it is a lost provider connection;
+		 * one raised before apply_work() has its own handler, at connect or
+		 * START_REPLICATION time, is seen only here.  In a walsender it is
+		 * the subscriber going away and nothing to record.
+		 */
+		if (spock_monitor_is_connection_error(edata->sqlerrcode))
+		{
+			if (worker != NULL)
+				spock_monitor_note_disconnect(message, edata->sqlerrcode);
+		}
+		else if (worker == NULL)
+		{
+			char		detail[SPOCK_MONITOR_MESSAGE_LEN];
+
+			snprintf(detail, sizeof(detail), "slot %s: %s",
+					 NameStr(spock_monitor_stream_slot), message);
+			spock_monitor_append_event(SPOCK_EVENT_STREAM_ERROR, InvalidOid,
+									   InvalidXLogRecPtr, edata->sqlerrcode,
+									   detail);
+		}
+		else
+			spock_monitor_report_worker_error(worker, edata, message);
 	}
-	else if (worker == NULL)
+	PG_FINALLY();
 	{
-		char		detail[SPOCK_MONITOR_MESSAGE_LEN];
-
-		snprintf(detail, sizeof(detail), "slot %s: %s",
-				 NameStr(spock_monitor_stream_slot), message);
-		spock_monitor_append_event(SPOCK_EVENT_STREAM_ERROR, InvalidOid,
-								   InvalidXLogRecPtr, edata->sqlerrcode,
-								   detail);
+		in_report = false;
 	}
-	else
-		spock_monitor_report_worker_error(worker, edata, message);
-
-	in_report = false;
+	PG_END_TRY();
 }
 
 /*
@@ -1033,10 +1042,21 @@ spock_monitor_stream_started(const char *slot_name)
 	return true;
 }
 
+/*
+ * The stream ended: record it once.  A walsender whose subscriber went away
+ * exits without the plugin's shutdown callback, so this is also called from
+ * its exit callback, while the PGPROC is still there.
+ */
 void
 spock_monitor_stream_stopped(void)
 {
+	if (!spock_monitor_in_stream)
+		return;
+
 	spock_monitor_in_stream = false;
+	spock_monitor_record_event(SPOCK_EVENT_STREAM_STOPPED, InvalidOid,
+							   InvalidXLogRecPtr, "slot %s",
+							   NameStr(spock_monitor_stream_slot));
 }
 
 /*

@@ -108,6 +108,7 @@ static bool slot_group_on_exit_set = false;
 
 /* This process is a walsender whose errors the monitor records. */
 static bool monitor_stream = false;
+static bool monitor_stream_on_exit_set = false;
 static SpockOutputSlotGroup *slot_group = NULL;
 static bool slot_group_skip_xact = false;
 
@@ -120,6 +121,7 @@ static RepOriginId MyOutputNodeId = InvalidRepOriginId;
 static void spock_output_join_slot_group(NameData slot_name);
 static void spock_output_leave_slot_group(void);
 static void spock_output_plugin_on_exit(int code, Datum arg);
+static void spock_output_stream_on_exit(int code, Datum arg);
 
 static void relmetacache_init(MemoryContext decoding_context);
 static SPKRelMetaCacheEntry *relmetacache_get_relation(SpockOutputData *data,
@@ -236,7 +238,20 @@ pg_decode_startup(LogicalDecodingContext *ctx, OutputPluginOptions *opt,
 	/* Join our slot-group if possible */
 	spock_output_join_slot_group(ctx->slot->data.name);
 
-	monitor_stream = spock_monitor_stream_started(NameStr(ctx->slot->data.name));
+	/*
+	 * Creating a slot runs the plugin too, but that is not a stream.  A
+	 * walsender whose subscriber goes away exits without the shutdown
+	 * callback, so the end of the stream is recorded from an exit callback as
+	 * well; before_shmem_exit, while the PGPROC the record needs is still
+	 * there.
+	 */
+	monitor_stream = !is_init &&
+		spock_monitor_stream_started(NameStr(ctx->slot->data.name));
+	if (monitor_stream && !monitor_stream_on_exit_set)
+	{
+		before_shmem_exit(spock_output_stream_on_exit, 0);
+		monitor_stream_on_exit_set = true;
+	}
 
 	if (is_init)
 		spock_monitor_record_event(SPOCK_EVENT_SLOT_CREATED, InvalidOid,
@@ -1313,9 +1328,6 @@ pg_decode_shutdown(LogicalDecodingContext *ctx)
 
 	if (monitor_stream)
 	{
-		spock_monitor_record_event(SPOCK_EVENT_STREAM_STOPPED, InvalidOid,
-								   InvalidXLogRecPtr, "slot %s",
-								   ctx->slot ? NameStr(ctx->slot->data.name) : "unknown");
 		spock_monitor_stream_stopped();
 		monitor_stream = false;
 	}
@@ -1521,6 +1533,14 @@ static void
 spock_output_plugin_on_exit(int code, Datum arg)
 {
 	spock_output_leave_slot_group();
+}
+
+/* The walsender is exiting; the stream ends with it. */
+static void
+spock_output_stream_on_exit(int code, Datum arg)
+{
+	spock_monitor_stream_stopped();
+	monitor_stream = false;
 }
 
 

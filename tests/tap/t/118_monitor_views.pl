@@ -116,6 +116,23 @@ is_true(2, "SELECT count(*) >= 1 FROM spock.events " .
         'provider_connected is recorded');
 
 # =============================================================================
+# The provider records the end of the stream when the subscriber goes away
+# =============================================================================
+# n1's history starts at its restart above: one stream_started so far, and
+# no stream_stopped, since nothing but a stream that ends records one.
+my $started = scalar_query(1, "SELECT count(*) FROM spock.events " .
+                              "WHERE event_type = 'stream_started'");
+is(scalar_query(1, "SELECT count(*) FROM spock.events WHERE event_type = 'stream_stopped'"),
+   '0', 'no stream has stopped since the provider came back');
+psql_or_bail(2, "SELECT spock.sub_disable('sub_n2_n1')");
+ok(poll_query_until(1, "SELECT count(*) = $started FROM spock.events " .
+                       "WHERE event_type = 'stream_stopped' " .
+                       "AND detail = 'slot spk_regression_n1_sub_n2_n1'", 't', 60),
+   'stream_stopped is recorded on the provider when the subscriber stops');
+psql_or_bail(2, "SELECT spock.sub_enable('sub_n2_n1')");
+ok(replicating(2, 'sub_n2_n1'), 'n2 replicates again once the subscription is enabled');
+
+# =============================================================================
 # A resync is a sync worker, not an apply worker restart
 # =============================================================================
 psql_or_bail(1, "CREATE TABLE mon_tbl (id int PRIMARY KEY, val text)");
