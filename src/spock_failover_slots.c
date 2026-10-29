@@ -649,6 +649,14 @@ local_decoding_unavailable(ReplicationSlot *slot)
 static List *undecodable_warned = NIL;
 static List *inconsistent_warned = NIL;
 
+#if PG_VERSION_NUM >= 170000
+/*
+ * Copies made by native slot sync that the primary no longer has.  A
+ * standby cannot drop them, so each is reported once and left.
+ */
+static List *synced_extra_warned = NIL;
+#endif
+
 static bool warning_due(List **warned, const char *name, bool in_state);
 
 /* What apply_remote_position() found out about the copy's snapshot */
@@ -1580,6 +1588,9 @@ synchronize_failover_slots(long sleep_time)
 			bool		active;
 			bool		pending;
 			bool		found = false;
+#if PG_VERSION_NUM >= 170000
+			bool		synced;
+#endif
 
 			/* A pending copy is held by this process */
 			pending = s->active_pid == MyProcPid;
@@ -1588,6 +1599,12 @@ synchronize_failover_slots(long sleep_time)
 			/* Only check inactive slots. */
 			if (!s->in_use || active)
 				continue;
+
+#if PG_VERSION_NUM >= 170000
+			SpinLockAcquire(&s->mutex);
+			synced = s->data.synced;
+			SpinLockRelease(&s->mutex);
+#endif
 
 			/* Only check for logical slots. */
 			if (SlotIsPhysical(s))
@@ -1604,6 +1621,27 @@ synchronize_failover_slots(long sleep_time)
 					break;
 				}
 			}
+
+#if PG_VERSION_NUM >= 170000
+
+			/*
+			 * ReplicationSlotDrop() refuses to drop a copy made by native
+			 * slot sync on a standby, and the error would end the worker on
+			 * every pass.  Leave it, and say so once.
+			 */
+			if (!found && synced)
+			{
+				if (warning_due(&synced_extra_warned, NameStr(s->data.name), true))
+					elog(WARNING,
+						 "not dropping replication slot \"%s\": the primary no longer "
+						 "has it, but it was created by native slot sync, which a "
+						 "standby cannot drop",
+						 NameStr(s->data.name));
+				continue;
+			}
+			if (found)
+				warning_due(&synced_extra_warned, NameStr(s->data.name), false);
+#endif
 
 			/*
 			 * Not found, should be dropped if synchronize_failover_slots_drop
