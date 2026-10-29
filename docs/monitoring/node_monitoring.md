@@ -148,7 +148,7 @@ timestamp of its most recent change.
 |--------|-------------|
 | `worker_starts`, `worker_failures` | Apply worker starts, and exits with an error. |
 | `sync_worker_starts`, `sync_worker_failures` | The same for the sync workers that copy tables; a resync adds one start per table. |
-| `provider_connects`, `provider_disconnects`, `idle_timeouts` | Connections to the provider, connection losses, and reconnects forced by `spock.apply_idle_timeout`. |
+| `provider_connects`, `provider_disconnects`, `idle_timeouts` | Connections to the provider, connection losses together with connection attempts that failed (so while the provider is down this counts every retry), and reconnects forced by `spock.apply_idle_timeout`. |
 | `messages_received`, `bytes_received` | Data messages received from the provider. |
 | `xacts_applied`, `xacts_skipped`, `xacts_discarded` | Transactions committed locally, skipped through `sub_skip_lsn`, and discarded under `transdiscard`. |
 | `apply_errors`, `sync_errors` | Errors raised in apply and in sync workers. An apply error counts once per failed transaction. |
@@ -251,7 +251,7 @@ Event types:
 | `provider_connected`, `provider_disconnected` | The replication connection to the named provider is established, with the start LSN, or lost, with the error. |
 | `transaction_skipped`, `transaction_discarded` | A transaction is skipped through `sub_skip_lsn` or discarded under `transdiscard`. |
 | `sync_started`, `sync_finished`, `sync_failed` | Initial copy of a table. `sync_failed` carries the error that ended the copy; the next sync worker for that table records a second `sync_failed` saying the table was abandoned after the earlier failure, and no further attempt is made. |
-| `slot_created`, `stream_started`, `stream_stopped`, `stream_error` | Provider side: a spock slot is created, a walsender starts streaming to a subscriber (its address, spock version and protocol in the detail, the slot position in `lsn`), stops, or fails with an error while decoding. |
+| `slot_created`, `stream_started`, `stream_stopped`, `stream_error` | Provider side: a spock slot is created, a walsender starts streaming to a subscriber (its address, spock version and protocol in the detail, the slot position in `lsn`), stops (recorded as the walsender exits, so a subscriber that disconnects or restarts produces one), or fails with an error while decoding. |
 | `apply_paused`, `apply_resumed` | `spock.pause_apply_workers()` and `spock.resume_apply_workers()`. |
 | `repair_mode_enabled`, `repair_mode_disabled` | `spock.repair_mode()`. |
 | `extension_upgraded` | The manager updated the extension to the library version. |
