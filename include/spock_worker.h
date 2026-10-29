@@ -47,6 +47,13 @@ typedef struct SpockApplyWorker
 	bool		paused;			/* Worker is paused for slot creation. */
 	SpockGroupEntry *apply_group;	/* Apply group to be used with parallel
 									 * slots. */
+
+	/*
+	 * Commit timestamp of the remote transaction being applied, 0 between
+	 * transactions.  Read by the other workers of the same apply group to
+	 * spot a commit-order deadlock; see wait_for_previous_transaction().
+	 */
+	TimestampTz xact_commit_ts;
 } SpockApplyWorker;
 
 typedef struct SpockSyncWorker
