@@ -201,10 +201,11 @@ chomp $wal;
 is($wal, 't', 'wal_size_bytes() works without pg_monitor');
 
 # =============================================================================
-# A role whose only grant is pg_monitor reads the views
+# A role with pg_monitor and USAGE on the schema reads the views
 # =============================================================================
 psql_or_bail(2, "CREATE ROLE mon_role LOGIN");
 psql_or_bail(2, "GRANT pg_monitor TO mon_role");
+psql_or_bail(2, "GRANT USAGE ON SCHEMA spock TO mon_role");
 sub as_monitor {
     my ($query) = @_;
     my $out = `"$pg_bin/psql" -X -p $port2 -d $dbname -U mon_role -At -c "$query" 2>&1`;

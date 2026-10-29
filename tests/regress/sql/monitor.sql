@@ -529,14 +529,16 @@ SET spock.enable_ddl_replication = off;
 ALTER TABLE monitor_dml ADD CONSTRAINT monitor_dml_no_copy CHECK (id < 0) NOT VALID;
 RESET spock.enable_ddl_replication;
 SELECT spock.sub_resync_table('test_subscription', 'monitor_dml', true);
--- The event comes from the sync worker that died; the table is marked
--- failed by the next one, so wait for both
+-- The event comes from the sync worker that died; the next one marks the
+-- table failed and records the second event, so wait for all of it
 DO $$
 BEGIN
     FOR i IN 1..600 LOOP
         IF EXISTS (SELECT 1 FROM spock.events
                     WHERE event_type = 'sync_failed'
                       AND detail LIKE '%violates check constraint%')
+           AND (SELECT count(*) FROM spock.events
+                 WHERE event_type = 'sync_failed') = 2
            AND EXISTS (SELECT 1 FROM spock.table_sync_status
                         WHERE table_name = 'monitor_dml'
                           AND sync_status = 'failed') THEN

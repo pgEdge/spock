@@ -477,9 +477,18 @@ The views are plain SQL, so any monitoring agent can poll them. Poll
 ids as history that was dropped because `spock.event_history_size` was too
 small for the polling interval. `spock.get_monitor_summary()` reports how
 full the event ring and the counters table are. The read-only views and
-the functions they call are granted to `pg_monitor`, so
-`GRANT pg_monitor TO monitoring_role;` is enough. Members of `pg_monitor`
-cannot reset counters or events: `spock.reset_events()` and
+the functions they call are granted to `pg_monitor`; the role also needs
+`USAGE` on the schema:
+
+```sql
+GRANT pg_monitor TO monitoring_role;
+GRANT USAGE ON SCHEMA spock TO monitoring_role;
+```
+
+For now, `USAGE` on the `spock` schema also allows calling spock's
+management functions. Grant it only to trusted roles, and treat every
+function that changes something as needing a superuser. Members of
+`pg_monitor` cannot reset counters or events: `spock.reset_events()` and
 `spock.reset_subscription_stats()` stay with the superuser. The
 `spock_info()` sections on `spock.tables`, `spock.lag_tracker`,
 `spock.exception_log` and `spock.resolutions` need `SELECT` on those,

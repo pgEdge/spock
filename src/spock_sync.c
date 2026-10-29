@@ -1280,10 +1280,16 @@ copy_table_data(PGconn *origin_conn, PGconn *target_conn,
 		const char *sqlstate = PQresultErrorField(res, PG_DIAG_SQLSTATE);
 		int			sqlerrcode = ERRCODE_INTERNAL_ERROR;
 
-		/* Keep the destination's error code, e.g. a constraint violation. */
+		/*
+		 * Keep the destination's error code, e.g. a constraint violation. Not
+		 * a connection code though: the monitor takes one of those for a lost
+		 * provider connection, and this session is local.
+		 */
 		if (sqlstate != NULL && strlen(sqlstate) == 5)
 			sqlerrcode = MAKE_SQLSTATE(sqlstate[0], sqlstate[1], sqlstate[2],
 									   sqlstate[3], sqlstate[4]);
+		if (spock_monitor_is_connection_error(sqlerrcode))
+			sqlerrcode = ERRCODE_INTERNAL_ERROR;
 		PQclear(res);
 		ereport(ERROR,
 				(errcode(sqlerrcode),
