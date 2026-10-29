@@ -651,9 +651,6 @@ CREATE VIEW spock.settings AS
 -- Health of the host and of the PostgreSQL instance, for the checks that
 -- come before any replication question: disk, load, connections, long
 -- transactions, wraparound, archiving and WAL volume.
--- pg_ls_waldir() is restricted to pg_monitor.  The views only need the
--- total, so compute it in C and let a plain monitoring role see it without
--- the file list.
 -- The origin progress behind the subscription views.  The core view
 -- pg_replication_origin_status is superuser only; this reads the same
 -- progress through the origin API.
@@ -665,6 +662,9 @@ LANGUAGE c STRICT
 AS 'MODULE_PATHNAME', 'spock_replication_origin_status';
 REVOKE ALL ON FUNCTION spock.replication_origin_status() FROM PUBLIC;
 
+-- pg_ls_waldir() is restricted to pg_monitor.  The views only need the
+-- total, so compute it in C and let a plain monitoring role see it without
+-- the file list.
 CREATE FUNCTION spock.wal_size_bytes() RETURNS bigint
 LANGUAGE c STRICT STABLE AS 'MODULE_PATHNAME', 'spock_wal_size_bytes';
 
@@ -881,13 +881,12 @@ CREATE VIEW spock.subscription_status AS
     SELECT s.sub_id AS subscription_id,
            s.sub_name AS subscription_name,
            s.sub_enabled AS enabled,
+           -- The initial copy runs before the worker is 'running', so it is
+           -- checked first; on a large database it can take hours.
            CASE
-               WHEN w.pid IS NOT NULL AND w.worker_status = 'running' THEN
-                   CASE
-                       WHEN t.sync_status IS NULL THEN 'unknown'
-                       WHEN t.sync_status = 'ready' THEN 'replicating'
-                       ELSE 'initializing'
-                   END
+               WHEN w.pid IS NOT NULL AND t.sync_status IS NULL THEN 'unknown'
+               WHEN w.pid IS NOT NULL AND t.sync_status <> 'ready' THEN 'initializing'
+               WHEN w.pid IS NOT NULL AND w.worker_status = 'running' THEN 'replicating'
                WHEN w.pid IS NOT NULL THEN 'starting'
                WHEN NOT s.sub_enabled THEN 'disabled'
                ELSE 'down'
@@ -1533,9 +1532,10 @@ REVOKE ALL ON FUNCTION spock.reset_events() FROM PUBLIC;
 REVOKE ALL ON FUNCTION spock.reset_subscription_stats(oid) FROM PUBLIC;
 
 -- The read side is granted to pg_monitor, as PostgreSQL does for its own
--- monitoring views, so GRANT pg_monitor TO a role is all it needs.  The
--- reset functions stay with the superuser.
-GRANT USAGE ON SCHEMA spock TO pg_monitor;
+-- monitoring views.  USAGE on the schema is not: it would also reach the
+-- management functions, which are still executable by PUBLIC, so a
+-- monitoring role is granted that separately.  The reset functions stay
+-- with the superuser.
 GRANT EXECUTE ON FUNCTION spock.get_system_info(), spock.get_events(),
     spock.get_apply_stats(), spock.get_pending_exceptions(),
     spock.replication_origin_status() TO pg_monitor;

@@ -307,7 +307,9 @@ spock_monitor_shmem_startup(bool found)
  * only while an event is written or the ring is copied out, so waiting
  * for it is safe there.  The one case that is not is an error raised by
  * this process while it holds the lock itself (an allocation failing in
- * that copy); that event is skipped rather than deadlocking.
+ * that copy); that event is skipped rather than deadlocking.  So is one
+ * raised after this process has given up its PGPROC, as a walsender's
+ * stream flag stays set on FATAL: there is nothing to wait with.
  */
 static void
 spock_monitor_append_event(SpockMonitorEventType type, Oid subid,
@@ -317,7 +319,7 @@ spock_monitor_append_event(SpockMonitorEventType type, Oid subid,
 	SpockMonitorEvent *event;
 	int			idx;
 
-	if (SpockMonitorShm == NULL)
+	if (SpockMonitorShm == NULL || MyProc == NULL)
 		return;
 
 	if (LWLockHeldByMe(SpockMonitorShm->lock))
