@@ -31,7 +31,8 @@ add/verify/remove per node.
 
     - Each replacement node should not be accessible to users while it
       is being added.
-    - Disable `auto_ddl` on every node, and do not run DDL on the
+    - Disable automatic DDL replication on every node
+      (`spock.enable_ddl_replication = off`), and do not run DDL on the
       cluster for the duration of the rollout.
     - The users must be identical on the source and the replacement
       node. Create any users on the replacement node before
@@ -632,6 +633,16 @@ With `n1` replaced by `n1b`, repeat steps 1 through 4 for `n2` and
 `n3`, sourcing each new node from any node already in the cluster -
 old or new - that runs a PostgreSQL version no newer than the
 replacement node itself.
+
+## Re-enabling DDL Replication
+
+Once every node is replaced, turn automatic DDL replication back on,
+on every node, as in [Upgrading Spock](../../upgrading_spock.md):
+
+```sql
+ALTER SYSTEM SET spock.enable_ddl_replication = on;
+SELECT pg_reload_conf();
+```
 
 ## Verifying the Rollout
 

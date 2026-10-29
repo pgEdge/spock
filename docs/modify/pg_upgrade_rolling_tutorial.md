@@ -40,7 +40,8 @@ the next node.
       able to stop routing traffic to a node before it goes down for
       upgrade, and resume routing to it afterward. There is no
       replacement node to absorb that traffic automatically.
-    - Disable `auto_ddl` on every node, and do not run DDL on the
+    - Disable automatic DDL replication on every node
+      (`spock.enable_ddl_replication = off`), and do not run DDL on the
       cluster for the duration of the rollout.
     - `pg_upgrade --link` requires the old and new data directories to
       be on the same filesystem, so that hard links are possible. On a
@@ -115,9 +116,14 @@ our example. Finish all steps for one node before starting the next.
     -- On n1
     SELECT slot_name, confirmed_flush_lsn
     FROM pg_replication_slots
-    WHERE confirmed_flush_lsn IS NULL
-       OR confirmed_flush_lsn < '<lsn-from-sync_event>'::pg_lsn;
+    WHERE slot_type = 'logical'
+      AND (confirmed_flush_lsn IS NULL
+           OR confirmed_flush_lsn < '<lsn-from-sync_event>'::pg_lsn);
     ```
+
+    A physical slot, such as the one a standby streams through, always
+    has a `NULL` `confirmed_flush_lsn`, which is why the query is
+    limited to logical slots.
 
     `pg_upgrade` does not carry Spock's replication origins over, so
     record where each of `n1`'s subscriptions has applied up to. Every
@@ -140,7 +146,7 @@ our example. Finish all steps for one node before starting the next.
     SELECT sub_name, sub_replication_sets, sub_forward_origins,
            sub_apply_delay, sub_force_text_transfer, sub_skip_schema
     FROM spock.subscription
-    WHERE sub_name = 'sub_n1_n2';
+    WHERE sub_name = '<subscription-to-n1-on-this-node>';
     ```
 
     `spock.gen_sub_name(provider_node, subscriber_node)` names each
@@ -178,11 +184,11 @@ our example. Finish all steps for one node before starting the next.
     patronictl -c /path/to/n1_patroni.yml pause n1-cluster
     ```
 
-    Before stopping the node, record its encoding; step 5 needs it and
-    the server cannot answer once it is down:
+    Record the Spock version the node runs; step 4 needs it, and the
+    server cannot answer once it is down:
 
-    ```bash
-    psql -p 5432 -c "SHOW server_encoding;"
+    ```sql
+    SELECT extversion FROM pg_extension WHERE extname = 'spock';
     ```
 
     Then stop PostgreSQL on the node:
@@ -206,23 +212,38 @@ our example. Finish all steps for one node before starting the next.
     sudo apt install -y pgedge-postgres18-server pgedge-postgres18-contrib pgedge-spock18
     ```
 
+    `pg_upgrade` recreates the Spock extension in the new cluster at
+    the version you recorded in step 3, and the new server loads the
+    Spock library installed for the target PostgreSQL version. Install
+    that same Spock version for the target version. If the only
+    package for the target version carries a newer Spock, run
+    `ALTER EXTENSION spock UPDATE;` in every database where Spock is
+    installed once the node is up in step 8, before step 19. The other
+    nodes keep their version until their own turn, so the cluster runs
+    mixed Spock versions while the rollout is in progress, as it does
+    in the node-by-node procedure in [Upgrading
+    Spock](../upgrading_spock.md). Finish the rollout on every node
+    before adding a node with Zodan: `add_node` requires the new
+    node's Spock version to be the same as or newer than every existing
+    node's.
+
 5. Initialize a new data directory on the target PostgreSQL version.
    `pg_upgrade` migrates data into an already-initialized cluster; it
-   does not create one. The new cluster must match the old cluster's
-   encoding, locale and checksum setting exactly, or
-   `pg_upgrade --check` fails. Use the encoding you recorded in step 3,
-   and read the checksum setting from the stopped data directory:
+   does not create one. On a PostgreSQL 16 or later target,
+   `pg_upgrade` copies the old cluster's encoding and locale settings
+   into the new cluster itself, so `initdb` needs no encoding or locale
+   option. The data checksum setting is not copied and must match the
+   old cluster, or `pg_upgrade` stops. Read it from the stopped data
+   directory:
 
     ```bash
     pg_controldata /path/to/data/n1 | grep "checksum version"
     ```
 
-    Pass the recorded encoding to `initdb`. If the checksum version is
-    `1`, enable checksums:
+    If the checksum version is `1`, enable checksums:
 
     ```bash
-    /path/to/pg18/bin/initdb -D /path/to/data/n1_new \
-      --encoding=<recorded-encoding> --data-checksums
+    /path/to/pg18/bin/initdb -D /path/to/data/n1_new --data-checksums
     ```
 
     If it is `0`, disable them explicitly. PostgreSQL 18 `initdb`
@@ -230,8 +251,7 @@ our example. Finish all steps for one node before starting the next.
     match a cluster without them:
 
     ```bash
-    /path/to/pg18/bin/initdb -D /path/to/data/n1_new \
-      --encoding=<recorded-encoding> --no-data-checksums
+    /path/to/pg18/bin/initdb -D /path/to/data/n1_new --no-data-checksums
     ```
 
     `pg_upgrade` does not carry configuration files forward; the new
@@ -696,6 +716,16 @@ primary per scope, and `n1`, `n2`, and `n3` each remain independent
 primaries in the Spock mesh, not standbys of one another. The DCS
 deployment itself can still be shared: one etcd cluster can serve
 every node's Patroni scope, so long as each scope's name is unique.
+
+## Re-enabling DDL Replication
+
+Once every node is upgraded, turn automatic DDL replication back on,
+on every node, as in [Upgrading Spock](../upgrading_spock.md):
+
+```sql
+ALTER SYSTEM SET spock.enable_ddl_replication = on;
+SELECT pg_reload_conf();
+```
 
 ## Verifying the Rollout
 
