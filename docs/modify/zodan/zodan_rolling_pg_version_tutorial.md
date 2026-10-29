@@ -31,7 +31,8 @@ add/verify/remove per node.
 
     - Each replacement node should not be accessible to users while it
       is being added.
-    - Disable `auto_ddl` on every node, and do not run DDL on the
+    - Disable automatic DDL replication on every node
+      (`spock.enable_ddl_replication = off`), and do not run DDL on the
       cluster for the duration of the rollout.
     - The users must be identical on the source and the replacement
       node. Create any users on the replacement node before
@@ -257,7 +258,14 @@ Choose one of the following approaches:
         ```bash
         pg_basebackup -h 127.0.0.1 -p 5442 -U replicator \
           -D /path/to/data/n1b_standby -S n1b_standby_slot -X stream -P
+        touch /path/to/data/n1b_standby/standby.signal
         ```
+
+        `standby.signal` is what makes the server start as a standby;
+        `pg_basebackup -R` would also write it, but it would put a
+        `primary_conninfo` without `dbname` into `postgresql.auto.conf`,
+        which overrides the one set in the next steps, and slot sync
+        needs `dbname`.
 
     3. Set `synchronized_standby_slots` in the replacement node's
        `postgresql.conf`, naming that slot:
@@ -271,7 +279,7 @@ Choose one of the following approaches:
 
         ```ini
         sync_replication_slots = on
-        primary_conninfo = 'host=127.0.0.1 port=5442 dbname=inventory user=replicator'
+        primary_conninfo = 'host=127.0.0.1 port=5442 dbname=inventory user=replicator password=<replicator-password>'
         primary_slot_name = 'n1b_standby_slot'
         hot_standby_feedback = on
         ```
@@ -411,10 +419,12 @@ next.
       listen: 127.0.0.1:5442
       connect_address: 127.0.0.1:5442
       data_dir: /path/to/data/n1b
-      bin_dir: /usr/pgsql-18/bin
+      bin_dir: /usr/pgsql-18/bin   # /usr/lib/postgresql/18/bin on Ubuntu or Debian
       parameters:
         sync_replication_slots: on
         hot_standby_feedback: on
+      callbacks:
+        on_role_change: /path/to/set_synchronized_standby_slots.sh
       authentication:
         replication:
           username: replicator
@@ -468,10 +478,12 @@ next.
       listen: 127.0.0.1:5452
       connect_address: 127.0.0.1:5452
       data_dir: /path/to/data/n1b_standby
-      bin_dir: /usr/pgsql-18/bin
+      bin_dir: /usr/pgsql-18/bin   # /usr/lib/postgresql/18/bin on Ubuntu or Debian
       parameters:
         sync_replication_slots: on
         hot_standby_feedback: on
+      callbacks:
+        on_role_change: /path/to/set_synchronized_standby_slots.sh
       authentication:
         replication:
           username: replicator
@@ -503,14 +515,15 @@ next.
     `synchronized_standby_slots` names a Patroni-managed physical
     slot, and Patroni's auto-created slots are named after the member,
     not the role - the slot named `n1b_standby` only exists while
-    `n1b_standby` is not the primary. Add an `on_role_change` callback
-    to both nodes' Patroni configuration so a future promotion resets
-    the setting to name whichever member is then the standby:
+    `n1b_standby` is not the primary. The `on_role_change` callback
+    named in both Patroni configurations above resets the setting on a
+    future promotion to whichever member is then the standby. Patroni
+    reads its local configuration only at start and on reload, so if
+    you add the callback to a member that is already running, reload it
+    afterwards:
 
-    ```yaml
-    postgresql:
-      callbacks:
-        on_role_change: /path/to/set_synchronized_standby_slots.sh
+    ```bash
+    patronictl -c /path/to/n1b_patroni.yml reload n1b-cluster
     ```
 
     The following script, deployed on `n1b` with `SIBLING_MEMBER` set
@@ -632,6 +645,16 @@ With `n1` replaced by `n1b`, repeat steps 1 through 4 for `n2` and
 `n3`, sourcing each new node from any node already in the cluster -
 old or new - that runs a PostgreSQL version no newer than the
 replacement node itself.
+
+## Re-enabling DDL Replication
+
+Once every node is replaced, turn automatic DDL replication back on,
+on every node, as in [Upgrading Spock](../../upgrading_spock.md):
+
+```sql
+ALTER SYSTEM SET spock.enable_ddl_replication = on;
+SELECT pg_reload_conf();
+```
 
 ## Verifying the Rollout
 
