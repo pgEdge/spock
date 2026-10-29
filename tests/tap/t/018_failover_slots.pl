@@ -163,10 +163,10 @@ if ($pg_major >= 18) {
 
 # Force a WAL segment switch on n1 so the logical slot's restart_lsn
 # advances across a segment boundary.  On PG15/16 the failover-slot bgworker
-# uses wait_for_primary_slot_catchup() which requires the primary slot's
-# restart_lsn to be >= the standby's local WAL reservation; without a forced
-# switch the gap can be just a few bytes (within the same segment), making
-# the wait too easy to interrupt by promotion before the slot is persisted.
+# keeps a new copy pending until the primary slot's restart_lsn is >= the
+# standby's local WAL reservation; without a forced switch the gap can be
+# just a few bytes (within the same segment), so the copy could stay
+# pending for a long time.
 if ($pg_major < 17) {
     psql_or_bail(1, "SELECT pg_switch_wal()");
     # Wait for n2's apply worker to acknowledge the new WAL position so the
@@ -191,7 +191,7 @@ system("rm -rf $standby_datadir 2>/dev/null");
 system_or_bail("$pg_bin/pg_basebackup",
     '-D', $standby_datadir,
     '-h', $host, '-p', $primary_port, '-U', $db_user,
-    '-X', 'stream', '-R');
+    '-X', 'stream', '-R', '-c', 'fast');
 pass('Physical standby created via pg_basebackup');
 
 # ==========================================================================
@@ -271,7 +271,7 @@ diag("Waiting up to ${wait_secs}s for slot '$slot_name' on standby...");
 my $slot_present = wait_until($wait_secs, $poll_secs, sub {
     my $c = qport($pg_bin, $host, $standby_port, $dbname, $db_user,
         "SELECT count(*) FROM pg_replication_slots
-         WHERE slot_name = '$slot_name'");
+         WHERE slot_name = '$slot_name' AND NOT temporary");
     $c =~ s/\s+//g;
     return $c > 0;
 });
