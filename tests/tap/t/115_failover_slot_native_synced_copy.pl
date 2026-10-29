@@ -159,6 +159,50 @@ if (open(my $fh, '<', $standby_logpath))
 is($refused, 0, 'the worker did not try to decode the synced copy');
 is($explained, 1, 'the worker said once why the copy is not decoded');
 
+sub count_log {
+    my ($re) = @_;
+    my $n = 0;
+    if (open(my $fh, '<', $standby_logpath))
+    {
+        while (<$fh>) { $n++ if /$re/; }
+        close($fh);
+    }
+    return $n;
+}
+
+# ---------- the primary drops the slot ----------
+
+# A standby cannot drop a copy made by native slot sync.  The worker must
+# leave it, say so once, and go on instead of failing on every pass.
+psql_or_bail(2, "SELECT spock.sub_disable('sub_n2_n1')");
+ok(wait_until(60, 1, sub {
+    return scalar_query(1,
+        "SELECT active FROM pg_replication_slots
+         WHERE slot_name = '$slot_name'") =~ /f/;
+}), "slot '$slot_name' is inactive on n1 with the subscription disabled");
+psql_or_bail(1, "SELECT pg_drop_replication_slot('$slot_name')");
+
+my $kept_re = qr/not dropping replication slot "\Q$slot_name\E": the primary no longer has it/;
+ok(wait_until(60, 2, sub {
+    psql_or_bail(1, "INSERT INTO synced_test (pad) VALUES ('x')");
+    return count_log($kept_re) > 0;
+}), 'the worker reports the copy it cannot drop');
+is(qport($standby_port,
+    "SELECT count(*) FROM pg_replication_slots
+     WHERE slot_name = '$slot_name' AND synced AND NOT temporary"),
+    '1', 'the synced copy is still there');
+
+# A few more passes: reported once, and the worker is still the same one.
+my $worker_pid = qport($standby_port,
+    "SELECT pid FROM pg_stat_activity WHERE backend_type = 'spock_failover_slots worker'");
+sleep(5);
+is(count_log($kept_re), 1, 'the copy was reported once');
+is(count_log(qr/cannot drop replication slot "\Q$slot_name\E"/), 0,
+    'the worker did not try to drop it');
+is(qport($standby_port,
+    "SELECT pid FROM pg_stat_activity WHERE backend_type = 'spock_failover_slots worker'"),
+    $worker_pid, 'the worker kept running');
+
 # ---------- cleanup ----------
 
 system("$pg_bin/pg_ctl stop -D $standby_datadir -m immediate >/dev/null 2>&1");

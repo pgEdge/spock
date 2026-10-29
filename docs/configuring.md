@@ -566,6 +566,11 @@ not enabled). On PostgreSQL 17 with native slot sync active, the worker still
 connects but makes no check. On PostgreSQL 15 and 18+, this setting is
 ignored.
 
+On PostgreSQL 17, once the worker has taken over from native slot sync, a
+copy that native slot sync made is synchronized like any other, but a
+standby cannot drop it. If the primary drops that slot, the worker leaves
+the copy and reports it once; it is dropped on the promoted node.
+
 ```ini
 spock.failover_slots_database = 'pgedge'
 ```
