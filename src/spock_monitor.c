@@ -367,8 +367,13 @@ spock_monitor_record_event(SpockMonitorEventType type, Oid subid,
 	if (SpockMonitorShm == NULL)
 		return;
 
+	/*
+	 * Every caller passes a literal format, whose arguments
+	 * pg_attribute_printf on the prototype has the compiler check, and
+	 * vsnprintf here is pg_vsnprintf, which always terminates the string.
+	 */
 	va_start(args, fmt);
-	vsnprintf(detail, sizeof(detail), fmt, args);
+	vsnprintf(detail, sizeof(detail), fmt, args);	/* Flawfinder: ignore */
 	va_end(args);
 
 	spock_monitor_append_event(type, subid, lsn, 0, detail);
