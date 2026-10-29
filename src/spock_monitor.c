@@ -1,0 +1,2544 @@
+/*-------------------------------------------------------------------------
+ *
+ * spock_monitor.c
+ *		spock node monitoring
+ *
+ * Everything an operator needs to know about a node without reading the
+ * server log is kept in shared memory and exposed through SQL functions
+ * that back the spock.*_status, spock.*_stats and spock.events views:
+ *
+ *   - a ring of recent events (subscription enable/disable, worker start,
+ *     stop and failure, provider connects, extension upgrades, ...)
+ *   - per-subscription activity counters with the time of the last change
+ *     and the last error message of the apply or sync worker
+ *   - a snapshot of every registered spock worker and of the
+ *     transactions being retried by exception handling
+ *   - the per-table channel counters and the apply group progress
+ *   - host, operating system and version information for reports
+ *
+ * The event ring and the counters are not transactional: an event is
+ * recorded when the reporting code runs, whether or not its transaction
+ * later commits.  Both survive worker restarts but not a postmaster
+ * restart.
+ *
+ * Copyright (c) 2022-2026, pgEdge, Inc.
+ * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1994, The Regents of the University of California
+ *
+ *-------------------------------------------------------------------------
+ */
+#include "postgres.h"
+
+#include <stdlib.h>
+#include <unistd.h>
+#ifndef WIN32
+#include <sys/stat.h>
+#include <sys/statvfs.h>
+#include <sys/utsname.h>
+#endif
+
+#include "funcapi.h"
+#include "miscadmin.h"
+#include "access/heapam.h"
+#include "access/htup_details.h"
+#include "access/table.h"
+#include "catalog/pg_replication_origin.h"
+#include "utils/rel.h"
+#include "utils/acl.h"
+
+#include "catalog/pg_authid_d.h"
+#include "catalog/pg_type.h"
+#include "replication/origin.h"
+#include "replication/slot.h"
+#include "storage/fd.h"
+#include "storage/ipc.h"
+#include "storage/lwlock.h"
+#include "storage/proc.h"
+#include "storage/shmem.h"
+#include "storage/spin.h"
+#include "utils/builtins.h"
+#include "utils/guc.h"
+#include "utils/hsearch.h"
+#include "utils/pg_lsn.h"
+#include "utils/timestamp.h"
+
+#include "pgstat.h"
+
+#include "spock_conflict.h"
+#if PG_VERSION_NUM >= 180000
+#include "spock_conflict_stat.h"
+#endif
+#include "spock_exception_handler.h"
+#include "spock_group.h"
+#include "spock_monitor.h"
+#include "spock_output_plugin.h"
+#include "spock_output_proto.h"
+#include "spock_worker.h"
+#include "spock.h"
+
+#include "spock_compat.h"
+
+PG_FUNCTION_INFO_V1(spock_get_events);
+PG_FUNCTION_INFO_V1(spock_reset_events);
+PG_FUNCTION_INFO_V1(spock_get_worker_status);
+PG_FUNCTION_INFO_V1(spock_get_apply_stats);
+PG_FUNCTION_INFO_V1(spock_reset_subscription_stats);
+PG_FUNCTION_INFO_V1(spock_get_slot_groups);
+PG_FUNCTION_INFO_V1(spock_get_monitor_summary);
+PG_FUNCTION_INFO_V1(spock_get_system_info);
+PG_FUNCTION_INFO_V1(spock_wal_size_bytes);
+PG_FUNCTION_INFO_V1(spock_replication_origin_status);
+PG_FUNCTION_INFO_V1(spock_get_pending_exceptions);
+PG_FUNCTION_INFO_V1(get_channel_stats);
+PG_FUNCTION_INFO_V1(reset_channel_stats);
+PG_FUNCTION_INFO_V1(get_apply_group_progress);
+PG_FUNCTION_INFO_V1(spock_wait_slot_confirm_lsn);
+
+#define SPOCK_MONITOR_TRANCHE_NAME	"spock_monitor"
+
+/* Shared memory header of the event history. */
+typedef struct SpockMonitorShmem
+{
+	LWLock	   *lock;			/* protects the ring below */
+	TimestampTz started_at;		/* when shared memory was initialized */
+	uint64		next_event_id;
+	int			event_capacity;
+	int			event_head;		/* index of the oldest event */
+	int			event_count;
+	SpockMonitorEvent events[FLEXIBLE_ARRAY_MEMBER];
+} SpockMonitorShmem;
+
+typedef enum SpockMonitorSeverity
+{
+	SPOCK_SEVERITY_INFO,
+	SPOCK_SEVERITY_WARNING,
+	SPOCK_SEVERITY_ERROR
+} SpockMonitorSeverity;
+
+typedef struct SpockMonitorEventInfo
+{
+	const char *name;
+	SpockMonitorSeverity severity;
+} SpockMonitorEventInfo;
+
+/* Indexed by SpockMonitorEventType. */
+static const SpockMonitorEventInfo SpockMonitorEventInfos[SPOCK_EVENT_NUM_TYPES] = {
+	{"node_created", SPOCK_SEVERITY_INFO},
+	{"node_dropped", SPOCK_SEVERITY_INFO},
+	{"subscription_created", SPOCK_SEVERITY_INFO},
+	{"subscription_dropped", SPOCK_SEVERITY_INFO},
+	{"subscription_enabled", SPOCK_SEVERITY_INFO},
+	{"subscription_disabled", SPOCK_SEVERITY_WARNING},
+	{"subscription_altered", SPOCK_SEVERITY_INFO},
+	{"worker_started", SPOCK_SEVERITY_INFO},
+	{"worker_stopped", SPOCK_SEVERITY_INFO},
+	{"worker_failed", SPOCK_SEVERITY_ERROR},
+	{"worker_error", SPOCK_SEVERITY_ERROR},
+	{"provider_connected", SPOCK_SEVERITY_INFO},
+	{"provider_disconnected", SPOCK_SEVERITY_WARNING},
+	{"transaction_skipped", SPOCK_SEVERITY_WARNING},
+	{"transaction_discarded", SPOCK_SEVERITY_WARNING},
+	{"sync_started", SPOCK_SEVERITY_INFO},
+	{"sync_finished", SPOCK_SEVERITY_INFO},
+	{"sync_failed", SPOCK_SEVERITY_ERROR},
+	{"slot_created", SPOCK_SEVERITY_INFO},
+	{"stream_started", SPOCK_SEVERITY_INFO},
+	{"stream_stopped", SPOCK_SEVERITY_INFO},
+	{"stream_error", SPOCK_SEVERITY_ERROR},
+	{"apply_paused", SPOCK_SEVERITY_INFO},
+	{"apply_resumed", SPOCK_SEVERITY_INFO},
+	{"repair_mode_enabled", SPOCK_SEVERITY_WARNING},
+	{"repair_mode_disabled", SPOCK_SEVERITY_INFO},
+	{"extension_upgraded", SPOCK_SEVERITY_INFO},
+};
+
+static const char *const SpockMonitorSeverityNames[] = {
+	"info",
+	"warning",
+	"error"
+};
+
+/* Number of subscriptions whose counters fit in shared memory. */
+#define SPOCK_MONITOR_MAX_STATS(_nworkers)	Max(64, 4 * (_nworkers))
+
+int			spock_event_history_size = 1024;
+
+static SpockMonitorShmem *SpockMonitorShm = NULL;
+static HTAB *SpockMonitorStatsHash = NULL;
+static int	spock_monitor_max_stats = 0;
+
+/* Counters entry of the subscription served by this apply or sync worker. */
+SpockMonitorStatsEntry *MySpockMonitorStats = NULL;
+
+/* Set while this walsender runs the spock output plugin. */
+static bool spock_monitor_in_stream = false;
+static NameData spock_monitor_stream_slot;
+
+/* Set once a connection loss has been reported, until its rethrow is seen. */
+static bool spock_monitor_disconnect_reported = false;
+
+static Size spock_monitor_shmem_size(int nevents);
+static void spock_monitor_append_event(SpockMonitorEventType type,
+									   Oid subid, XLogRecPtr lsn,
+									   int sqlerrcode, const char *detail);
+static SpockMonitorStatsEntry *spock_monitor_attach_stats(Oid subid);
+static void spock_monitor_detach_stats(void);
+static void spock_monitor_reset_stats_entry(SpockMonitorStatsEntry *entry,
+											TimestampTz now);
+static void spock_monitor_set_error(const char *message, XLogRecPtr lsn,
+									int sqlerrcode,
+									SpockMonitorCounter counter);
+static void spock_monitor_format_error(ErrorData *edata, char *buf, Size len);
+static const char *spock_worker_status_name(SpockWorker *worker);
+static Datum timestamptz_or_null(TimestampTz ts, bool *isnull);
+static void check_monitor_shmem(void);
+
+
+/*
+ * Define the GUCs of this module.  Called from _PG_init().
+ */
+void
+spock_monitor_init(void)
+{
+	DefineCustomIntVariable("spock.event_history_size",
+							"Number of recent spock events kept in shared memory.",
+							"The spock.events view shows the most recent events "
+							"of the node. Older events are dropped once the "
+							"history is full.",
+							&spock_event_history_size,
+							1024,
+							16,
+							1048576,
+							PGC_POSTMASTER,
+							0,
+							NULL,
+							NULL,
+							NULL);
+}
+
+static Size
+spock_monitor_shmem_size(int nevents)
+{
+	Size		size;
+
+	size = offsetof(SpockMonitorShmem, events);
+	size = add_size(size, mul_size(sizeof(SpockMonitorEvent), nevents));
+
+	return size;
+}
+
+/*
+ * Request shared memory.  Called from the central spock_shmem_request().
+ */
+void
+spock_monitor_shmem_request(int nworkers)
+{
+	Size		size;
+
+	spock_monitor_max_stats = SPOCK_MONITOR_MAX_STATS(nworkers);
+
+	size = spock_monitor_shmem_size(spock_event_history_size);
+	size = add_size(size,
+					hash_estimate_size(spock_monitor_max_stats,
+									   sizeof(SpockMonitorStatsEntry)));
+	RequestAddinShmemSpace(size);
+
+	RequestNamedLWLockTranche(SPOCK_MONITOR_TRANCHE_NAME, 1);
+}
+
+/*
+ * Initialize or attach the shared memory structures.  Called from the
+ * central spock_shmem_startup() with AddinShmemInitLock held.
+ */
+void
+spock_monitor_shmem_startup(bool found)
+{
+	HASHCTL		hctl;
+	bool		is_found;
+
+	Assert(LWLockHeldByMeInMode(AddinShmemInitLock, LW_EXCLUSIVE));
+	Assert(SpockCtx != NULL);
+
+	/* Reset local pointers, see spock_worker_shmem_startup(). */
+	SpockMonitorShm = NULL;
+	SpockMonitorStatsHash = NULL;
+	MySpockMonitorStats = NULL;
+
+	/* In case of EXEC_BACKEND we must compute it in each backend. */
+	spock_monitor_max_stats = SPOCK_MONITOR_MAX_STATS(SpockCtx->total_workers);
+
+	SpockMonitorShm = ShmemInitStruct("spock monitor",
+									  spock_monitor_shmem_size(spock_event_history_size),
+									  &is_found);
+	Assert(found == is_found);
+
+	if (!found)
+	{
+		SpockMonitorShm->lock =
+			&((GetNamedLWLockTranche(SPOCK_MONITOR_TRANCHE_NAME)[0]).lock);
+		SpockMonitorShm->started_at = GetCurrentTimestamp();
+		SpockMonitorShm->next_event_id = 1;
+		SpockMonitorShm->event_capacity = spock_event_history_size;
+		SpockMonitorShm->event_head = 0;
+		SpockMonitorShm->event_count = 0;
+	}
+
+	memset(&hctl, 0, sizeof(hctl));
+	hctl.keysize = sizeof(SpockMonitorStatsKey);
+	hctl.entrysize = sizeof(SpockMonitorStatsEntry);
+	SpockMonitorStatsHash = ShmemInitHash("spock monitor stats hash",
+										  spock_monitor_max_stats,
+										  spock_monitor_max_stats,
+										  &hctl,
+										  HASH_ELEM | HASH_BLOBS |
+										  HASH_FIXED_SIZE);
+}
+
+
+/* ----------------------------------------------------------------------
+ * Event history
+ * ----------------------------------------------------------------------
+ */
+
+/*
+ * Append one event to the ring, dropping the oldest one when full.
+ *
+ * This also runs from the error reporting path.  The ring lock is held
+ * only while an event is written or the ring is copied out, so waiting
+ * for it is safe there.  The one case that is not is an error raised by
+ * this process while it holds the lock itself (an allocation failing in
+ * that copy); that event is skipped rather than deadlocking.  So is one
+ * raised after this process has given up its PGPROC, as a walsender's
+ * stream flag stays set on FATAL: there is nothing to wait with.
+ */
+static void
+spock_monitor_append_event(SpockMonitorEventType type, Oid subid,
+						   XLogRecPtr lsn, int sqlerrcode,
+						   const char *detail)
+{
+	SpockMonitorEvent *event;
+	int			idx;
+
+	if (SpockMonitorShm == NULL || MyProc == NULL)
+		return;
+
+	if (LWLockHeldByMe(SpockMonitorShm->lock))
+		return;
+
+	LWLockAcquire(SpockMonitorShm->lock, LW_EXCLUSIVE);
+
+	if (SpockMonitorShm->event_count == SpockMonitorShm->event_capacity)
+	{
+		idx = SpockMonitorShm->event_head;
+		SpockMonitorShm->event_head =
+			(SpockMonitorShm->event_head + 1) % SpockMonitorShm->event_capacity;
+	}
+	else
+	{
+		idx = (SpockMonitorShm->event_head + SpockMonitorShm->event_count) %
+			SpockMonitorShm->event_capacity;
+		SpockMonitorShm->event_count++;
+	}
+
+	event = &SpockMonitorShm->events[idx];
+	event->event_id = SpockMonitorShm->next_event_id++;
+	event->event_time = GetCurrentTimestamp();
+	event->event_type = type;
+	event->dboid = MyDatabaseId;
+	event->subid = subid;
+	event->pid = MyProcPid;
+	event->sqlerrcode = sqlerrcode;
+	event->lsn = lsn;
+	strlcpy(event->detail, detail, SPOCK_MONITOR_MESSAGE_LEN);
+
+	LWLockRelease(SpockMonitorShm->lock);
+}
+
+/*
+ * Record an event with a printf-style detail text.
+ */
+void
+spock_monitor_record_event(SpockMonitorEventType type, Oid subid,
+						   XLogRecPtr lsn, const char *fmt,...)
+{
+	char		detail[SPOCK_MONITOR_MESSAGE_LEN];
+	va_list		args;
+
+	if (SpockMonitorShm == NULL)
+		return;
+
+	va_start(args, fmt);
+	vsnprintf(detail, sizeof(detail), fmt, args);
+	va_end(args);
+
+	spock_monitor_append_event(type, subid, lsn, 0, detail);
+}
+
+
+/* ----------------------------------------------------------------------
+ * Per-subscription counters
+ * ----------------------------------------------------------------------
+ */
+
+static void
+spock_monitor_reset_stats_entry(SpockMonitorStatsEntry *entry, TimestampTz now)
+{
+	memset(entry->counter, 0, sizeof(entry->counter));
+	memset(entry->counter_time, 0, sizeof(entry->counter_time));
+	entry->last_error_lsn = InvalidXLogRecPtr;
+	entry->last_error_sqlerrcode = 0;
+	entry->last_error_pid = 0;
+	entry->last_error_message[0] = '\0';
+	entry->stats_reset = now;
+}
+
+/*
+ * Attach this worker to the counters of a subscription in the current
+ * database, creating the entry when needed.  Returns NULL when the hash
+ * table is full.  The entry stays allocated until the worker detaches.
+ */
+static SpockMonitorStatsEntry *
+spock_monitor_attach_stats(Oid subid)
+{
+	SpockMonitorStatsKey key;
+	SpockMonitorStatsEntry *entry;
+	bool		found;
+
+	if (SpockMonitorStatsHash == NULL)
+		return NULL;
+
+	memset(&key, 0, sizeof(key));
+	key.dboid = MyDatabaseId;
+	key.subid = subid;
+
+	LWLockAcquire(SpockMonitorShm->lock, LW_EXCLUSIVE);
+
+	/* The hash has a fixed size, so HASH_ENTER_NULL returns NULL when full. */
+	entry = hash_search(SpockMonitorStatsHash, &key, HASH_ENTER_NULL, &found);
+
+	if (entry != NULL)
+	{
+		if (!found)
+		{
+			SpinLockInit(&entry->mutex);
+			spock_monitor_reset_stats_entry(entry, 0);
+			entry->nattached = 0;
+			entry->dropped = false;
+		}
+		else if (entry->dropped)
+		{
+			/* The id was reused before the old worker went away. */
+			SpinLockAcquire(&entry->mutex);
+			spock_monitor_reset_stats_entry(entry, 0);
+			SpinLockRelease(&entry->mutex);
+			entry->dropped = false;
+		}
+		entry->nattached++;
+	}
+
+	LWLockRelease(SpockMonitorShm->lock);
+
+	if (entry == NULL)
+		elog(LOG, "spock monitor statistics table is full, "
+			 "no counters for subscription %u", subid);
+
+	return entry;
+}
+
+/*
+ * Detach this worker from its counters, removing the entry when the
+ * subscription was dropped meanwhile and no other worker uses it.
+ */
+static void
+spock_monitor_detach_stats(void)
+{
+	SpockMonitorStatsEntry *entry = MySpockMonitorStats;
+
+	if (entry == NULL)
+		return;
+
+	LWLockAcquire(SpockMonitorShm->lock, LW_EXCLUSIVE);
+	Assert(entry->nattached > 0);
+	entry->nattached--;
+	if (entry->dropped && entry->nattached == 0)
+		hash_search(SpockMonitorStatsHash, &entry->key, HASH_REMOVE, NULL);
+	LWLockRelease(SpockMonitorShm->lock);
+
+	MySpockMonitorStats = NULL;
+}
+
+/*
+ * Add delta to a counter of the subscription this worker serves.
+ */
+void
+spock_monitor_count(SpockMonitorCounter counter, int64 delta)
+{
+	SpockMonitorStatsEntry *entry = MySpockMonitorStats;
+	TimestampTz now;
+
+	Assert(counter >= 0 && counter < SPOCK_MONITOR_NUM_COUNTERS);
+
+	if (entry == NULL)
+		return;
+
+	now = GetCurrentTimestamp();
+
+	SpinLockAcquire(&entry->mutex);
+	entry->counter[counter] += delta;
+	entry->counter_time[counter] = now;
+	SpinLockRelease(&entry->mutex);
+}
+
+/*
+ * One data message arrived from the provider at "now", which the receive
+ * loop has already read for its idle timeout.
+ */
+void
+spock_monitor_message_received(int nbytes, TimestampTz now)
+{
+	SpockMonitorStatsEntry *entry = MySpockMonitorStats;
+
+	if (entry == NULL)
+		return;
+
+	SpinLockAcquire(&entry->mutex);
+	entry->counter[SPOCK_MONITOR_MESSAGES_RECEIVED]++;
+	entry->counter_time[SPOCK_MONITOR_MESSAGES_RECEIVED] = now;
+	entry->counter[SPOCK_MONITOR_BYTES_RECEIVED] += nbytes;
+	entry->counter_time[SPOCK_MONITOR_BYTES_RECEIVED] = now;
+	SpinLockRelease(&entry->mutex);
+}
+
+static void
+spock_monitor_set_error(const char *message, XLogRecPtr lsn, int sqlerrcode,
+						SpockMonitorCounter counter)
+{
+	SpockMonitorStatsEntry *entry = MySpockMonitorStats;
+	TimestampTz now;
+	SpockMonitorCounter class_counter = SPOCK_MONITOR_NUM_COUNTERS;
+
+	if (entry == NULL)
+		return;
+
+	/* Classes an operator acts on differently from a data error. */
+	if (sqlerrcode == ERRCODE_T_R_DEADLOCK_DETECTED)
+		class_counter = SPOCK_MONITOR_DEADLOCKS;
+	else if (sqlerrcode == ERRCODE_LOCK_NOT_AVAILABLE)
+		class_counter = SPOCK_MONITOR_LOCK_TIMEOUTS;
+	else if (ERRCODE_TO_CATEGORY(sqlerrcode) == ERRCODE_INTEGRITY_CONSTRAINT_VIOLATION)
+		class_counter = SPOCK_MONITOR_CONSTRAINT_VIOLATIONS;
+	else if (ERRCODE_TO_CATEGORY(sqlerrcode) == ERRCODE_INSUFFICIENT_RESOURCES)
+		class_counter = SPOCK_MONITOR_RESOURCE_ERRORS;
+
+	now = GetCurrentTimestamp();
+
+	SpinLockAcquire(&entry->mutex);
+	entry->counter[counter]++;
+	entry->counter_time[counter] = now;
+	if (class_counter != SPOCK_MONITOR_NUM_COUNTERS)
+	{
+		entry->counter[class_counter]++;
+		entry->counter_time[class_counter] = now;
+	}
+	entry->last_error_lsn = lsn;
+	entry->last_error_sqlerrcode = sqlerrcode;
+	entry->last_error_pid = MyProcPid;
+	strlcpy(entry->last_error_message, message, SPOCK_MONITOR_MESSAGE_LEN);
+	SpinLockRelease(&entry->mutex);
+}
+
+/*
+ * Keep an error as the last one of this subscription without counting it
+ * as an apply error: the text of a lost connection, so that the failure
+ * event of the exiting worker can explain itself.
+ */
+static void
+spock_monitor_remember_error(const char *message, XLogRecPtr lsn,
+							 int sqlerrcode)
+{
+	SpockMonitorStatsEntry *entry = MySpockMonitorStats;
+
+	if (entry == NULL)
+		return;
+
+	SpinLockAcquire(&entry->mutex);
+	entry->last_error_lsn = lsn;
+	entry->last_error_sqlerrcode = sqlerrcode;
+	entry->last_error_pid = MyProcPid;
+	strlcpy(entry->last_error_message, message, SPOCK_MONITOR_MESSAGE_LEN);
+	SpinLockRelease(&entry->mutex);
+}
+
+/*
+ * The masking below runs inside error reporting, so it works on the
+ * caller's buffer and allocates nothing.
+ */
+static char *
+spock_monitor_skip_blanks(char *q)
+{
+	while (*q == ' ' || *q == '\t')
+		q++;
+	return q;
+}
+
+/* Mask a value up to the next blank; returns the position after it. */
+static char *
+spock_monitor_mask_bare(char *q)
+{
+	while (*q != '\0' && *q != ' ' && *q != '\t')
+		*q++ = 'X';
+	return q;
+}
+
+/*
+ * Mask a quoted value, q pointing at the opening quote.  The quotes stay,
+ * what they hold is masked, including an escaped quote inside.  Returns the
+ * position after the closing quote.
+ */
+static char *
+spock_monitor_mask_quoted(char *q)
+{
+	q++;
+	while (*q != '\0' && *q != '\'')
+	{
+		if (*q == '\\' && q[1] != '\0')
+			*q++ = 'X';
+		*q++ = 'X';
+	}
+	if (*q == '\'')
+		q++;
+	return q;
+}
+
+/*
+ * Mask every "password = value" of a keyword/value connection string.
+ *
+ * libpq accepts whitespace around the '=' and a quoted value that may hold
+ * spaces or an escaped quote, so stopping at the first space would leave
+ * part of the secret behind, or all of it where the space follows the
+ * keyword.  Mask only when the keyword is followed by '=', which leaves
+ * prose such as "password authentication failed" readable.
+ */
+static void
+spock_monitor_mask_keyword_passwords(char *buf)
+{
+	char	   *p = buf;
+
+	while ((p = pg_strcasestr(p, SPOCK_PSWD_KEYWORD)) != NULL)
+	{
+		char	   *q = p + sizeof(SPOCK_PSWD_KEYWORD) - 1;
+
+		q = spock_monitor_skip_blanks(q);
+		if (*q != '=')
+		{
+			p = q;
+			continue;
+		}
+		q = spock_monitor_skip_blanks(q + 1);
+
+		if (*q == '\'')
+			p = spock_monitor_mask_quoted(q);
+		else
+			p = spock_monitor_mask_bare(q);
+	}
+}
+
+/* A URI DSN has no keyword: mask the userinfo of scheme://user:secret@ */
+static void
+spock_monitor_mask_uri_passwords(char *buf)
+{
+	char	   *p = buf;
+
+	while ((p = strstr(p, "://")) != NULL)
+	{
+		char	   *at,
+				   *slash,
+				   *colon;
+
+		p += 3;
+		slash = strchr(p, '/');
+		at = strchr(p, '@');
+		if (at == NULL || (slash != NULL && at > slash))
+		{
+			p = slash ? slash + 1 : strchr(p, '\0');
+			continue;
+		}
+		colon = memchr(p, ':', at - p);
+		if (colon != NULL)
+			for (colon++; colon < at; colon++)
+				*colon = 'X';
+		p = at;
+	}
+}
+
+/*
+ * Message, detail and context of an error on one line, with any password
+ * in them masked.
+ *
+ * A connection string carries its password, and a failure to connect quotes
+ * the whole DSN back in the message, the detail or the context.  The
+ * emit_log_hook masks what goes to the log, but these rows are readable
+ * through the monitoring views, and the apply worker reports errors it
+ * caught here directly, which never reach that hook at all.  Mask what we
+ * are about to store, which covers every field and every caller.
+ */
+static void
+spock_monitor_format_error(ErrorData *edata, char *buf, Size len)
+{
+	int			n;
+
+	n = snprintf(buf, len, "%s", edata->message);
+	if (edata->detail != NULL && n >= 0 && n < len)
+		n += snprintf(buf + n, len - n, " DETAIL: %s", edata->detail);
+	if (edata->context != NULL && n >= 0 && n < len)
+		snprintf(buf + n, len - n, " CONTEXT: %s", edata->context);
+
+	spock_monitor_mask_keyword_passwords(buf);
+	spock_monitor_mask_uri_passwords(buf);
+}
+
+/*
+ * Called by spock_worker_attach() once the worker is registered in shared
+ * memory and connected to its database.
+ */
+void
+spock_monitor_worker_attached(void)
+{
+	SpockWorker *worker = MySpockWorker;
+
+	if (worker == NULL)
+		return;
+
+	switch (worker->worker_type)
+	{
+		case SPOCK_WORKER_MANAGER:
+			spock_monitor_record_event(SPOCK_EVENT_WORKER_STARTED,
+									   InvalidOid, InvalidXLogRecPtr,
+									   "manager worker");
+			break;
+
+		case SPOCK_WORKER_APPLY:
+			MySpockMonitorStats =
+				spock_monitor_attach_stats(worker->worker.apply.subid);
+			spock_monitor_count(SPOCK_MONITOR_WORKER_STARTS, 1);
+			spock_monitor_record_event(SPOCK_EVENT_WORKER_STARTED,
+									   worker->worker.apply.subid,
+									   InvalidXLogRecPtr,
+									   "apply worker");
+			break;
+
+		case SPOCK_WORKER_SYNC:
+
+			/*
+			 * A sync worker shares the subscription's counters, but a resync
+			 * of ten tables is not ten apply worker restarts, so it keeps its
+			 * own start and failure counts.
+			 */
+			MySpockMonitorStats =
+				spock_monitor_attach_stats(worker->worker.apply.subid);
+			spock_monitor_count(SPOCK_MONITOR_SYNC_WORKER_STARTS, 1);
+			spock_monitor_record_event(SPOCK_EVENT_WORKER_STARTED,
+									   worker->worker.apply.subid,
+									   InvalidXLogRecPtr,
+									   "sync worker for table %s.%s",
+									   NameStr(worker->worker.sync.nspname),
+									   NameStr(worker->worker.sync.relname));
+			break;
+
+		default:
+			break;
+	}
+}
+
+/*
+ * Called by spock_worker_detach() before the worker slot is released.
+ */
+/*
+ * Count a worker's error exit and record it, with the error that caused it
+ * when this process raised one.
+ */
+static void
+spock_monitor_worker_failed(SpockWorker *worker, Oid subid)
+{
+	char		message[SPOCK_MONITOR_MESSAGE_LEN];
+	char		detail[SPOCK_MONITOR_MESSAGE_LEN];
+	int			sqlerrcode = 0;
+	SpockMonitorCounter failures = SPOCK_MONITOR_WORKER_FAILURES;
+	bool		is_sync = worker->worker_type == SPOCK_WORKER_SYNC;
+
+	if (is_sync)
+		failures = SPOCK_MONITOR_SYNC_WORKER_FAILURES;
+
+	message[0] = '\0';
+	if (MySpockMonitorStats != NULL)
+	{
+		TimestampTz now = GetCurrentTimestamp();
+
+		SpinLockAcquire(&MySpockMonitorStats->mutex);
+		MySpockMonitorStats->counter[failures]++;
+		MySpockMonitorStats->counter_time[failures] = now;
+
+		/* Only an error this process raised explains this exit. */
+		if (MySpockMonitorStats->last_error_pid == MyProcPid)
+		{
+			strlcpy(message, MySpockMonitorStats->last_error_message,
+					sizeof(message));
+			sqlerrcode = MySpockMonitorStats->last_error_sqlerrcode;
+		}
+		SpinLockRelease(&MySpockMonitorStats->mutex);
+	}
+
+	snprintf(detail, sizeof(detail), "%s worker exited with error%s%s",
+			 spock_worker_type_name(worker->worker_type),
+			 message[0] != '\0' ? ": " : "", message);
+	spock_monitor_append_event(SPOCK_EVENT_WORKER_FAILED, subid,
+							   InvalidXLogRecPtr, sqlerrcode, detail);
+
+	/*
+	 * A sync worker that dies has failed to copy its table.  Say so under the
+	 * table's own event, with the reason, rather than only when the next
+	 * attempt gives up.
+	 */
+	if (is_sync)
+	{
+		snprintf(detail, sizeof(detail), "table %s.%s%s%s",
+				 NameStr(worker->worker.sync.nspname),
+				 NameStr(worker->worker.sync.relname),
+				 message[0] != '\0' ? ": " : "", message);
+		spock_monitor_append_event(SPOCK_EVENT_SYNC_FAILED, subid,
+								   InvalidXLogRecPtr, sqlerrcode, detail);
+	}
+}
+
+void
+spock_monitor_worker_detached(bool crash)
+{
+	SpockWorker *worker = MySpockWorker;
+	Oid			subid = InvalidOid;
+
+	if (worker == NULL)
+		return;
+
+	if (worker->worker_type == SPOCK_WORKER_APPLY ||
+		worker->worker_type == SPOCK_WORKER_SYNC)
+		subid = worker->worker.apply.subid;
+
+	if (crash)
+		spock_monitor_worker_failed(worker, subid);
+	else
+		spock_monitor_record_event(SPOCK_EVENT_WORKER_STOPPED, subid,
+								   InvalidXLogRecPtr,
+								   "%s worker exited cleanly",
+								   spock_worker_type_name(worker->worker_type));
+
+	spock_monitor_detach_stats();
+}
+
+/*
+ * Connection to the provider established; streaming starts at start_lsn.
+ */
+void
+spock_monitor_provider_connected(const char *slot_name, XLogRecPtr start_lsn)
+{
+	Oid			subid = InvalidOid;
+
+	if (MySpockWorker != NULL &&
+		(MySpockWorker->worker_type == SPOCK_WORKER_APPLY ||
+		 MySpockWorker->worker_type == SPOCK_WORKER_SYNC))
+		subid = MySpockWorker->worker.apply.subid;
+
+	/* Every sync worker connects too; count the apply stream only. */
+	if (MySpockWorker == NULL || MySpockWorker->worker_type == SPOCK_WORKER_APPLY)
+		spock_monitor_count(SPOCK_MONITOR_PROVIDER_CONNECTS, 1);
+	spock_monitor_record_event(SPOCK_EVENT_PROVIDER_CONNECTED, subid, start_lsn,
+							   "streaming from provider %s through slot %s",
+							   MySubscription ? MySubscription->origin->name : "unknown",
+							   slot_name);
+}
+
+/*
+ * Record a lost provider connection: the counter, the event and the text
+ * as the subscription's last error.  Runs inside error reporting on one
+ * path, so it allocates nothing.  The counter pairs with provider_connects,
+ * which counts apply streams only, so a sync worker's failed connection is
+ * recorded but not counted.
+ */
+static void
+spock_monitor_note_disconnect(const char *message, int sqlerrcode)
+{
+	Oid			subid = InvalidOid;
+	char		detail[SPOCK_MONITOR_MESSAGE_LEN];
+
+	if (MySpockWorker != NULL &&
+		(MySpockWorker->worker_type == SPOCK_WORKER_APPLY ||
+		 MySpockWorker->worker_type == SPOCK_WORKER_SYNC))
+		subid = MySpockWorker->worker.apply.subid;
+
+	if (message == NULL)
+		message = "missing error text";
+
+	if (MySpockWorker == NULL || MySpockWorker->worker_type != SPOCK_WORKER_SYNC)
+		spock_monitor_count(SPOCK_MONITOR_PROVIDER_DISCONNECTS, 1);
+	spock_monitor_remember_error(message, InvalidXLogRecPtr, sqlerrcode);
+
+	snprintf(detail, sizeof(detail), "provider %s: %s",
+			 MySubscription ? MySubscription->origin->name : "unknown",
+			 message);
+	spock_monitor_append_event(SPOCK_EVENT_PROVIDER_DISCONNECTED, subid,
+							   InvalidXLogRecPtr, sqlerrcode, detail);
+}
+
+/*
+ * Connection to the provider lost.  Called from the apply worker's error
+ * handler, which rethrows the error afterwards; that report must not be
+ * counted again.
+ */
+void
+spock_monitor_provider_disconnected(const char *message)
+{
+	spock_monitor_note_disconnect(message, ERRCODE_CONNECTION_FAILURE);
+	spock_monitor_disconnect_reported = true;
+}
+
+/*
+ * Errors that mean the peer went away or is not ready rather than that
+ * anything is wrong with the data.  apply_work() uses the same test to
+ * choose its connection-loss branch; such errors are reported through
+ * spock_monitor_provider_disconnected() and never count as apply errors.
+ */
+bool
+spock_monitor_is_connection_error(int sqlerrcode)
+{
+	return (sqlerrcode == ERRCODE_CONNECTION_FAILURE ||
+			sqlerrcode == ERRCODE_CONNECTION_EXCEPTION ||
+			sqlerrcode == ERRCODE_CONNECTION_DOES_NOT_EXIST ||
+			sqlerrcode == ERRCODE_ADMIN_SHUTDOWN ||
+			sqlerrcode == ERRCODE_CRASH_SHUTDOWN ||
+			sqlerrcode == ERRCODE_CANNOT_CONNECT_NOW);
+}
+
+/*
+ * emit_log_hook entry: remember every ERROR or FATAL raised in a spock
+ * worker as the last error of its subscription and as an event, and every
+ * error raised in a walsender running the spock output plugin as a
+ * stream_error event.
+ *
+ * This runs inside error reporting, so it must not allocate memory and
+ * must not raise errors of its own.  It may wait for the event ring lock;
+ * see spock_monitor_append_event().
+ */
+/* Is this an error the monitor records at all? */
+static bool
+spock_monitor_error_wanted(ErrorData *edata)
+{
+	if (SpockMonitorShm == NULL)
+		return false;
+	if (MySpockWorker == NULL && !spock_monitor_in_stream)
+		return false;
+	if (edata->elevel < ERROR || edata->elevel >= PANIC)
+		return false;
+	return edata->message != NULL;
+}
+
+/* An error in an apply or sync worker: the last error and an event. */
+static void
+spock_monitor_report_worker_error(SpockWorker *worker, ErrorData *edata,
+								  const char *message)
+{
+	Oid			subid = InvalidOid;
+
+	if (worker->worker_type == SPOCK_WORKER_APPLY)
+	{
+		subid = worker->worker.apply.subid;
+		spock_monitor_set_error(message, replorigin_session_origin_lsn,
+								edata->sqlerrcode, SPOCK_MONITOR_APPLY_ERRORS);
+	}
+	else if (worker->worker_type == SPOCK_WORKER_SYNC)
+	{
+		subid = worker->worker.apply.subid;
+		spock_monitor_set_error(message, replorigin_session_origin_lsn,
+								edata->sqlerrcode, SPOCK_MONITOR_SYNC_ERRORS);
+	}
+
+	spock_monitor_append_event(SPOCK_EVENT_WORKER_ERROR, subid,
+							   replorigin_session_origin_lsn,
+							   edata->sqlerrcode, message);
+}
+
+void
+spock_monitor_report_error(ErrorData *edata)
+{
+	static bool in_report = false;
+	SpockWorker *worker = MySpockWorker;
+	char		message[SPOCK_MONITOR_MESSAGE_LEN];
+
+	if (in_report || !spock_monitor_error_wanted(edata))
+		return;
+
+	/* The apply worker reported this connection loss before rethrowing. */
+	if (spock_monitor_disconnect_reported)
+	{
+		spock_monitor_disconnect_reported = false;
+		return;
+	}
+
+	/*
+	 * Nothing below should raise, but should it, the flag must not stay set
+	 * and silence the monitor for the rest of the process.
+	 */
+	in_report = true;
+	PG_TRY();
+	{
+		spock_monitor_format_error(edata, message, sizeof(message));
+
+		/*
+		 * A peer going away or a termination by an administrator is not a
+		 * fault of this node.  In a worker it is a lost provider connection;
+		 * one raised before apply_work() has its own handler, at connect or
+		 * START_REPLICATION time, is seen only here.  In a walsender it is
+		 * the subscriber going away and nothing to record.
+		 */
+		if (spock_monitor_is_connection_error(edata->sqlerrcode))
+		{
+			if (worker != NULL)
+				spock_monitor_note_disconnect(message, edata->sqlerrcode);
+		}
+		else if (worker == NULL)
+		{
+			char		detail[SPOCK_MONITOR_MESSAGE_LEN];
+
+			snprintf(detail, sizeof(detail), "slot %s: %s",
+					 NameStr(spock_monitor_stream_slot), message);
+			spock_monitor_append_event(SPOCK_EVENT_STREAM_ERROR, InvalidOid,
+									   InvalidXLogRecPtr, edata->sqlerrcode,
+									   detail);
+		}
+		else
+			spock_monitor_report_worker_error(worker, edata, message);
+	}
+	PG_FINALLY();
+	{
+		in_report = false;
+	}
+	PG_END_TRY();
+}
+
+/*
+ * The output plugin started or stopped in this walsender.  While a stream
+ * is active, errors of this process are reported as stream_error events.
+ *
+ * A regular backend decoding a slot through the SQL functions is not a
+ * stream, and an error there leaves the decoding context in place without
+ * a shutdown call, so only a walsender is tracked.  Returns whether it is.
+ */
+bool
+spock_monitor_stream_started(const char *slot_name)
+{
+	if (MyBackendType != B_WAL_SENDER)
+		return false;
+
+	namestrcpy(&spock_monitor_stream_slot, slot_name);
+	spock_monitor_in_stream = true;
+	return true;
+}
+
+/*
+ * The stream ended: record it once.  A walsender whose subscriber went away
+ * exits without the plugin's shutdown callback, so this is also called from
+ * its exit callback, while the PGPROC is still there.
+ */
+void
+spock_monitor_stream_stopped(void)
+{
+	if (!spock_monitor_in_stream)
+		return;
+
+	spock_monitor_in_stream = false;
+	spock_monitor_record_event(SPOCK_EVENT_STREAM_STOPPED, InvalidOid,
+							   InvalidXLogRecPtr, "slot %s",
+							   NameStr(spock_monitor_stream_slot));
+}
+
+/*
+ * A subscription was created.  A subscription id may be reused after a
+ * drop, so make sure no stale counters are left behind.
+ */
+void
+spock_monitor_create_subscription(Oid subid)
+{
+	spock_monitor_drop_subscription(subid);
+}
+
+/*
+ * A subscription was dropped: forget its counters.  While a worker is
+ * still attached the entry is only marked, and the last worker to detach
+ * removes it.
+ */
+void
+spock_monitor_drop_subscription(Oid subid)
+{
+	SpockMonitorStatsKey key;
+	SpockMonitorStatsEntry *entry;
+
+	if (SpockMonitorStatsHash == NULL)
+		return;
+
+	memset(&key, 0, sizeof(key));
+	key.dboid = MyDatabaseId;
+	key.subid = subid;
+
+	LWLockAcquire(SpockMonitorShm->lock, LW_EXCLUSIVE);
+	entry = hash_search(SpockMonitorStatsHash, &key, HASH_FIND, NULL);
+	if (entry != NULL)
+	{
+		if (entry->nattached > 0)
+			entry->dropped = true;
+		else
+			hash_search(SpockMonitorStatsHash, &key, HASH_REMOVE, NULL);
+	}
+	LWLockRelease(SpockMonitorShm->lock);
+}
+
+
+/* ----------------------------------------------------------------------
+ * SQL functions
+ * ----------------------------------------------------------------------
+ */
+
+static Datum
+timestamptz_or_null(TimestampTz ts, bool *isnull)
+{
+	if (ts == 0)
+	{
+		*isnull = true;
+		return (Datum) 0;
+	}
+
+	*isnull = false;
+	return TimestampTzGetDatum(ts);
+}
+
+static void
+check_monitor_shmem(void)
+{
+	if (SpockCtx == NULL || SpockMonitorShm == NULL)
+		ereport(ERROR,
+				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+				 errmsg("spock must be loaded via shared_preload_libraries")));
+}
+
+/*
+ * spock.get_events()
+ *
+ * The recorded events, oldest first.
+ */
+/* Columns of spock.get_events(). */
+enum
+{
+	EV_EVENT_ID = 0,
+	EV_EVENT_TIME,
+	EV_EVENT_TYPE,
+	EV_SEVERITY,
+	EV_SQLSTATE,
+	EV_DATABASE_ID,
+	EV_SUBSCRIPTION_ID,
+	EV_PID,
+	EV_LSN,
+	EV_DETAIL,
+	EV_NUM_COLUMNS
+};
+
+/* One row of spock.get_events(). */
+static void
+spock_event_row(const SpockMonitorEvent *event, Datum *values, bool *nulls)
+{
+	const SpockMonitorEventInfo *info = &SpockMonitorEventInfos[event->event_type];
+
+	values[EV_EVENT_ID] = Int64GetDatum((int64) event->event_id);
+	values[EV_EVENT_TIME] = TimestampTzGetDatum(event->event_time);
+	values[EV_EVENT_TYPE] = CStringGetTextDatum(info->name);
+	values[EV_SEVERITY] =
+		CStringGetTextDatum(SpockMonitorSeverityNames[info->severity]);
+
+	if (event->sqlerrcode != 0)
+		values[EV_SQLSTATE] =
+			CStringGetTextDatum(unpack_sql_state(event->sqlerrcode));
+	else
+		nulls[EV_SQLSTATE] = true;
+
+	if (OidIsValid(event->dboid))
+		values[EV_DATABASE_ID] = ObjectIdGetDatum(event->dboid);
+	else
+		nulls[EV_DATABASE_ID] = true;
+
+	if (OidIsValid(event->subid))
+		values[EV_SUBSCRIPTION_ID] = ObjectIdGetDatum(event->subid);
+	else
+		nulls[EV_SUBSCRIPTION_ID] = true;
+
+	values[EV_PID] = Int32GetDatum(event->pid);
+
+	if (!XLogRecPtrIsInvalid(event->lsn))
+		values[EV_LSN] = LSNGetDatum(event->lsn);
+	else
+		nulls[EV_LSN] = true;
+
+	if (event->detail[0] != '\0')
+		values[EV_DETAIL] = CStringGetTextDatum(event->detail);
+	else
+		nulls[EV_DETAIL] = true;
+}
+
+Datum
+spock_get_events(PG_FUNCTION_ARGS)
+{
+	ReturnSetInfo *rsinfo = (ReturnSetInfo *) fcinfo->resultinfo;
+	SpockMonitorEvent *events;
+	int			nevents;
+	int			i;
+
+	check_monitor_shmem();
+	InitMaterializedSRF(fcinfo, 0);
+	Assert(rsinfo->setDesc->natts == EV_NUM_COLUMNS);
+
+	/*
+	 * Copy the ring while holding the lock and format afterwards, so that
+	 * workers reporting errors, which wait for the lock, are not held off for
+	 * the whole result.
+	 */
+	LWLockAcquire(SpockMonitorShm->lock, LW_SHARED);
+	nevents = SpockMonitorShm->event_count;
+	events = palloc(Max(nevents, 1) * sizeof(SpockMonitorEvent));
+	for (i = 0; i < nevents; i++)
+	{
+		int			idx;
+
+		idx = (SpockMonitorShm->event_head + i) % SpockMonitorShm->event_capacity;
+		events[i] = SpockMonitorShm->events[idx];
+	}
+	LWLockRelease(SpockMonitorShm->lock);
+
+	for (i = 0; i < nevents; i++)
+	{
+		Datum		values[EV_NUM_COLUMNS] = {0};
+		bool		nulls[EV_NUM_COLUMNS] = {0};
+
+		spock_event_row(&events[i], values, nulls);
+		tuplestore_putvalues(rsinfo->setResult, rsinfo->setDesc, values, nulls);
+	}
+
+	pfree(events);
+
+	return (Datum) 0;
+}
+
+/*
+ * spock.reset_events()
+ *
+ * Empty the event history.  Event ids keep increasing.
+ */
+Datum
+spock_reset_events(PG_FUNCTION_ARGS)
+{
+	SpockMonitorEvent *kept;
+	int			nkept = 0;
+	int			i;
+
+	check_monitor_shmem();
+
+	/*
+	 * The ring is shared by every database of the instance and spock.events
+	 * shows the events of the current database plus those recorded outside
+	 * any database, so only those are dropped here; another database keeps
+	 * its history.  The survivors are copied out and packed back from the
+	 * start of the ring, since packing in place would overwrite entries not
+	 * yet read once the head has wrapped.
+	 */
+	LWLockAcquire(SpockMonitorShm->lock, LW_EXCLUSIVE);
+	kept = palloc(sizeof(SpockMonitorEvent) *
+				  Max(SpockMonitorShm->event_count, 1));
+	for (i = 0; i < SpockMonitorShm->event_count; i++)
+	{
+		int			idx = (SpockMonitorShm->event_head + i) %
+			SpockMonitorShm->event_capacity;
+		SpockMonitorEvent *event = &SpockMonitorShm->events[idx];
+
+		if (event->dboid == MyDatabaseId || !OidIsValid(event->dboid))
+			continue;
+		kept[nkept++] = *event;
+	}
+	for (i = 0; i < nkept; i++)
+		SpockMonitorShm->events[i] = kept[i];
+	SpockMonitorShm->event_head = 0;
+	SpockMonitorShm->event_count = nkept;
+	LWLockRelease(SpockMonitorShm->lock);
+
+	pfree(kept);
+	PG_RETURN_VOID();
+}
+
+/*
+ * Human readable state of a worker slot.
+ */
+static const char *
+spock_worker_status_name(SpockWorker *worker)
+{
+	static const char *const names[] = {
+		[SPOCK_WORKER_STATUS_NONE] = "starting",
+		[SPOCK_WORKER_STATUS_IDLE] = "idle",
+		[SPOCK_WORKER_STATUS_RUNNING] = "running",
+		[SPOCK_WORKER_STATUS_STOPPING] = "stopping",
+		[SPOCK_WORKER_STATUS_STOPPED] = "stopped",
+		[SPOCK_WORKER_STATUS_FAILED] = "failed"
+	};
+	int			status = (int) worker->worker_status;
+
+	if (worker->proc == NULL)
+		return worker->terminated_at != 0 ? "restart pending" : "starting";
+
+	if (worker->worker_type == SPOCK_WORKER_MANAGER)
+		return "running";
+
+	if (status >= 0 && status < lengthof(names) && names[status] != NULL)
+		return names[status];
+
+	return "unknown";
+}
+
+/* Columns of spock.get_worker_status(). */
+enum
+{
+	WS_WORKER_SLOT = 0,
+	WS_WORKER_TYPE,
+	WS_PID,
+	WS_DATABASE_ID,
+	WS_SUBSCRIPTION_ID,
+	WS_WORKER_STATUS,
+	WS_GENERATION,
+	WS_TERMINATED_AT,
+	WS_RESTART_DELAY,
+	WS_PAUSED,
+	WS_IN_EXCEPTION_HANDLING,
+	WS_SYNC_PENDING,
+	WS_REPLAY_STOP_LSN,
+	WS_REMOTE_WAL_INSERT_LSN,
+	WS_SYNC_SCHEMA_NAME,
+	WS_SYNC_TABLE_NAME,
+	WS_NUM_COLUMNS
+};
+
+/* The supervisor has no worker slot; it gets a row of its own. */
+static void
+spock_worker_status_supervisor_row(ReturnSetInfo *rsinfo)
+{
+	Datum		values[WS_NUM_COLUMNS] = {0};
+	bool		nulls[WS_NUM_COLUMNS];
+
+	memset(nulls, true, sizeof(nulls));
+	values[WS_WORKER_TYPE] = CStringGetTextDatum("supervisor");
+	nulls[WS_WORKER_TYPE] = false;
+	values[WS_PID] = Int32GetDatum(SpockCtx->supervisor->pid);
+	nulls[WS_PID] = false;
+	values[WS_WORKER_STATUS] = CStringGetTextDatum("running");
+	nulls[WS_WORKER_STATUS] = false;
+
+	tuplestore_putvalues(rsinfo->setResult, rsinfo->setDesc, values, nulls);
+}
+
+/* The columns an apply or sync worker has and the others leave NULL. */
+static void
+spock_worker_status_apply_columns(SpockWorker *worker, Datum *values,
+								  bool *nulls)
+{
+	SpockApplyWorker *apply = &worker->worker.apply;
+
+	if (worker->worker_type != SPOCK_WORKER_APPLY &&
+		worker->worker_type != SPOCK_WORKER_SYNC)
+	{
+		nulls[WS_SUBSCRIPTION_ID] = true;
+		nulls[WS_PAUSED] = true;
+		nulls[WS_IN_EXCEPTION_HANDLING] = true;
+		nulls[WS_SYNC_PENDING] = true;
+		nulls[WS_REPLAY_STOP_LSN] = true;
+		nulls[WS_REMOTE_WAL_INSERT_LSN] = true;
+		return;
+	}
+
+	values[WS_SUBSCRIPTION_ID] = ObjectIdGetDatum(apply->subid);
+	values[WS_PAUSED] = BoolGetDatum(apply->paused);
+	values[WS_IN_EXCEPTION_HANDLING] = BoolGetDatum(apply->use_try_block);
+	values[WS_SYNC_PENDING] = BoolGetDatum(apply->sync_pending);
+
+	if (!XLogRecPtrIsInvalid(apply->replay_stop_lsn))
+		values[WS_REPLAY_STOP_LSN] = LSNGetDatum(apply->replay_stop_lsn);
+	else
+		nulls[WS_REPLAY_STOP_LSN] = true;
+
+	if (!XLogRecPtrIsInvalid(worker->remote_wal_insert_lsn))
+		values[WS_REMOTE_WAL_INSERT_LSN] =
+			LSNGetDatum(worker->remote_wal_insert_lsn);
+	else
+		nulls[WS_REMOTE_WAL_INSERT_LSN] = true;
+}
+
+/* One row of spock.get_worker_status() for the worker in slot i. */
+static void
+spock_worker_status_row(int i, SpockWorker *worker, Datum *values,
+						bool *nulls)
+{
+	values[WS_WORKER_SLOT] = Int32GetDatum(i);
+	values[WS_WORKER_TYPE] =
+		CStringGetTextDatum(spock_worker_type_name(worker->worker_type));
+
+	if (worker->proc != NULL)
+		values[WS_PID] = Int32GetDatum(worker->proc->pid);
+	else
+		nulls[WS_PID] = true;
+
+	if (OidIsValid(worker->dboid))
+		values[WS_DATABASE_ID] = ObjectIdGetDatum(worker->dboid);
+	else
+		nulls[WS_DATABASE_ID] = true;
+
+	values[WS_WORKER_STATUS] =
+		CStringGetTextDatum(spock_worker_status_name(worker));
+	values[WS_GENERATION] = Int32GetDatum((int32) worker->generation);
+	values[WS_TERMINATED_AT] =
+		timestamptz_or_null(worker->terminated_at, &nulls[WS_TERMINATED_AT]);
+	values[WS_RESTART_DELAY] = Int32GetDatum(worker->restart_delay);
+
+	spock_worker_status_apply_columns(worker, values, nulls);
+
+	if (worker->worker_type == SPOCK_WORKER_SYNC)
+	{
+		values[WS_SYNC_SCHEMA_NAME] = NameGetDatum(&worker->worker.sync.nspname);
+		values[WS_SYNC_TABLE_NAME] = NameGetDatum(&worker->worker.sync.relname);
+	}
+	else
+	{
+		nulls[WS_SYNC_SCHEMA_NAME] = true;
+		nulls[WS_SYNC_TABLE_NAME] = true;
+	}
+}
+
+/*
+ * spock.get_worker_status()
+ *
+ * One row per registered spock worker plus one for the supervisor.  Slots
+ * of workers that exited with an error stay listed until the manager has
+ * restarted them, with status "restart pending".
+ */
+Datum
+spock_get_worker_status(PG_FUNCTION_ARGS)
+{
+	ReturnSetInfo *rsinfo = (ReturnSetInfo *) fcinfo->resultinfo;
+	int			i;
+
+	check_monitor_shmem();
+	InitMaterializedSRF(fcinfo, 0);
+	Assert(rsinfo->setDesc->natts == WS_NUM_COLUMNS);
+
+	LWLockAcquire(SpockCtx->lock, LW_SHARED);
+
+	if (SpockCtx->supervisor != NULL)
+		spock_worker_status_supervisor_row(rsinfo);
+
+	for (i = 0; i < SpockCtx->total_workers; i++)
+	{
+		SpockWorker *worker = &SpockCtx->workers[i];
+		Datum		values[WS_NUM_COLUMNS] = {0};
+		bool		nulls[WS_NUM_COLUMNS] = {0};
+
+		if (worker->worker_type == SPOCK_WORKER_NONE)
+			continue;
+
+		spock_worker_status_row(i, worker, values, nulls);
+		tuplestore_putvalues(rsinfo->setResult, rsinfo->setDesc, values, nulls);
+	}
+
+	LWLockRelease(SpockCtx->lock);
+
+	return (Datum) 0;
+}
+
+/*
+ * spock.get_apply_stats()
+ *
+ * The activity counters of every subscription of the current database,
+ * with the conflict counters of the pgstat subsystem where available.
+ */
+/* Columns of spock.get_apply_stats(). */
+enum
+{
+	AS_DATABASE_ID = 0,
+	AS_SUBSCRIPTION_ID,
+	AS_WORKER_STARTS,
+	AS_WORKER_FAILURES,
+	AS_SYNC_WORKER_STARTS,
+	AS_SYNC_WORKER_FAILURES,
+	AS_PROVIDER_CONNECTS,
+	AS_PROVIDER_DISCONNECTS,
+	AS_IDLE_TIMEOUTS,
+	AS_MESSAGES_RECEIVED,
+	AS_BYTES_RECEIVED,
+	AS_XACTS_APPLIED,
+	AS_XACTS_SKIPPED,
+	AS_XACTS_DISCARDED,
+	AS_APPLY_ERRORS,
+	AS_SYNC_ERRORS,
+	AS_DEADLOCKS,
+	AS_LOCK_TIMEOUTS,
+	AS_CONSTRAINT_VIOLATIONS,
+	AS_RESOURCE_ERRORS,
+	AS_TABLES_SYNCED,
+	AS_CONFL_FIRST,
+	AS_CONFL_LAST = AS_CONFL_FIRST + SPOCK_CONFLICT_NUM_TYPES - 1,
+	AS_LAST_WORKER_START,
+	AS_LAST_WORKER_FAILURE,
+	AS_LAST_PROVIDER_CONNECT,
+	AS_LAST_PROVIDER_DISCONNECT,
+	AS_LAST_MESSAGE_RECEIVED,
+	AS_LAST_XACT_APPLIED,
+	AS_LAST_APPLY_ERROR,
+	AS_LAST_SYNC_ERROR,
+	AS_LAST_TABLE_SYNCED,
+	AS_LAST_ERROR_MESSAGE,
+	AS_LAST_ERROR_LSN,
+	AS_LAST_ERROR_SQLSTATE,
+	AS_LAST_ERROR_PID,
+	AS_STATS_RESET,
+	AS_NUM_COLUMNS
+};
+
+/* Counter feeding each of the plain count columns, in column order. */
+static const SpockMonitorCounter apply_stats_count_columns[] = {
+	SPOCK_MONITOR_WORKER_STARTS,
+	SPOCK_MONITOR_WORKER_FAILURES,
+	SPOCK_MONITOR_SYNC_WORKER_STARTS,
+	SPOCK_MONITOR_SYNC_WORKER_FAILURES,
+	SPOCK_MONITOR_PROVIDER_CONNECTS,
+	SPOCK_MONITOR_PROVIDER_DISCONNECTS,
+	SPOCK_MONITOR_IDLE_TIMEOUTS,
+	SPOCK_MONITOR_MESSAGES_RECEIVED,
+	SPOCK_MONITOR_BYTES_RECEIVED,
+	SPOCK_MONITOR_XACTS_APPLIED,
+	SPOCK_MONITOR_XACTS_SKIPPED,
+	SPOCK_MONITOR_XACTS_DISCARDED,
+	SPOCK_MONITOR_APPLY_ERRORS,
+	SPOCK_MONITOR_SYNC_ERRORS,
+	SPOCK_MONITOR_DEADLOCKS,
+	SPOCK_MONITOR_LOCK_TIMEOUTS,
+	SPOCK_MONITOR_CONSTRAINT_VIOLATIONS,
+	SPOCK_MONITOR_RESOURCE_ERRORS,
+	SPOCK_MONITOR_TABLES_SYNCED
+};
+
+/* Counter whose last change feeds each of the timestamp columns. */
+static const SpockMonitorCounter apply_stats_time_columns[] = {
+	SPOCK_MONITOR_WORKER_STARTS,
+	SPOCK_MONITOR_WORKER_FAILURES,
+	SPOCK_MONITOR_PROVIDER_CONNECTS,
+	SPOCK_MONITOR_PROVIDER_DISCONNECTS,
+	SPOCK_MONITOR_MESSAGES_RECEIVED,
+	SPOCK_MONITOR_XACTS_APPLIED,
+	SPOCK_MONITOR_APPLY_ERRORS,
+	SPOCK_MONITOR_SYNC_ERRORS,
+	SPOCK_MONITOR_TABLES_SYNCED
+};
+
+StaticAssertDecl(lengthof(apply_stats_count_columns) == AS_CONFL_FIRST - AS_WORKER_STARTS,
+				 "count column list out of sync");
+StaticAssertDecl(lengthof(apply_stats_time_columns) == AS_LAST_ERROR_MESSAGE - AS_LAST_WORKER_START,
+				 "timestamp column list out of sync");
+
+/*
+ * The conflict counters come from the pgstat subsystem, which has them from
+ * PostgreSQL 18 on.  Before that the columns are NULL.
+ */
+static void
+spock_apply_stats_conflicts(Oid subid, Datum *values, bool *nulls)
+{
+	int			col;
+
+	for (col = AS_CONFL_FIRST; col <= AS_CONFL_LAST; col++)
+		nulls[col] = true;
+#if PG_VERSION_NUM >= 180000
+	{
+		Spock_Stat_StatSubEntry *confl;
+		int			i;
+
+		confl = spock_stat_fetch_stat_subscription(subid);
+		for (i = 0; i < SPOCK_CONFLICT_NUM_TYPES; i++)
+		{
+			col = AS_CONFL_FIRST + i;
+			values[col] = Int64GetDatum(confl ? confl->conflict_count[i] : 0);
+			nulls[col] = false;
+		}
+	}
+#endif
+}
+
+/* The last error columns of one spock.get_apply_stats() row. */
+static void
+spock_apply_stats_last_error(const SpockMonitorStatsEntry *copy,
+							 Datum *values, bool *nulls)
+{
+	if (copy->last_error_message[0] != '\0')
+		values[AS_LAST_ERROR_MESSAGE] =
+			CStringGetTextDatum(copy->last_error_message);
+	else
+		nulls[AS_LAST_ERROR_MESSAGE] = true;
+
+	if (!XLogRecPtrIsInvalid(copy->last_error_lsn))
+		values[AS_LAST_ERROR_LSN] = LSNGetDatum(copy->last_error_lsn);
+	else
+		nulls[AS_LAST_ERROR_LSN] = true;
+
+	if (copy->last_error_sqlerrcode != 0)
+		values[AS_LAST_ERROR_SQLSTATE] =
+			CStringGetTextDatum(unpack_sql_state(copy->last_error_sqlerrcode));
+	else
+		nulls[AS_LAST_ERROR_SQLSTATE] = true;
+
+	if (copy->last_error_pid != 0)
+		values[AS_LAST_ERROR_PID] = Int32GetDatum(copy->last_error_pid);
+	else
+		nulls[AS_LAST_ERROR_PID] = true;
+}
+
+/* One row of spock.get_apply_stats() from a copied entry. */
+static void
+spock_apply_stats_row(const SpockMonitorStatsEntry *copy, Datum *values,
+					  bool *nulls)
+{
+	int			col;
+	int			i;
+
+	values[AS_DATABASE_ID] = ObjectIdGetDatum(copy->key.dboid);
+	values[AS_SUBSCRIPTION_ID] = ObjectIdGetDatum(copy->key.subid);
+
+	col = AS_WORKER_STARTS;
+	for (i = 0; i < lengthof(apply_stats_count_columns); i++)
+		values[col++] = Int64GetDatum(copy->counter[apply_stats_count_columns[i]]);
+
+	spock_apply_stats_conflicts(copy->key.subid, values, nulls);
+
+	col = AS_LAST_WORKER_START;
+	for (i = 0; i < lengthof(apply_stats_time_columns); i++)
+	{
+		values[col] = timestamptz_or_null(copy->counter_time[apply_stats_time_columns[i]],
+										  &nulls[col]);
+		col++;
+	}
+
+	spock_apply_stats_last_error(copy, values, nulls);
+
+	values[AS_STATS_RESET] =
+		timestamptz_or_null(copy->stats_reset, &nulls[AS_STATS_RESET]);
+}
+
+/*
+ * Copy the entries of this database out of shared memory while holding the
+ * lock, so that the pgstat lookups and the formatting run without it.
+ */
+static SpockMonitorStatsEntry *
+spock_apply_stats_copy(int *nentries)
+{
+	HASH_SEQ_STATUS hash_seq;
+	SpockMonitorStatsEntry *entry;
+	SpockMonitorStatsEntry *entries;
+	int			n = 0;
+
+	LWLockAcquire(SpockMonitorShm->lock, LW_SHARED);
+	entries = palloc(Max(hash_get_num_entries(SpockMonitorStatsHash), 1) *
+					 sizeof(SpockMonitorStatsEntry));
+	hash_seq_init(&hash_seq, SpockMonitorStatsHash);
+	while ((entry = hash_seq_search(&hash_seq)) != NULL)
+	{
+		if (entry->key.dboid != MyDatabaseId || entry->dropped)
+			continue;
+
+		SpinLockAcquire(&entry->mutex);
+		entries[n] = *entry;
+		SpinLockRelease(&entry->mutex);
+		n++;
+	}
+	LWLockRelease(SpockMonitorShm->lock);
+
+	*nentries = n;
+	return entries;
+}
+
+Datum
+spock_get_apply_stats(PG_FUNCTION_ARGS)
+{
+	ReturnSetInfo *rsinfo = (ReturnSetInfo *) fcinfo->resultinfo;
+	SpockMonitorStatsEntry *entries;
+	int			nentries;
+	int			e;
+
+	check_monitor_shmem();
+	InitMaterializedSRF(fcinfo, 0);
+	Assert(rsinfo->setDesc->natts == AS_NUM_COLUMNS);
+
+	entries = spock_apply_stats_copy(&nentries);
+
+	for (e = 0; e < nentries; e++)
+	{
+		Datum		values[AS_NUM_COLUMNS] = {0};
+		bool		nulls[AS_NUM_COLUMNS] = {0};
+
+		spock_apply_stats_row(&entries[e], values, nulls);
+		tuplestore_putvalues(rsinfo->setResult, rsinfo->setDesc, values, nulls);
+	}
+
+	pfree(entries);
+
+	return (Datum) 0;
+}
+
+/*
+ * Reset the pgstat conflict counters of one subscription, or of every
+ * subscription of this database for InvalidOid.  They exist from
+ * PostgreSQL 18 on.
+ */
+static void
+spock_monitor_reset_conflicts(Oid subid)
+{
+#if PG_VERSION_NUM >= 180000
+	SpockLocalNode *node;
+	List	   *subs;
+	ListCell   *lc;
+
+	if (OidIsValid(subid))
+	{
+		spock_stat_reset_subscription_conflicts(subid);
+		return;
+	}
+
+	/* Only this database's subscriptions, like the counters. */
+	node = get_local_node(false, true);
+	if (node == NULL)
+		return;
+
+	subs = get_node_subscriptions(node->node->id, false);
+	foreach(lc, subs)
+		spock_stat_reset_subscription_conflicts(((SpockSubscription *) lfirst(lc))->id);
+#else
+	(void) subid;
+#endif
+}
+
+/*
+ * spock.reset_subscription_stats(subid)
+ *
+ * Reset the activity and conflict counters of one subscription, or of all
+ * subscriptions when called with NULL.
+ */
+Datum
+spock_reset_subscription_stats(PG_FUNCTION_ARGS)
+{
+	Oid			subid = InvalidOid;
+	TimestampTz now = GetCurrentTimestamp();
+	HASH_SEQ_STATUS hash_seq;
+	SpockMonitorStatsEntry *entry;
+
+	check_monitor_shmem();
+
+	if (!PG_ARGISNULL(0))
+	{
+		subid = PG_GETARG_OID(0);
+
+		if (!OidIsValid(subid))
+			ereport(ERROR,
+					(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+					 errmsg("invalid subscription OID %u", subid)));
+	}
+
+	LWLockAcquire(SpockMonitorShm->lock, LW_EXCLUSIVE);
+
+	hash_seq_init(&hash_seq, SpockMonitorStatsHash);
+	while ((entry = hash_seq_search(&hash_seq)) != NULL)
+	{
+		if (entry->key.dboid != MyDatabaseId || entry->dropped)
+			continue;
+		if (OidIsValid(subid) && entry->key.subid != subid)
+			continue;
+
+		SpinLockAcquire(&entry->mutex);
+		spock_monitor_reset_stats_entry(entry, now);
+		SpinLockRelease(&entry->mutex);
+	}
+
+	LWLockRelease(SpockMonitorShm->lock);
+
+	spock_monitor_reset_conflicts(subid);
+
+	PG_RETURN_VOID();
+}
+
+/*
+ * spock.get_slot_groups()
+ *
+ * Shared state of the slot groups used by parallel replication slots on
+ * the provider side.
+ */
+Datum
+spock_get_slot_groups(PG_FUNCTION_ARGS)
+{
+	ReturnSetInfo *rsinfo = (ReturnSetInfo *) fcinfo->resultinfo;
+	int			i;
+
+	enum
+	{
+		SG_SLOT_GROUP_NAME = 0,
+		SG_MEMBERS,
+		SG_LAST_LSN,
+		SG_LAST_COMMIT_TS,
+		SG_NUM_COLUMNS
+	};
+
+	check_monitor_shmem();
+	InitMaterializedSRF(fcinfo, 0);
+	Assert(rsinfo->setDesc->natts == SG_NUM_COLUMNS);
+
+	LWLockAcquire(SpockCtx->slot_group_master_lock, LW_SHARED);
+
+	for (i = 0; i < SpockCtx->slot_ngroups; i++)
+	{
+		SpockOutputSlotGroup *group = &SpockCtx->slot_groups[i];
+		Datum		values[SG_NUM_COLUMNS] = {0};
+		bool		nulls[SG_NUM_COLUMNS] = {0};
+
+		if (group->nattached <= 0)
+			continue;
+
+		LWLockAcquire(group->lock, LW_SHARED);
+		values[SG_SLOT_GROUP_NAME] = NameGetDatum(&group->name);
+		values[SG_MEMBERS] = Int32GetDatum(group->nattached);
+		if (!XLogRecPtrIsInvalid(group->last_lsn))
+			values[SG_LAST_LSN] = LSNGetDatum(group->last_lsn);
+		else
+			nulls[SG_LAST_LSN] = true;
+		values[SG_LAST_COMMIT_TS] =
+			timestamptz_or_null(group->last_commit_ts, &nulls[SG_LAST_COMMIT_TS]);
+		LWLockRelease(group->lock);
+
+		tuplestore_putvalues(rsinfo->setResult, rsinfo->setDesc, values, nulls);
+	}
+
+	LWLockRelease(SpockCtx->slot_group_master_lock);
+
+	return (Datum) 0;
+}
+
+/*
+ * spock.get_monitor_summary()
+ *
+ * One row with the state of the shared memory structures of this node.
+ */
+/* Columns of spock.get_monitor_summary(). */
+enum
+{
+	MS_STARTED_AT = 0,
+	MS_SUPERVISOR_PID,
+	MS_WORKER_SLOTS,
+	MS_WORKER_SLOTS_USED,
+	MS_APPLY_PAUSED,
+	MS_EVENTS_CAPACITY,
+	MS_EVENTS_RETAINED,
+	MS_EVENTS_RECORDED,
+	MS_SUBSCRIPTION_STATS_CAPACITY,
+	MS_SUBSCRIPTION_STATS_USED,
+	MS_CHANNEL_STATS_CAPACITY,
+	MS_CHANNEL_STATS_USED,
+	MS_CHANNEL_STATS_FULL,
+	MS_NUM_COLUMNS
+};
+
+/* The worker and channel columns, read under SpockCtx->lock. */
+static void
+spock_monitor_summary_workers(Datum *values, bool *nulls)
+{
+	int			i;
+	int			slots_used = 0;
+
+	LWLockAcquire(SpockCtx->lock, LW_SHARED);
+	for (i = 0; i < SpockCtx->total_workers; i++)
+	{
+		if (SpockCtx->workers[i].worker_type != SPOCK_WORKER_NONE)
+			slots_used++;
+	}
+	if (SpockCtx->supervisor != NULL)
+		values[MS_SUPERVISOR_PID] = Int32GetDatum(SpockCtx->supervisor->pid);
+	else
+		nulls[MS_SUPERVISOR_PID] = true;
+	values[MS_WORKER_SLOTS] = Int32GetDatum(SpockCtx->total_workers);
+	values[MS_WORKER_SLOTS_USED] = Int32GetDatum(slots_used);
+	values[MS_APPLY_PAUSED] =
+		BoolGetDatum(pg_atomic_read_u32(&SpockCtx->pause_apply) != 0);
+	values[MS_CHANNEL_STATS_CAPACITY] = Int32GetDatum(spock_stats_max_entries);
+	values[MS_CHANNEL_STATS_USED] =
+		Int64GetDatum(SpockHash ? hash_get_num_entries(SpockHash) : 0);
+	/* SpockCtx->lock is already held here, and LWLocks are not reentrant. */
+	values[MS_CHANNEL_STATS_FULL] = BoolGetDatum(SpockCtx->stats_hash_full);
+	LWLockRelease(SpockCtx->lock);
+}
+
+/* The event and subscription statistics columns, under the monitor lock. */
+static void
+spock_monitor_summary_events(Datum *values)
+{
+	LWLockAcquire(SpockMonitorShm->lock, LW_SHARED);
+	values[MS_STARTED_AT] = TimestampTzGetDatum(SpockMonitorShm->started_at);
+	values[MS_EVENTS_CAPACITY] = Int32GetDatum(SpockMonitorShm->event_capacity);
+	values[MS_EVENTS_RETAINED] = Int32GetDatum(SpockMonitorShm->event_count);
+	values[MS_EVENTS_RECORDED] =
+		Int64GetDatum((int64) (SpockMonitorShm->next_event_id - 1));
+	values[MS_SUBSCRIPTION_STATS_CAPACITY] = Int32GetDatum(spock_monitor_max_stats);
+	values[MS_SUBSCRIPTION_STATS_USED] =
+		Int32GetDatum((int32) hash_get_num_entries(SpockMonitorStatsHash));
+	LWLockRelease(SpockMonitorShm->lock);
+}
+
+Datum
+spock_get_monitor_summary(PG_FUNCTION_ARGS)
+{
+	TupleDesc	tupdesc;
+	HeapTuple	tuple;
+	Datum		values[MS_NUM_COLUMNS] = {0};
+	bool		nulls[MS_NUM_COLUMNS] = {0};
+
+	check_monitor_shmem();
+
+	if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)
+		elog(ERROR, "return type must be a row type");
+	tupdesc = BlessTupleDesc(tupdesc);
+	Assert(tupdesc->natts == MS_NUM_COLUMNS);
+
+	spock_monitor_summary_workers(values, nulls);
+	spock_monitor_summary_events(values);
+
+	tuple = heap_form_tuple(tupdesc, values, nulls);
+
+	PG_RETURN_DATUM(HeapTupleGetDatum(tuple));
+}
+
+
+/*
+ * spock.get_system_info()
+ *
+ * One row describing the host and the server: operating system, hardware
+ * size, load, free space on the data and WAL volumes, postmaster start
+ * time and the PostgreSQL and spock versions.
+ */
+/* Columns of spock.get_system_info(). */
+enum
+{
+	SI_HOSTNAME = 0,
+	SI_OS_NAME,
+	SI_OS_RELEASE,
+	SI_OS_VERSION,
+	SI_ARCHITECTURE,
+	SI_CPU_COUNT,
+	SI_MEMORY_BYTES,
+	SI_LOAD_AVERAGE_1MIN,
+	SI_LOAD_AVERAGE_5MIN,
+	SI_LOAD_AVERAGE_15MIN,
+	SI_DATA_DIRECTORY,
+	SI_DATA_DISK_TOTAL_BYTES,
+	SI_DATA_DISK_FREE_BYTES,
+	SI_WAL_DISK_TOTAL_BYTES,
+	SI_WAL_DISK_FREE_BYTES,
+	SI_POSTMASTER_PID,
+	SI_POSTMASTER_START_TIME,
+	SI_POSTGRES_VERSION,
+	SI_POSTGRES_VERSION_NUM,
+	SI_SPOCK_VERSION,
+	SI_SPOCK_VERSION_NUM,
+	SI_PROTOCOL_VERSION,
+	SI_MIN_PROTOCOL_VERSION,
+	SI_NUM_COLUMNS
+};
+
+/* Host name and operating system. */
+static void
+spock_system_info_os(Datum *values, bool *nulls)
+{
+	char		hostname[256];
+#ifndef WIN32
+	struct utsname uts;
+#endif
+
+	if (gethostname(hostname, sizeof(hostname)) == 0)
+	{
+		hostname[sizeof(hostname) - 1] = '\0';
+		values[SI_HOSTNAME] = CStringGetTextDatum(hostname);
+	}
+	else
+		nulls[SI_HOSTNAME] = true;
+
+#ifndef WIN32
+	if (uname(&uts) == 0)
+	{
+		values[SI_OS_NAME] = CStringGetTextDatum(uts.sysname);
+		values[SI_OS_RELEASE] = CStringGetTextDatum(uts.release);
+		values[SI_OS_VERSION] = CStringGetTextDatum(uts.version);
+		values[SI_ARCHITECTURE] = CStringGetTextDatum(uts.machine);
+		return;
+	}
+#endif
+	nulls[SI_OS_NAME] = true;
+	nulls[SI_OS_RELEASE] = true;
+	nulls[SI_OS_VERSION] = true;
+	nulls[SI_ARCHITECTURE] = true;
+}
+
+/* Processors, memory and load averages. */
+static void
+spock_system_info_resources(Datum *values, bool *nulls)
+{
+	long		ncpu = -1;
+	long		pages = -1;
+	long		pagesize = -1;
+	double		loads[3];
+	bool		have_loads = false;
+
+#ifdef _SC_NPROCESSORS_ONLN
+	ncpu = sysconf(_SC_NPROCESSORS_ONLN);
+#endif
+#if defined(_SC_PHYS_PAGES) && defined(_SC_PAGESIZE)
+	pages = sysconf(_SC_PHYS_PAGES);
+	pagesize = sysconf(_SC_PAGESIZE);
+#endif
+#if defined(__linux__) || defined(__APPLE__) || defined(__FreeBSD__) || defined(__NetBSD__) || defined(__OpenBSD__)
+	have_loads = getloadavg(loads, 3) == 3;
+#endif
+
+	if (ncpu > 0)
+		values[SI_CPU_COUNT] = Int32GetDatum((int32) ncpu);
+	else
+		nulls[SI_CPU_COUNT] = true;
+
+	if (pages > 0 && pagesize > 0)
+		values[SI_MEMORY_BYTES] = Int64GetDatum((int64) pages * (int64) pagesize);
+	else
+		nulls[SI_MEMORY_BYTES] = true;
+
+	if (have_loads)
+	{
+		values[SI_LOAD_AVERAGE_1MIN] = Float8GetDatum(loads[0]);
+		values[SI_LOAD_AVERAGE_5MIN] = Float8GetDatum(loads[1]);
+		values[SI_LOAD_AVERAGE_15MIN] = Float8GetDatum(loads[2]);
+	}
+	else
+	{
+		nulls[SI_LOAD_AVERAGE_1MIN] = true;
+		nulls[SI_LOAD_AVERAGE_5MIN] = true;
+		nulls[SI_LOAD_AVERAGE_15MIN] = true;
+	}
+}
+
+/* Total and free space of the volume holding path, or NULLs. */
+static void
+spock_system_info_volume(const char *path, Datum *values, bool *nulls,
+						 int total_col, int free_col)
+{
+#ifndef WIN32
+	struct statvfs fs;
+
+	if (statvfs(path, &fs) == 0)
+	{
+		values[total_col] = Int64GetDatum((int64) fs.f_blocks * (int64) fs.f_frsize);
+		values[free_col] = Int64GetDatum((int64) fs.f_bavail * (int64) fs.f_frsize);
+		return;
+	}
+#endif
+	nulls[total_col] = true;
+	nulls[free_col] = true;
+}
+
+/* The data directory and the space on the volumes holding it and pg_wal. */
+static void
+spock_system_info_storage(Datum *values, bool *nulls)
+{
+	char		walpath[MAXPGPATH];
+
+	/*
+	 * PostgreSQL treats data_directory as a privileged setting: only a role
+	 * with the privileges of pg_read_all_settings may read it, which is the
+	 * test SHOW applies.  This function is readable more widely, so return
+	 * the path only to a caller who could have read it from the GUC anyway,
+	 * and NULL for everyone else.  The sizes derived from it below are
+	 * aggregates and not the path.
+	 */
+	if (has_privs_of_role(GetUserId(), ROLE_PG_READ_ALL_SETTINGS))
+		values[SI_DATA_DIRECTORY] = CStringGetTextDatum(DataDir);
+	else
+		nulls[SI_DATA_DIRECTORY] = true;
+
+	spock_system_info_volume(DataDir, values, nulls,
+							 SI_DATA_DISK_TOTAL_BYTES, SI_DATA_DISK_FREE_BYTES);
+
+	/* pg_wal may be a symlink to another volume, so measure it apart. */
+	snprintf(walpath, sizeof(walpath), "%s/pg_wal", DataDir);
+	spock_system_info_volume(walpath, values, nulls,
+							 SI_WAL_DISK_TOTAL_BYTES, SI_WAL_DISK_FREE_BYTES);
+}
+
+Datum
+spock_get_system_info(PG_FUNCTION_ARGS)
+{
+	TupleDesc	tupdesc;
+	HeapTuple	tuple;
+	Datum		values[SI_NUM_COLUMNS] = {0};
+	bool		nulls[SI_NUM_COLUMNS] = {0};
+
+	if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)
+		elog(ERROR, "return type must be a row type");
+	tupdesc = BlessTupleDesc(tupdesc);
+	Assert(tupdesc->natts == SI_NUM_COLUMNS);
+
+	spock_system_info_os(values, nulls);
+	spock_system_info_resources(values, nulls);
+	spock_system_info_storage(values, nulls);
+
+	values[SI_POSTMASTER_PID] = Int32GetDatum((int32) PostmasterPid);
+	values[SI_POSTMASTER_START_TIME] = TimestampTzGetDatum(PgStartTime);
+	values[SI_POSTGRES_VERSION] = CStringGetTextDatum(PG_VERSION_STR);
+	values[SI_POSTGRES_VERSION_NUM] = Int32GetDatum(PG_VERSION_NUM);
+	values[SI_SPOCK_VERSION] = CStringGetTextDatum(SPOCK_VERSION);
+	values[SI_SPOCK_VERSION_NUM] = Int32GetDatum(SPOCK_VERSION_NUM);
+	values[SI_PROTOCOL_VERSION] = Int32GetDatum(SPOCK_PROTO_VERSION_NUM);
+	values[SI_MIN_PROTOCOL_VERSION] = Int32GetDatum(SPOCK_PROTO_MIN_VERSION_NUM);
+
+	tuple = heap_form_tuple(tupdesc, values, nulls);
+
+	PG_RETURN_DATUM(HeapTupleGetDatum(tuple));
+}
+
+/*
+ * spock.wal_size_bytes()
+ *
+ * The size of pg_wal: the sum of the regular files in it, which is what
+ * pg_ls_waldir() lists.  That function is pg_monitor only and the views
+ * need just the total, so compute it here for any role that can read the
+ * views.
+ */
+Datum
+spock_wal_size_bytes(PG_FUNCTION_ARGS)
+{
+	char		walpath[MAXPGPATH];
+	DIR		   *dir;
+	struct dirent *de;
+	int64		total = 0;
+
+	snprintf(walpath, sizeof(walpath), "%s/pg_wal", DataDir);
+	dir = AllocateDir(walpath);
+	while ((de = ReadDir(dir, walpath)) != NULL)
+	{
+		char		path[MAXPGPATH * 2];
+		struct stat st;
+
+		if (strcmp(de->d_name, ".") == 0 || strcmp(de->d_name, "..") == 0)
+			continue;
+
+		snprintf(path, sizeof(path), "%s/%s", walpath, de->d_name);
+		if (stat(path, &st) < 0)
+		{
+			/* a segment recycled or removed since the directory was read */
+			if (errno == ENOENT)
+				continue;
+			ereport(ERROR,
+					(errcode_for_file_access(),
+					 errmsg("could not stat file \"%s\" in pg_wal: %m",
+							de->d_name)));
+		}
+		if (S_ISREG(st.st_mode))
+			total += st.st_size;
+	}
+	FreeDir(dir);
+
+	PG_RETURN_INT64(total);
+}
+
+/*
+ * spock.replication_origin_status()
+ *
+ * The name and remote progress of every replication origin of this
+ * cluster.  pg_replication_origin_status is superuser only, which would keep
+ * the subscription views from pg_monitor; this reads the same progress
+ * through the origin API.  An origin without progress in shared memory,
+ * which has no row in the core view, has remote_lsn NULL here.
+ */
+Datum
+spock_replication_origin_status(PG_FUNCTION_ARGS)
+{
+	ReturnSetInfo *rsinfo = (ReturnSetInfo *) fcinfo->resultinfo;
+	Relation	rel;
+	TableScanDesc scan;
+	HeapTuple	tuple;
+
+	InitMaterializedSRF(fcinfo, 0);
+	Assert(rsinfo->setDesc->natts == 2);
+
+	rel = table_open(ReplicationOriginRelationId, AccessShareLock);
+	scan = table_beginscan_catalog(rel, 0, NULL);
+	while ((tuple = heap_getnext(scan, ForwardScanDirection)) != NULL)
+	{
+		Form_pg_replication_origin origin;
+		XLogRecPtr	remote_lsn;
+		Datum		values[2] = {0};
+		bool		nulls[2] = {0};
+		bool		isnull;
+
+		origin = (Form_pg_replication_origin) GETSTRUCT(tuple);
+		values[0] = heap_getattr(tuple, Anum_pg_replication_origin_roname,
+								 RelationGetDescr(rel), &isnull);
+		if (isnull)
+			continue;
+
+		remote_lsn = replorigin_get_progress(origin->roident, false);
+		if (XLogRecPtrIsInvalid(remote_lsn))
+			nulls[1] = true;
+		else
+			values[1] = LSNGetDatum(remote_lsn);
+
+		tuplestore_putvalues(rsinfo->setResult, rsinfo->setDesc, values, nulls);
+	}
+	table_endscan(scan);
+	table_close(rel, AccessShareLock);
+
+	return (Datum) 0;
+}
+
+/*
+ * spock.get_pending_exceptions()
+ *
+ * The transactions that apply workers are currently retrying under
+ * spock.exception_behaviour: one row per shared exception log slot that
+ * has an error recorded, with the commit LSN of the failed transaction.
+ * The slot is keyed by subscription name; a slot with an LSN but no error
+ * only marks the transaction in flight and is not reported.
+ */
+Datum
+spock_get_pending_exceptions(PG_FUNCTION_ARGS)
+{
+	ReturnSetInfo *rsinfo = (ReturnSetInfo *) fcinfo->resultinfo;
+	int			i;
+
+	enum
+	{
+		PE_SUBSCRIPTION_NAME = 0,
+		PE_COMMIT_LSN,
+		PE_FAILED_ACTION,
+		PE_ERROR_MESSAGE,
+		PE_NUM_COLUMNS
+	};
+
+	check_monitor_shmem();
+	InitMaterializedSRF(fcinfo, 0);
+	Assert(rsinfo->setDesc->natts == PE_NUM_COLUMNS);
+
+	if (exception_log_ptr == NULL)
+		return (Datum) 0;
+
+	LWLockAcquire(SpockCtx->lock, LW_SHARED);
+
+	for (i = 0; i < SpockCtx->total_workers; i++)
+	{
+		SpockExceptionLog *entry = &exception_log_ptr[i];
+		Datum		values[PE_NUM_COLUMNS] = {0};
+		bool		nulls[PE_NUM_COLUMNS] = {0};
+
+		if (NameStr(entry->slot_name)[0] == '\0' ||
+			entry->initial_error_message[0] == '\0')
+			continue;
+
+		values[PE_SUBSCRIPTION_NAME] = NameGetDatum(&entry->slot_name);
+
+		if (!XLogRecPtrIsInvalid(entry->commit_lsn))
+			values[PE_COMMIT_LSN] = LSNGetDatum(entry->commit_lsn);
+		else
+			nulls[PE_COMMIT_LSN] = true;
+
+		values[PE_FAILED_ACTION] = Int32GetDatum((int32) entry->failed_action);
+
+		/* The writer does not hold a lock, so bound the copy. */
+		values[PE_ERROR_MESSAGE] =
+			PointerGetDatum(cstring_to_text_with_len(entry->initial_error_message,
+													 strnlen(entry->initial_error_message,
+															 sizeof(entry->initial_error_message))));
+
+		tuplestore_putvalues(rsinfo->setResult, rsinfo->setDesc, values, nulls);
+	}
+
+	LWLockRelease(SpockCtx->lock);
+
+	return (Datum) 0;
+}
+
+
+/* ----------------------------------------------------------------------
+ * Channel counters and apply progress
+ * ----------------------------------------------------------------------
+ */
+
+/*
+ * spock.get_channel_stats()
+ *
+ * Per-table tuple counters of the current database.
+ */
+Datum
+get_channel_stats(PG_FUNCTION_ARGS)
+{
+	ReturnSetInfo *rsinfo = (ReturnSetInfo *) fcinfo->resultinfo;
+	HASH_SEQ_STATUS hash_seq;
+	spockStatsEntry *entry;
+	Datum	   *values;
+	bool	   *nulls;
+
+	check_monitor_shmem();
+	Assert(SpockHash != NULL);
+
+	InitMaterializedSRF(fcinfo, 0);
+
+	values = palloc0(sizeof(Datum) * (SPOCK_STATS_NUM_COUNTERS + 2));
+	nulls = palloc0(sizeof(bool) * (SPOCK_STATS_NUM_COUNTERS + 2));
+
+	LWLockAcquire(SpockCtx->lock, LW_SHARED);
+	hash_seq_init(&hash_seq, SpockHash);
+
+	while ((entry = hash_seq_search(&hash_seq)) != NULL)
+	{
+		int			i = 0;
+		int			j;
+
+		if (entry->key.dboid != MyDatabaseId)
+			continue;
+
+		values[i++] = ObjectIdGetDatum(entry->key.subid);
+		values[i++] = ObjectIdGetDatum(entry->key.relid);
+
+		/*
+		 * The writer, handle_stats_counter(), updates the 64-bit counters
+		 * under the entry mutex; take it here too to avoid torn reads.
+		 */
+		SpinLockAcquire(&entry->mutex);
+		for (j = 0; j < SPOCK_STATS_NUM_COUNTERS; j++)
+			values[i++] = Int64GetDatum(entry->counter[j]);
+		SpinLockRelease(&entry->mutex);
+
+		tuplestore_putvalues(rsinfo->setResult, rsinfo->setDesc, values, nulls);
+	}
+
+	LWLockRelease(SpockCtx->lock);
+
+	/*
+	 * stats_hash_full stays set until spock.reset_channel_stats() clears it.
+	 * This function sits under the status views, so clearing it here would
+	 * hide a full table from get_monitor_summary() between two polls and cost
+	 * every poll an exclusive lock while the table is full.
+	 */
+
+	return (Datum) 0;
+}
+
+/*
+ * spock.reset_channel_stats()
+ *
+ * Drop all per-table counters.
+ */
+Datum
+reset_channel_stats(PG_FUNCTION_ARGS)
+{
+	HASH_SEQ_STATUS hash_seq;
+	spockStatsEntry *entry;
+
+	check_monitor_shmem();
+	Assert(SpockHash != NULL);
+
+	LWLockAcquire(SpockCtx->lock, LW_EXCLUSIVE);
+
+	hash_seq_init(&hash_seq, SpockHash);
+	while ((entry = hash_seq_search(&hash_seq)) != NULL)
+	{
+		if (hash_search(SpockHash,
+						&entry->key,
+						HASH_REMOVE,
+						NULL) == NULL)
+			elog(ERROR, "hash table corrupted");
+	}
+
+	/* The table is empty again, so new entries fit. */
+	SpockCtx->stats_hash_full = false;
+
+	LWLockRelease(SpockCtx->lock);
+	PG_RETURN_VOID();
+}
+
+/*
+ * spock.apply_group_progress()
+ *
+ * Replication progress of every apply group.  Timestamps that were never
+ * set are returned as NULL, LSNs are returned as they are because a diff
+ * against LSN 0 is a meaningful value.
+ */
+Datum
+get_apply_group_progress(PG_FUNCTION_ARGS)
+{
+	ReturnSetInfo *rsinfo = (ReturnSetInfo *) fcinfo->resultinfo;
+	HASH_SEQ_STATUS it;
+	SpockGroupEntry *e;
+
+	check_monitor_shmem();
+
+	if (!SpockGroupHash)
+		ereport(ERROR,
+				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+				 errmsg("spock group hash not initialized")));
+
+	InitMaterializedSRF(fcinfo, 0);
+
+	LWLockAcquire(SpockCtx->apply_group_master_lock, LW_SHARED);
+
+	hash_seq_init(&it, SpockGroupHash);
+	while ((e = (SpockGroupEntry *) hash_seq_search(&it)) != NULL)
+	{
+		SpockApplyProgress *sap = &e->progress;
+		Datum		values[_GP_LAST_];
+		bool		nulls[_GP_LAST_] = {0};
+
+		Assert(OidIsValid(sap->key.dbid) && OidIsValid(sap->key.node_id) &&
+			   OidIsValid(sap->key.remote_node_id));
+
+		values[GP_DBOID] = ObjectIdGetDatum(sap->key.dbid);
+		values[GP_NODE_ID] = ObjectIdGetDatum(sap->key.node_id);
+		values[GP_REMOTE_NODE_ID] = ObjectIdGetDatum(sap->key.remote_node_id);
+
+		values[GP_REMOTE_COMMIT_TS] =
+			timestamptz_or_null(sap->remote_commit_ts, &nulls[GP_REMOTE_COMMIT_TS]);
+		values[GP_PREV_REMOTE_TS] =
+			timestamptz_or_null(sap->prev_remote_ts, &nulls[GP_PREV_REMOTE_TS]);
+
+		values[GP_REMOTE_COMMIT_LSN] = LSNGetDatum(sap->remote_commit_lsn);
+		values[GP_REMOTE_INSERT_LSN] = LSNGetDatum(sap->remote_insert_lsn);
+		values[GP_RECEIVED_LSN] = LSNGetDatum(sap->received_lsn);
+
+		values[GP_LAST_UPDATED_TS] =
+			timestamptz_or_null(sap->last_updated_ts, &nulls[GP_LAST_UPDATED_TS]);
+
+		values[GP_UPDATED_BY_DECODE] = BoolGetDatum(sap->updated_by_decode);
+
+		tuplestore_putvalues(rsinfo->setResult, rsinfo->setDesc, values, nulls);
+	}
+
+	LWLockRelease(SpockCtx->apply_group_master_lock);
+
+	return (Datum) 0;
+}
+
+/*
+ * spock.wait_slot_confirm_lsn(slotname, target)
+ *
+ * On a provider, wait until the confirmed_flush position of the named
+ * slot, or of all slots when no name is given, has passed the target.
+ * Without a target the latest local commit is used, or the current WAL
+ * insert position when nothing has been committed yet.
+ *
+ * Errors are not raised for missing slots, so that the caller keeps
+ * waiting across a subscription restart.  There is no timeout; use
+ * statement_timeout.
+ */
+/* A slot in use, and the one named when a name was given. */
+static bool
+spock_slot_is_wanted(ReplicationSlot *s, Name slot_name)
+{
+	if (!s->in_use)
+		return false;
+	return slot_name == NULL ||
+		strncmp(NameStr(*slot_name), NameStr(s->data.name), NAMEDATALEN) == 0;
+}
+
+/*
+ * The lowest confirmed_flush of the slots in use, or of the one named.
+ * Takes ReplicationSlotControlLock.
+ */
+static XLogRecPtr
+spock_oldest_confirmed_lsn(Name slot_name, XLogRecPtr target_lsn)
+{
+	XLogRecPtr	oldest_confirmed_lsn = InvalidXLogRecPtr;
+	int			oldest_slot_pos = -1;
+	int			i;
+
+	LWLockAcquire(ReplicationSlotControlLock, LW_SHARED);
+	for (i = 0; i < max_replication_slots; i++)
+	{
+		ReplicationSlot *s = &ReplicationSlotCtl->replication_slots[i];
+
+		if (!spock_slot_is_wanted(s, slot_name))
+			continue;
+
+		if (oldest_confirmed_lsn == InvalidXLogRecPtr ||
+			(s->data.confirmed_flush != InvalidXLogRecPtr &&
+			 s->data.confirmed_flush < oldest_confirmed_lsn))
+		{
+			oldest_confirmed_lsn = s->data.confirmed_flush;
+			oldest_slot_pos = i;
+		}
+	}
+
+	if (oldest_slot_pos >= 0)
+		elog(DEBUG2, "oldest confirmed lsn is %X/%X on slot '%s', %u bytes left until %X/%X",
+			 LSN_FORMAT_ARGS(oldest_confirmed_lsn),
+			 NameStr(ReplicationSlotCtl->replication_slots[oldest_slot_pos].data.name),
+			 (uint32) (target_lsn - oldest_confirmed_lsn),
+			 LSN_FORMAT_ARGS(target_lsn));
+
+	LWLockRelease(ReplicationSlotControlLock);
+
+	return oldest_confirmed_lsn;
+}
+
+/* The LSN to wait for: the argument, else this session's last commit. */
+static XLogRecPtr
+spock_wait_target_lsn(FunctionCallInfo fcinfo)
+{
+	if (!PG_ARGISNULL(1))
+		return PG_GETARG_LSN(1);
+	if (XLogRecPtrIsInvalid(XactLastCommitEnd))
+		return GetXLogInsertRecPtr();
+	return XactLastCommitEnd;
+}
+
+Datum
+spock_wait_slot_confirm_lsn(PG_FUNCTION_ARGS)
+{
+	XLogRecPtr	target_lsn = spock_wait_target_lsn(fcinfo);
+	Name		slot_name = NULL;
+
+	if (!PG_ARGISNULL(0))
+		slot_name = PG_GETARG_NAME(0);
+
+	elog(DEBUG1, "waiting for %s to pass confirmed_flush position %X/%X",
+		 slot_name == NULL ? "all local slots" : NameStr(*slot_name),
+		 LSN_FORMAT_ARGS(target_lsn));
+
+	while (spock_oldest_confirmed_lsn(slot_name, target_lsn) < target_lsn)
+	{
+		int			rc;
+
+		rc = WaitLatch(&MyProc->procLatch,
+					   WL_LATCH_SET | WL_TIMEOUT | WL_POSTMASTER_DEATH,
+					   1000);
+
+		ResetLatch(&MyProc->procLatch);
+
+		if (rc & WL_POSTMASTER_DEATH)
+			proc_exit(1);
+
+		CHECK_FOR_INTERRUPTS();
+	}
+
+	PG_RETURN_VOID();
+}

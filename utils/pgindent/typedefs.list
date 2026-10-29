@@ -3688,6 +3688,14 @@ SpockGroupKey
 SpockInterface
 SpockLocalNode
 SpockLogVerbosity
+SpockMonitorCounter
+SpockMonitorEvent
+SpockMonitorEventInfo
+SpockMonitorEventType
+SpockMonitorSeverity
+SpockMonitorShmem
+SpockMonitorStatsEntry
+SpockMonitorStatsKey
 SpockNode
 SpockOutputData
 SpockOutputParamType
