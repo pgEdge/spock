@@ -19,6 +19,11 @@
 #      multi-target invocation per family; cross-repo lock per (family, repo_type)).
 #   5. Publish a manifest under _pending/<repo_type>/spock50/ for QA to
 #      certify; promote.yml in pgedge-repo-manager picks it up from there.
+#   6. Certify the packages with PEP (pgedge-pep-test): each build cell records
+#      a package receipt, and one call after the pushes tests them. It never
+#      blocks publication or the manifest. In observe mode product test failures
+#      and coverage gaps are only reported, but the input, evidence and
+#      infrastructure failures listed at the certify job still fail the run.
 #
 # The v6 series (main branch) has its own copy of this workflow that builds
 # spock60 packages — keep the two in sync when changing shared logic.
@@ -227,7 +232,10 @@ jobs:
     # RPM build matrix — one cell per (EL major, arch, PG major).
     # =========================================================================
     package-rpm:
-        name: Package RPM (${{ matrix.image }} ${{ matrix.arch }} pg${{ matrix.pg_major }})
+        # The [pep-cell:<cell_id>] marker in the job DISPLAY NAME is how PEP
+        # matches this job to its detector cell. The cell_id already carries the
+        # PG major (…pkg.pg<NN>), so each PG build is its own cell.
+        name: Package RPM (${{ matrix.image }} ${{ matrix.arch }} pg${{ matrix.pg_major }}) [pep-cell:${{ matrix.cell_id }}]
         needs: [detect-matrix, determine-repo-type]
         if: |
             always() &&
@@ -314,6 +322,7 @@ jobs:
                   repo_client_key: ${{ secrets.PGEDGE_REPO_CLIENT_KEY }}
 
             - name: Upload RPM cell artifact
+              id: up_pkg
               uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
               with:
                   # pg major is part of the name: without it the PG cells of one
@@ -325,6 +334,26 @@ jobs:
                   # incomplete set.
                   if-no-files-found: error
                   retention-days: 7
+
+            # PEP evidence: a pep-receipt/2 binding the artifact just uploaded
+            # (its id, exact name and digest) to this cell. It inspects the same
+            # directory; PEP picks the runtime package and lists the llvmjit
+            # companion as uncertified (debuginfo/debugsource/src are excluded).
+            # Receipt failures do not block publication: the job still succeeds
+            # and push-dnf still runs. A missing receipt shows as a PEP coverage
+            # gap; a present but invalid one fails the certify job (see there).
+            # continue-on-error cannot help if the pinned action itself fails to
+            # download; GitHub resolves it while setting up the job, before any step.
+            - name: Generate pep-receipt/2 for the RPM cell
+              continue-on-error: true
+              uses: pgEdge/pgedge-pep-test/.github/actions/pep-package-receipt@52cd787341f719191e817d3f1c134fc210fbcc53
+              with:
+                  cell_id: ${{ matrix.cell_id }}
+                  family: rpm
+                  package_dir: output/el${{ steps.cell.outputs.os_version }}-${{ matrix.arch }}
+                  package_artifact_id: ${{ steps.up_pkg.outputs.artifact-id }}
+                  package_artifact_name: rpm__el-${{ steps.cell.outputs.os_version }}__${{ matrix.arch }}__pg${{ matrix.pg_major }}
+                  package_artifact_digest: ${{ steps.up_pkg.outputs.artifact-digest }}
 
     # =========================================================================
     # DNF push — single batched multi-target invocation per family.
@@ -440,7 +469,8 @@ jobs:
     # DEB build matrix — one cell per (distro, arch, PG major).
     # =========================================================================
     package-deb:
-        name: Package DEB (${{ matrix.image }} ${{ matrix.arch }} pg${{ matrix.pg_major }})
+        # [pep-cell:<cell_id>] marker: see package-rpm.
+        name: Package DEB (${{ matrix.image }} ${{ matrix.arch }} pg${{ matrix.pg_major }}) [pep-cell:${{ matrix.cell_id }}]
         needs: [detect-matrix, determine-repo-type]
         if: |
             always() &&
@@ -521,6 +551,7 @@ jobs:
                   repo_client_key: ${{ secrets.PGEDGE_REPO_CLIENT_KEY }}
 
             - name: Upload DEB cell artifact
+              id: up_pkg
               uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
               with:
                   name: deb__${{ steps.cell.outputs.distro }}__${{ matrix.arch }}__pg${{ matrix.pg_major }}
@@ -530,6 +561,19 @@ jobs:
                   # incomplete set.
                   if-no-files-found: error
                   retention-days: 7
+
+            # PEP evidence for this cell: see the RPM receipt step (PEP picks the
+            # runtime .deb and excludes -dbgsym). Failures do not block push-apt.
+            - name: Generate pep-receipt/2 for the DEB cell
+              continue-on-error: true
+              uses: pgEdge/pgedge-pep-test/.github/actions/pep-package-receipt@52cd787341f719191e817d3f1c134fc210fbcc53
+              with:
+                  cell_id: ${{ matrix.cell_id }}
+                  family: deb
+                  package_dir: output/${{ steps.cell.outputs.distro }}-${{ matrix.arch }}
+                  package_artifact_id: ${{ steps.up_pkg.outputs.artifact-id }}
+                  package_artifact_name: deb__${{ steps.cell.outputs.distro }}__${{ matrix.arch }}__pg${{ matrix.pg_major }}
+                  package_artifact_digest: ${{ steps.up_pkg.outputs.artifact-digest }}
 
     # =========================================================================
     # APT push — single batched multi-target invocation per family.
@@ -636,6 +680,70 @@ jobs:
                   targets: ${{ steps.targets.outputs.backup }}
                   aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
                   aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+
+    # =========================================================================
+    # PEP certification — release evidence, NOT a prerequisite for publishing
+    # the packages or the manifest (no job needs this one). Spock passes only
+    # facts it owns: the detector matrices, the parsed release identity, whether
+    # the run is simulated, and each push job's result. PEP validates them and
+    # decides the rest: a simulated run gets a preview (nothing installed), a
+    # real tag gets full testing from the channel just published. Each cell is
+    # tested on the PG major it was built for; PG majors PEP cannot test yet
+    # (PG19 today) are reported as coverage gaps, and the RPM llvmjit companion
+    # is listed as built but not certified.
+    #
+    # component is "spock", not spock50: PEP derives the package series from
+    # the release version, so this job can be copied unchanged into the v6
+    # workflow on main, and PG19 cells are tested once PEP supports PG19, with
+    # no change here.
+    #
+    # This job runs after publication and never changes it, but it can still
+    # turn the run red. In observe mode, product test failures and coverage gaps
+    # (PG19, a missing receipt, a family whose push did not succeed) are only
+    # reported. In either mode the job fails when:
+    #   - PEP rejects the inputs (for example a malformed matrix or a missing
+    #     push result);
+    #   - capture fails, or rejects a cell's package evidence as invalid (for
+    #     example a malformed or duplicate receipt, or a checksum mismatch);
+    #   - a test run fails on infrastructure (Docker, image pulls, repository
+    #     access, or on a real release a missing or rejected repository client
+    #     certificate) or cannot prove which package it installed;
+    #   - nothing could be tested at all.
+    # =========================================================================
+    certify:
+        name: Certify packages (PEP)
+        # After every build and push job, so the publication results are final.
+        # always() keeps it running under partial builds, skipped pushes
+        # (simulate_tag) and failures.
+        needs: [detect-matrix, determine-repo-type, package-rpm, package-deb, push-dnf, push-apt]
+        if: always() && needs.determine-repo-type.result == 'success'
+        permissions:
+            contents: read      # nested checkouts of the pinned PEP implementation
+            actions: read       # PEP lists THIS run's jobs and downloads its artifacts by id
+        uses: pgEdge/pgedge-pep-test/.github/workflows/pep-release-certify.yml@v1_STABLE
+        with:
+            rpm_matrix:      ${{ needs.detect-matrix.outputs.rpm_matrix }}
+            deb_matrix:      ${{ needs.detect-matrix.outputs.deb_matrix }}
+            component:       spock
+            version:         ${{ needs.determine-repo-type.outputs.component-version }}
+            buildnum:        ${{ needs.determine-repo-type.outputs.component-buildnum }}
+            effective_tag:   ${{ needs.determine-repo-type.outputs.effective-tag }}
+            channel:         ${{ needs.determine-repo-type.outputs.repo-type }}
+            simulated:       ${{ needs.determine-repo-type.outputs.simulated }}
+            rpm_publication: ${{ needs.push-dnf.result }}
+            deb_publication: ${{ needs.push-apt.result }}
+            enforcement:     observe      # report-only: product test failures do not fail the run
+        # Only for a real release (empty on a simulated run), and PEP forwards them
+        # only to full certification: the optional Docker Hub login, which raises
+        # the image-pull rate limit, and the repository client certificate and key,
+        # which full certification needs to install the published packages from the
+        # gated pgEdge repositories (a full run without them is reported as an
+        # infrastructure failure). No signing, AWS or builder credentials go to PEP.
+        secrets:
+            DOCKERHUB_USERNAME: ${{ needs.determine-repo-type.outputs.simulated == 'false' && secrets.DOCKERHUB_USERNAME || '' }}
+            DOCKERHUB_TOKEN:    ${{ needs.determine-repo-type.outputs.simulated == 'false' && secrets.DOCKERHUB_TOKEN || '' }}
+            PGEDGE_REPO_CLIENT_CRT: ${{ needs.determine-repo-type.outputs.simulated == 'false' && secrets.PGEDGE_REPO_CLIENT_CRT || '' }}
+            PGEDGE_REPO_CLIENT_KEY: ${{ needs.determine-repo-type.outputs.simulated == 'false' && secrets.PGEDGE_REPO_CLIENT_KEY || '' }}
 
     # =========================================================================
     # Aggregated manifest + Slack — _pending/ enqueue for qa-certify/promote.
