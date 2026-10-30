@@ -1,0 +1,1970 @@
+{
+ "_note": "Validation fixture for the T2 harness: the already-published spock50 5.0.13-1 staging files a real build cell uploads, with the sha256 from repository metadata. Nothing is built or published from it; the receipts bind these files to this run's cells only.",
+ "cells": {
+  "pepcell.v1.deb.bookworm.amd64.pkg.pg16": [
+   {
+    "arch": "amd64",
+    "class": "runtime",
+    "file": "pgedge-postgresql-16-spock50_5.0.13-1.bookworm_amd64.deb",
+    "name": "pgedge-postgresql-16-spock50",
+    "sha256": "11ec03b12d0722776679b896f301a8b5a145159fba4d7515e071d3e237f9a5ca",
+    "url": "https://apt.pgedge.com/staging/bookworm/pool/main/p/pgedge-spock50/pgedge-postgresql-16-spock50_5.0.13-1.bookworm_amd64.deb",
+    "version": "5.0.13-1.bookworm"
+   },
+   {
+    "arch": "amd64",
+    "class": "debug",
+    "file": "pgedge-postgresql-16-spock50-dbgsym_5.0.13-1.bookworm_amd64.deb",
+    "name": "pgedge-postgresql-16-spock50-dbgsym",
+    "sha256": "adda2881fce34f2e2178cc06264955a664207edb25302d43b37f04aafbcc91da",
+    "url": "https://apt.pgedge.com/staging/bookworm/pool/main/p/pgedge-spock50/pgedge-postgresql-16-spock50-dbgsym_5.0.13-1.bookworm_amd64.deb",
+    "version": "5.0.13-1.bookworm"
+   }
+  ],
+  "pepcell.v1.deb.bookworm.amd64.pkg.pg17": [
+   {
+    "arch": "amd64",
+    "class": "runtime",
+    "file": "pgedge-postgresql-17-spock50_5.0.13-1.bookworm_amd64.deb",
+    "name": "pgedge-postgresql-17-spock50",
+    "sha256": "3be07f1108af6e038369d21d2f84cb10dff8f7963589141b104bdc3294b18918",
+    "url": "https://apt.pgedge.com/staging/bookworm/pool/main/p/pgedge-spock50/pgedge-postgresql-17-spock50_5.0.13-1.bookworm_amd64.deb",
+    "version": "5.0.13-1.bookworm"
+   },
+   {
+    "arch": "amd64",
+    "class": "debug",
+    "file": "pgedge-postgresql-17-spock50-dbgsym_5.0.13-1.bookworm_amd64.deb",
+    "name": "pgedge-postgresql-17-spock50-dbgsym",
+    "sha256": "a35b670c521bc7411be23fdb44c01d2ca4f776fa43b4aa782f6161e7e1c22d9b",
+    "url": "https://apt.pgedge.com/staging/bookworm/pool/main/p/pgedge-spock50/pgedge-postgresql-17-spock50-dbgsym_5.0.13-1.bookworm_amd64.deb",
+    "version": "5.0.13-1.bookworm"
+   }
+  ],
+  "pepcell.v1.deb.bookworm.amd64.pkg.pg18": [
+   {
+    "arch": "amd64",
+    "class": "runtime",
+    "file": "pgedge-postgresql-18-spock50_5.0.13-1.bookworm_amd64.deb",
+    "name": "pgedge-postgresql-18-spock50",
+    "sha256": "3a336ee003986115ef252aca7ac8fb8a7a687b6e03758059631356707af85fb3",
+    "url": "https://apt.pgedge.com/staging/bookworm/pool/main/p/pgedge-spock50/pgedge-postgresql-18-spock50_5.0.13-1.bookworm_amd64.deb",
+    "version": "5.0.13-1.bookworm"
+   },
+   {
+    "arch": "amd64",
+    "class": "debug",
+    "file": "pgedge-postgresql-18-spock50-dbgsym_5.0.13-1.bookworm_amd64.deb",
+    "name": "pgedge-postgresql-18-spock50-dbgsym",
+    "sha256": "a155a6ca1ad0edb0c5356978f4cc6c6f9fad33e186048d0b6caed10e3c0f22a8",
+    "url": "https://apt.pgedge.com/staging/bookworm/pool/main/p/pgedge-spock50/pgedge-postgresql-18-spock50-dbgsym_5.0.13-1.bookworm_amd64.deb",
+    "version": "5.0.13-1.bookworm"
+   }
+  ],
+  "pepcell.v1.deb.bookworm.amd64.pkg.pg19": [
+   {
+    "arch": "amd64",
+    "class": "runtime",
+    "file": "pgedge-postgresql-19-spock50_5.0.13-1.bookworm_amd64.deb",
+    "name": "pgedge-postgresql-19-spock50",
+    "sha256": "2443945f5f4920c345c8dae04bce766eddbf5c2fde0b07572aea6724dcb71fa9",
+    "url": "https://apt.pgedge.com/staging/bookworm/pool/main/p/pgedge-spock50/pgedge-postgresql-19-spock50_5.0.13-1.bookworm_amd64.deb",
+    "version": "5.0.13-1.bookworm"
+   },
+   {
+    "arch": "amd64",
+    "class": "debug",
+    "file": "pgedge-postgresql-19-spock50-dbgsym_5.0.13-1.bookworm_amd64.deb",
+    "name": "pgedge-postgresql-19-spock50-dbgsym",
+    "sha256": "8cb2180a0fb1c6e7330a175e9ae0a46036cc5832b255bddb7e2df1b4460aa644",
+    "url": "https://apt.pgedge.com/staging/bookworm/pool/main/p/pgedge-spock50/pgedge-postgresql-19-spock50-dbgsym_5.0.13-1.bookworm_amd64.deb",
+    "version": "5.0.13-1.bookworm"
+   }
+  ],
+  "pepcell.v1.deb.bookworm.arm64.pkg.pg16": [
+   {
+    "arch": "arm64",
+    "class": "runtime",
+    "file": "pgedge-postgresql-16-spock50_5.0.13-1.bookworm_arm64.deb",
+    "name": "pgedge-postgresql-16-spock50",
+    "sha256": "37449aee653bec320c8b460ec8df83366815af012ef917fb37b9c362fcf44788",
+    "url": "https://apt.pgedge.com/staging/bookworm/pool/main/p/pgedge-spock50/pgedge-postgresql-16-spock50_5.0.13-1.bookworm_arm64.deb",
+    "version": "5.0.13-1.bookworm"
+   },
+   {
+    "arch": "arm64",
+    "class": "debug",
+    "file": "pgedge-postgresql-16-spock50-dbgsym_5.0.13-1.bookworm_arm64.deb",
+    "name": "pgedge-postgresql-16-spock50-dbgsym",
+    "sha256": "a306fa0597921829b8a264626f42d06f31d34e9846483011e1389c7df2aee3d3",
+    "url": "https://apt.pgedge.com/staging/bookworm/pool/main/p/pgedge-spock50/pgedge-postgresql-16-spock50-dbgsym_5.0.13-1.bookworm_arm64.deb",
+    "version": "5.0.13-1.bookworm"
+   }
+  ],
+  "pepcell.v1.deb.bookworm.arm64.pkg.pg17": [
+   {
+    "arch": "arm64",
+    "class": "runtime",
+    "file": "pgedge-postgresql-17-spock50_5.0.13-1.bookworm_arm64.deb",
+    "name": "pgedge-postgresql-17-spock50",
+    "sha256": "d0406e550f8a8f8e55dae340fb3deb5a57a145c926c954541ed294ee14993ea1",
+    "url": "https://apt.pgedge.com/staging/bookworm/pool/main/p/pgedge-spock50/pgedge-postgresql-17-spock50_5.0.13-1.bookworm_arm64.deb",
+    "version": "5.0.13-1.bookworm"
+   },
+   {
+    "arch": "arm64",
+    "class": "debug",
+    "file": "pgedge-postgresql-17-spock50-dbgsym_5.0.13-1.bookworm_arm64.deb",
+    "name": "pgedge-postgresql-17-spock50-dbgsym",
+    "sha256": "9cdcdc8c41e7c6b80ce834aa37cc9bdfddcefbd00132033430a76808cdfaf375",
+    "url": "https://apt.pgedge.com/staging/bookworm/pool/main/p/pgedge-spock50/pgedge-postgresql-17-spock50-dbgsym_5.0.13-1.bookworm_arm64.deb",
+    "version": "5.0.13-1.bookworm"
+   }
+  ],
+  "pepcell.v1.deb.bookworm.arm64.pkg.pg18": [
+   {
+    "arch": "arm64",
+    "class": "runtime",
+    "file": "pgedge-postgresql-18-spock50_5.0.13-1.bookworm_arm64.deb",
+    "name": "pgedge-postgresql-18-spock50",
+    "sha256": "edb7a93f123815e31c778b91b6b76c7372a217ff27dff83a0b861ad58d6b1754",
+    "url": "https://apt.pgedge.com/staging/bookworm/pool/main/p/pgedge-spock50/pgedge-postgresql-18-spock50_5.0.13-1.bookworm_arm64.deb",
+    "version": "5.0.13-1.bookworm"
+   },
+   {
+    "arch": "arm64",
+    "class": "debug",
+    "file": "pgedge-postgresql-18-spock50-dbgsym_5.0.13-1.bookworm_arm64.deb",
+    "name": "pgedge-postgresql-18-spock50-dbgsym",
+    "sha256": "3fafd772abd0cc92327744875d7f56dbaf0676b39b82a0456e013b14bbd82f83",
+    "url": "https://apt.pgedge.com/staging/bookworm/pool/main/p/pgedge-spock50/pgedge-postgresql-18-spock50-dbgsym_5.0.13-1.bookworm_arm64.deb",
+    "version": "5.0.13-1.bookworm"
+   }
+  ],
+  "pepcell.v1.deb.bookworm.arm64.pkg.pg19": [
+   {
+    "arch": "arm64",
+    "class": "runtime",
+    "file": "pgedge-postgresql-19-spock50_5.0.13-1.bookworm_arm64.deb",
+    "name": "pgedge-postgresql-19-spock50",
+    "sha256": "4d39b5a5aef2ee206602eb0e21fe99d874d0b4f91dc43b1217c445a12c2b992d",
+    "url": "https://apt.pgedge.com/staging/bookworm/pool/main/p/pgedge-spock50/pgedge-postgresql-19-spock50_5.0.13-1.bookworm_arm64.deb",
+    "version": "5.0.13-1.bookworm"
+   },
+   {
+    "arch": "arm64",
+    "class": "debug",
+    "file": "pgedge-postgresql-19-spock50-dbgsym_5.0.13-1.bookworm_arm64.deb",
+    "name": "pgedge-postgresql-19-spock50-dbgsym",
+    "sha256": "aa248883d6e792c90f30e6dfea6df09e667299f80a8aa5cf4ca0777607ac9f1f",
+    "url": "https://apt.pgedge.com/staging/bookworm/pool/main/p/pgedge-spock50/pgedge-postgresql-19-spock50-dbgsym_5.0.13-1.bookworm_arm64.deb",
+    "version": "5.0.13-1.bookworm"
+   }
+  ],
+  "pepcell.v1.deb.jammy.amd64.pkg.pg16": [
+   {
+    "arch": "amd64",
+    "class": "runtime",
+    "file": "pgedge-postgresql-16-spock50_5.0.13-1.jammy_amd64.deb",
+    "name": "pgedge-postgresql-16-spock50",
+    "sha256": "9de232a7a2ac290c7b0cb484e6c428c2510edf38bc9e8f8f88d420495f3070c2",
+    "url": "https://apt.pgedge.com/staging/jammy/pool/main/p/pgedge-spock50/pgedge-postgresql-16-spock50_5.0.13-1.jammy_amd64.deb",
+    "version": "5.0.13-1.jammy"
+   },
+   {
+    "arch": "amd64",
+    "class": "debug",
+    "file": "pgedge-postgresql-16-spock50-dbgsym_5.0.13-1.jammy_amd64.deb",
+    "name": "pgedge-postgresql-16-spock50-dbgsym",
+    "sha256": "fee26b3b35b260793a1bdbd7c7907fea7392b2786e1daa0d7442355460476824",
+    "url": "https://apt.pgedge.com/staging/jammy/pool/main/p/pgedge-spock50/pgedge-postgresql-16-spock50-dbgsym_5.0.13-1.jammy_amd64.deb",
+    "version": "5.0.13-1.jammy"
+   }
+  ],
+  "pepcell.v1.deb.jammy.amd64.pkg.pg17": [
+   {
+    "arch": "amd64",
+    "class": "runtime",
+    "file": "pgedge-postgresql-17-spock50_5.0.13-1.jammy_amd64.deb",
+    "name": "pgedge-postgresql-17-spock50",
+    "sha256": "ed547b46721b45eccc4fcb042065ad7467f367f165f406a3ba5c294e45a20f5b",
+    "url": "https://apt.pgedge.com/staging/jammy/pool/main/p/pgedge-spock50/pgedge-postgresql-17-spock50_5.0.13-1.jammy_amd64.deb",
+    "version": "5.0.13-1.jammy"
+   },
+   {
+    "arch": "amd64",
+    "class": "debug",
+    "file": "pgedge-postgresql-17-spock50-dbgsym_5.0.13-1.jammy_amd64.deb",
+    "name": "pgedge-postgresql-17-spock50-dbgsym",
+    "sha256": "65394e1092d3d5272a880cbbba7643a6fac4657e3bbd735c3af07e8315498d30",
+    "url": "https://apt.pgedge.com/staging/jammy/pool/main/p/pgedge-spock50/pgedge-postgresql-17-spock50-dbgsym_5.0.13-1.jammy_amd64.deb",
+    "version": "5.0.13-1.jammy"
+   }
+  ],
+  "pepcell.v1.deb.jammy.amd64.pkg.pg18": [
+   {
+    "arch": "amd64",
+    "class": "runtime",
+    "file": "pgedge-postgresql-18-spock50_5.0.13-1.jammy_amd64.deb",
+    "name": "pgedge-postgresql-18-spock50",
+    "sha256": "76154f173df45e34ae41be7f0e08fd6f9e77f90bc3a9248942e503ea1d02e882",
+    "url": "https://apt.pgedge.com/staging/jammy/pool/main/p/pgedge-spock50/pgedge-postgresql-18-spock50_5.0.13-1.jammy_amd64.deb",
+    "version": "5.0.13-1.jammy"
+   },
+   {
+    "arch": "amd64",
+    "class": "debug",
+    "file": "pgedge-postgresql-18-spock50-dbgsym_5.0.13-1.jammy_amd64.deb",
+    "name": "pgedge-postgresql-18-spock50-dbgsym",
+    "sha256": "fe57e940009e480271e25de16a74189cce31df3e6b503c8dbf6d92763eb76dca",
+    "url": "https://apt.pgedge.com/staging/jammy/pool/main/p/pgedge-spock50/pgedge-postgresql-18-spock50-dbgsym_5.0.13-1.jammy_amd64.deb",
+    "version": "5.0.13-1.jammy"
+   }
+  ],
+  "pepcell.v1.deb.jammy.amd64.pkg.pg19": [
+   {
+    "arch": "amd64",
+    "class": "runtime",
+    "file": "pgedge-postgresql-19-spock50_5.0.13-1.jammy_amd64.deb",
+    "name": "pgedge-postgresql-19-spock50",
+    "sha256": "79736ff1d276214a7a58eccc0bc80d9b47a9d40b9c3f11c75c6fdc3b24f3d05a",
+    "url": "https://apt.pgedge.com/staging/jammy/pool/main/p/pgedge-spock50/pgedge-postgresql-19-spock50_5.0.13-1.jammy_amd64.deb",
+    "version": "5.0.13-1.jammy"
+   },
+   {
+    "arch": "amd64",
+    "class": "debug",
+    "file": "pgedge-postgresql-19-spock50-dbgsym_5.0.13-1.jammy_amd64.deb",
+    "name": "pgedge-postgresql-19-spock50-dbgsym",
+    "sha256": "aba28e2189b1cf5276bcd1a6a234d4e60bfaa0179cd53fadff0f2ff5f91ffab0",
+    "url": "https://apt.pgedge.com/staging/jammy/pool/main/p/pgedge-spock50/pgedge-postgresql-19-spock50-dbgsym_5.0.13-1.jammy_amd64.deb",
+    "version": "5.0.13-1.jammy"
+   }
+  ],
+  "pepcell.v1.deb.jammy.arm64.pkg.pg16": [
+   {
+    "arch": "arm64",
+    "class": "runtime",
+    "file": "pgedge-postgresql-16-spock50_5.0.13-1.jammy_arm64.deb",
+    "name": "pgedge-postgresql-16-spock50",
+    "sha256": "61aa18547884691425aa2c20a0569c02f503a45d6e5455cb6c52e3c5fcb0701e",
+    "url": "https://apt.pgedge.com/staging/jammy/pool/main/p/pgedge-spock50/pgedge-postgresql-16-spock50_5.0.13-1.jammy_arm64.deb",
+    "version": "5.0.13-1.jammy"
+   },
+   {
+    "arch": "arm64",
+    "class": "debug",
+    "file": "pgedge-postgresql-16-spock50-dbgsym_5.0.13-1.jammy_arm64.deb",
+    "name": "pgedge-postgresql-16-spock50-dbgsym",
+    "sha256": "59e94168388ddfb51b9eb7b68374fa7664ce5084ed174501023bbcfb10bb5c47",
+    "url": "https://apt.pgedge.com/staging/jammy/pool/main/p/pgedge-spock50/pgedge-postgresql-16-spock50-dbgsym_5.0.13-1.jammy_arm64.deb",
+    "version": "5.0.13-1.jammy"
+   }
+  ],
+  "pepcell.v1.deb.jammy.arm64.pkg.pg17": [
+   {
+    "arch": "arm64",
+    "class": "runtime",
+    "file": "pgedge-postgresql-17-spock50_5.0.13-1.jammy_arm64.deb",
+    "name": "pgedge-postgresql-17-spock50",
+    "sha256": "5fd7c21e2b78cfb4feff04a32dbd6d42cce1e0887799814c1453476d99f4cbcf",
+    "url": "https://apt.pgedge.com/staging/jammy/pool/main/p/pgedge-spock50/pgedge-postgresql-17-spock50_5.0.13-1.jammy_arm64.deb",
+    "version": "5.0.13-1.jammy"
+   },
+   {
+    "arch": "arm64",
+    "class": "debug",
+    "file": "pgedge-postgresql-17-spock50-dbgsym_5.0.13-1.jammy_arm64.deb",
+    "name": "pgedge-postgresql-17-spock50-dbgsym",
+    "sha256": "d361c86827926d14bbe3ea2ec55798cff2f0db9e33ef645c9d9fbadd3cb72c62",
+    "url": "https://apt.pgedge.com/staging/jammy/pool/main/p/pgedge-spock50/pgedge-postgresql-17-spock50-dbgsym_5.0.13-1.jammy_arm64.deb",
+    "version": "5.0.13-1.jammy"
+   }
+  ],
+  "pepcell.v1.deb.jammy.arm64.pkg.pg18": [
+   {
+    "arch": "arm64",
+    "class": "runtime",
+    "file": "pgedge-postgresql-18-spock50_5.0.13-1.jammy_arm64.deb",
+    "name": "pgedge-postgresql-18-spock50",
+    "sha256": "c15e33058ef34855ac9aa9e05de3162439deeb854e906790be8489038faf21cd",
+    "url": "https://apt.pgedge.com/staging/jammy/pool/main/p/pgedge-spock50/pgedge-postgresql-18-spock50_5.0.13-1.jammy_arm64.deb",
+    "version": "5.0.13-1.jammy"
+   },
+   {
+    "arch": "arm64",
+    "class": "debug",
+    "file": "pgedge-postgresql-18-spock50-dbgsym_5.0.13-1.jammy_arm64.deb",
+    "name": "pgedge-postgresql-18-spock50-dbgsym",
+    "sha256": "88fa6465183445131b3cdc5c9eb0b337426fd8c099b37c2282f5e7b25848ee3d",
+    "url": "https://apt.pgedge.com/staging/jammy/pool/main/p/pgedge-spock50/pgedge-postgresql-18-spock50-dbgsym_5.0.13-1.jammy_arm64.deb",
+    "version": "5.0.13-1.jammy"
+   }
+  ],
+  "pepcell.v1.deb.jammy.arm64.pkg.pg19": [
+   {
+    "arch": "arm64",
+    "class": "runtime",
+    "file": "pgedge-postgresql-19-spock50_5.0.13-1.jammy_arm64.deb",
+    "name": "pgedge-postgresql-19-spock50",
+    "sha256": "60352e57d3d2c6a168b9ab30bef291a1c2e00970a749af9833013bc374ca1841",
+    "url": "https://apt.pgedge.com/staging/jammy/pool/main/p/pgedge-spock50/pgedge-postgresql-19-spock50_5.0.13-1.jammy_arm64.deb",
+    "version": "5.0.13-1.jammy"
+   },
+   {
+    "arch": "arm64",
+    "class": "debug",
+    "file": "pgedge-postgresql-19-spock50-dbgsym_5.0.13-1.jammy_arm64.deb",
+    "name": "pgedge-postgresql-19-spock50-dbgsym",
+    "sha256": "b99551604e5f11db4577209de9c79f59e156f23702ee19f6689a7c980c7aa4fd",
+    "url": "https://apt.pgedge.com/staging/jammy/pool/main/p/pgedge-spock50/pgedge-postgresql-19-spock50-dbgsym_5.0.13-1.jammy_arm64.deb",
+    "version": "5.0.13-1.jammy"
+   }
+  ],
+  "pepcell.v1.deb.noble.amd64.pkg.pg16": [
+   {
+    "arch": "amd64",
+    "class": "runtime",
+    "file": "pgedge-postgresql-16-spock50_5.0.13-1.noble_amd64.deb",
+    "name": "pgedge-postgresql-16-spock50",
+    "sha256": "ad35de192d2cc18adc9af83d1287ebd6dae4902a3227d2752da36cbe5f257446",
+    "url": "https://apt.pgedge.com/staging/noble/pool/main/p/pgedge-spock50/pgedge-postgresql-16-spock50_5.0.13-1.noble_amd64.deb",
+    "version": "5.0.13-1.noble"
+   },
+   {
+    "arch": "amd64",
+    "class": "debug",
+    "file": "pgedge-postgresql-16-spock50-dbgsym_5.0.13-1.noble_amd64.deb",
+    "name": "pgedge-postgresql-16-spock50-dbgsym",
+    "sha256": "369ae10e51866d7a061f1424da0cc71fddbc1e575d74a63d98442bcbb44652b0",
+    "url": "https://apt.pgedge.com/staging/noble/pool/main/p/pgedge-spock50/pgedge-postgresql-16-spock50-dbgsym_5.0.13-1.noble_amd64.deb",
+    "version": "5.0.13-1.noble"
+   }
+  ],
+  "pepcell.v1.deb.noble.amd64.pkg.pg17": [
+   {
+    "arch": "amd64",
+    "class": "runtime",
+    "file": "pgedge-postgresql-17-spock50_5.0.13-1.noble_amd64.deb",
+    "name": "pgedge-postgresql-17-spock50",
+    "sha256": "09cbc5d523f6a4b41f51e16952f955ded42c3816c80d8d83b00bf150b48266f1",
+    "url": "https://apt.pgedge.com/staging/noble/pool/main/p/pgedge-spock50/pgedge-postgresql-17-spock50_5.0.13-1.noble_amd64.deb",
+    "version": "5.0.13-1.noble"
+   },
+   {
+    "arch": "amd64",
+    "class": "debug",
+    "file": "pgedge-postgresql-17-spock50-dbgsym_5.0.13-1.noble_amd64.deb",
+    "name": "pgedge-postgresql-17-spock50-dbgsym",
+    "sha256": "f177b3353eed62f11252e788486a171d27606744fba022bee98c956e9876947c",
+    "url": "https://apt.pgedge.com/staging/noble/pool/main/p/pgedge-spock50/pgedge-postgresql-17-spock50-dbgsym_5.0.13-1.noble_amd64.deb",
+    "version": "5.0.13-1.noble"
+   }
+  ],
+  "pepcell.v1.deb.noble.amd64.pkg.pg18": [
+   {
+    "arch": "amd64",
+    "class": "runtime",
+    "file": "pgedge-postgresql-18-spock50_5.0.13-1.noble_amd64.deb",
+    "name": "pgedge-postgresql-18-spock50",
+    "sha256": "8320e994a282e5a40bd936a6bba03d65b03c5eaed74714784ce5365a5ce695eb",
+    "url": "https://apt.pgedge.com/staging/noble/pool/main/p/pgedge-spock50/pgedge-postgresql-18-spock50_5.0.13-1.noble_amd64.deb",
+    "version": "5.0.13-1.noble"
+   },
+   {
+    "arch": "amd64",
+    "class": "debug",
+    "file": "pgedge-postgresql-18-spock50-dbgsym_5.0.13-1.noble_amd64.deb",
+    "name": "pgedge-postgresql-18-spock50-dbgsym",
+    "sha256": "fc9e5dd7727c0a4de5eb4290debde29a4cc644b4871ea7789b425dd085a9db97",
+    "url": "https://apt.pgedge.com/staging/noble/pool/main/p/pgedge-spock50/pgedge-postgresql-18-spock50-dbgsym_5.0.13-1.noble_amd64.deb",
+    "version": "5.0.13-1.noble"
+   }
+  ],
+  "pepcell.v1.deb.noble.amd64.pkg.pg19": [
+   {
+    "arch": "amd64",
+    "class": "runtime",
+    "file": "pgedge-postgresql-19-spock50_5.0.13-1.noble_amd64.deb",
+    "name": "pgedge-postgresql-19-spock50",
+    "sha256": "4336af53ab387ce629581cc74a64ccfa8b2ee9691febf1b5430a16ce921a44f2",
+    "url": "https://apt.pgedge.com/staging/noble/pool/main/p/pgedge-spock50/pgedge-postgresql-19-spock50_5.0.13-1.noble_amd64.deb",
+    "version": "5.0.13-1.noble"
+   },
+   {
+    "arch": "amd64",
+    "class": "debug",
+    "file": "pgedge-postgresql-19-spock50-dbgsym_5.0.13-1.noble_amd64.deb",
+    "name": "pgedge-postgresql-19-spock50-dbgsym",
+    "sha256": "74cd1d9a23e9b914299ceaf1ed0c46ed83553a5ec7b56e95d4f3938de107a269",
+    "url": "https://apt.pgedge.com/staging/noble/pool/main/p/pgedge-spock50/pgedge-postgresql-19-spock50-dbgsym_5.0.13-1.noble_amd64.deb",
+    "version": "5.0.13-1.noble"
+   }
+  ],
+  "pepcell.v1.deb.noble.arm64.pkg.pg16": [
+   {
+    "arch": "arm64",
+    "class": "runtime",
+    "file": "pgedge-postgresql-16-spock50_5.0.13-1.noble_arm64.deb",
+    "name": "pgedge-postgresql-16-spock50",
+    "sha256": "2fb873e13fce72be29514d9ab3d58889e7051f171d08d0b3b46ffb3905c6f44b",
+    "url": "https://apt.pgedge.com/staging/noble/pool/main/p/pgedge-spock50/pgedge-postgresql-16-spock50_5.0.13-1.noble_arm64.deb",
+    "version": "5.0.13-1.noble"
+   },
+   {
+    "arch": "arm64",
+    "class": "debug",
+    "file": "pgedge-postgresql-16-spock50-dbgsym_5.0.13-1.noble_arm64.deb",
+    "name": "pgedge-postgresql-16-spock50-dbgsym",
+    "sha256": "e70c8590f103dbdb2ac77887550623e47aecc20fc28939ba0b95cf3ba7b661b0",
+    "url": "https://apt.pgedge.com/staging/noble/pool/main/p/pgedge-spock50/pgedge-postgresql-16-spock50-dbgsym_5.0.13-1.noble_arm64.deb",
+    "version": "5.0.13-1.noble"
+   }
+  ],
+  "pepcell.v1.deb.noble.arm64.pkg.pg17": [
+   {
+    "arch": "arm64",
+    "class": "runtime",
+    "file": "pgedge-postgresql-17-spock50_5.0.13-1.noble_arm64.deb",
+    "name": "pgedge-postgresql-17-spock50",
+    "sha256": "8c5f2f9730dec5340e4eabd250b661f8ef71d5fd5057554af43fe6af2da3dd0d",
+    "url": "https://apt.pgedge.com/staging/noble/pool/main/p/pgedge-spock50/pgedge-postgresql-17-spock50_5.0.13-1.noble_arm64.deb",
+    "version": "5.0.13-1.noble"
+   },
+   {
+    "arch": "arm64",
+    "class": "debug",
+    "file": "pgedge-postgresql-17-spock50-dbgsym_5.0.13-1.noble_arm64.deb",
+    "name": "pgedge-postgresql-17-spock50-dbgsym",
+    "sha256": "88b8102cd7c286fccb21107c27c95f57622259b5edd8e316a3d9544158110438",
+    "url": "https://apt.pgedge.com/staging/noble/pool/main/p/pgedge-spock50/pgedge-postgresql-17-spock50-dbgsym_5.0.13-1.noble_arm64.deb",
+    "version": "5.0.13-1.noble"
+   }
+  ],
+  "pepcell.v1.deb.noble.arm64.pkg.pg18": [
+   {
+    "arch": "arm64",
+    "class": "runtime",
+    "file": "pgedge-postgresql-18-spock50_5.0.13-1.noble_arm64.deb",
+    "name": "pgedge-postgresql-18-spock50",
+    "sha256": "9511dcfc4bd470678285315fa5d7a9b1958233fdb312790d707e92bf1ee43ca6",
+    "url": "https://apt.pgedge.com/staging/noble/pool/main/p/pgedge-spock50/pgedge-postgresql-18-spock50_5.0.13-1.noble_arm64.deb",
+    "version": "5.0.13-1.noble"
+   },
+   {
+    "arch": "arm64",
+    "class": "debug",
+    "file": "pgedge-postgresql-18-spock50-dbgsym_5.0.13-1.noble_arm64.deb",
+    "name": "pgedge-postgresql-18-spock50-dbgsym",
+    "sha256": "5efd505b90dcc7bda7aec8a089690b91c2b774409328daa3805d34b7cc8fb081",
+    "url": "https://apt.pgedge.com/staging/noble/pool/main/p/pgedge-spock50/pgedge-postgresql-18-spock50-dbgsym_5.0.13-1.noble_arm64.deb",
+    "version": "5.0.13-1.noble"
+   }
+  ],
+  "pepcell.v1.deb.noble.arm64.pkg.pg19": [
+   {
+    "arch": "arm64",
+    "class": "runtime",
+    "file": "pgedge-postgresql-19-spock50_5.0.13-1.noble_arm64.deb",
+    "name": "pgedge-postgresql-19-spock50",
+    "sha256": "5b5cb69ae1a86ac2bc3a5303632487ef96a41e77e50ec403e2028c0d30faf59d",
+    "url": "https://apt.pgedge.com/staging/noble/pool/main/p/pgedge-spock50/pgedge-postgresql-19-spock50_5.0.13-1.noble_arm64.deb",
+    "version": "5.0.13-1.noble"
+   },
+   {
+    "arch": "arm64",
+    "class": "debug",
+    "file": "pgedge-postgresql-19-spock50-dbgsym_5.0.13-1.noble_arm64.deb",
+    "name": "pgedge-postgresql-19-spock50-dbgsym",
+    "sha256": "fb42b11de02ba396bfaefe657598bbb1897a3e5a8ce8561ddd9b7d22985a7742",
+    "url": "https://apt.pgedge.com/staging/noble/pool/main/p/pgedge-spock50/pgedge-postgresql-19-spock50-dbgsym_5.0.13-1.noble_arm64.deb",
+    "version": "5.0.13-1.noble"
+   }
+  ],
+  "pepcell.v1.deb.resolute.amd64.pkg.pg16": [
+   {
+    "arch": "amd64",
+    "class": "runtime",
+    "file": "pgedge-postgresql-16-spock50_5.0.13-1.resolute_amd64.deb",
+    "name": "pgedge-postgresql-16-spock50",
+    "sha256": "da8ce18339280aaed17b103052bd50c47940e89188eb9383eb8f70aaa0d87d42",
+    "url": "https://apt.pgedge.com/staging/resolute/pool/main/p/pgedge-spock50/pgedge-postgresql-16-spock50_5.0.13-1.resolute_amd64.deb",
+    "version": "5.0.13-1.resolute"
+   },
+   {
+    "arch": "amd64",
+    "class": "debug",
+    "file": "pgedge-postgresql-16-spock50-dbgsym_5.0.13-1.resolute_amd64.deb",
+    "name": "pgedge-postgresql-16-spock50-dbgsym",
+    "sha256": "1d732d0062e4969831cc45cc6f3b746695a0dd003c223f50ad31ebec6242ac48",
+    "url": "https://apt.pgedge.com/staging/resolute/pool/main/p/pgedge-spock50/pgedge-postgresql-16-spock50-dbgsym_5.0.13-1.resolute_amd64.deb",
+    "version": "5.0.13-1.resolute"
+   }
+  ],
+  "pepcell.v1.deb.resolute.amd64.pkg.pg17": [
+   {
+    "arch": "amd64",
+    "class": "runtime",
+    "file": "pgedge-postgresql-17-spock50_5.0.13-1.resolute_amd64.deb",
+    "name": "pgedge-postgresql-17-spock50",
+    "sha256": "9667c9f69664c8352922be388785e8643bf209f5fbc0e3b277d585d4247a4df6",
+    "url": "https://apt.pgedge.com/staging/resolute/pool/main/p/pgedge-spock50/pgedge-postgresql-17-spock50_5.0.13-1.resolute_amd64.deb",
+    "version": "5.0.13-1.resolute"
+   },
+   {
+    "arch": "amd64",
+    "class": "debug",
+    "file": "pgedge-postgresql-17-spock50-dbgsym_5.0.13-1.resolute_amd64.deb",
+    "name": "pgedge-postgresql-17-spock50-dbgsym",
+    "sha256": "cf8b810b8889a2a98026d0ea6cf7b8fe70d97f300a510507d2b08eb2fab03747",
+    "url": "https://apt.pgedge.com/staging/resolute/pool/main/p/pgedge-spock50/pgedge-postgresql-17-spock50-dbgsym_5.0.13-1.resolute_amd64.deb",
+    "version": "5.0.13-1.resolute"
+   }
+  ],
+  "pepcell.v1.deb.resolute.amd64.pkg.pg18": [
+   {
+    "arch": "amd64",
+    "class": "runtime",
+    "file": "pgedge-postgresql-18-spock50_5.0.13-1.resolute_amd64.deb",
+    "name": "pgedge-postgresql-18-spock50",
+    "sha256": "36f8cbcf27efa77cf5cfa1eccaa50c2868492d9dcaffab660afcdc6317815195",
+    "url": "https://apt.pgedge.com/staging/resolute/pool/main/p/pgedge-spock50/pgedge-postgresql-18-spock50_5.0.13-1.resolute_amd64.deb",
+    "version": "5.0.13-1.resolute"
+   },
+   {
+    "arch": "amd64",
+    "class": "debug",
+    "file": "pgedge-postgresql-18-spock50-dbgsym_5.0.13-1.resolute_amd64.deb",
+    "name": "pgedge-postgresql-18-spock50-dbgsym",
+    "sha256": "31cc0b065e4fcc1400d0b4ca840b9ce3489493daa962322c1ff52176e3df1c82",
+    "url": "https://apt.pgedge.com/staging/resolute/pool/main/p/pgedge-spock50/pgedge-postgresql-18-spock50-dbgsym_5.0.13-1.resolute_amd64.deb",
+    "version": "5.0.13-1.resolute"
+   }
+  ],
+  "pepcell.v1.deb.resolute.amd64.pkg.pg19": [
+   {
+    "arch": "amd64",
+    "class": "runtime",
+    "file": "pgedge-postgresql-19-spock50_5.0.13-1.resolute_amd64.deb",
+    "name": "pgedge-postgresql-19-spock50",
+    "sha256": "9f01349573518f7602481e7d5199be7f29bbfa89e058b35cebf7a4cb1bf198cb",
+    "url": "https://apt.pgedge.com/staging/resolute/pool/main/p/pgedge-spock50/pgedge-postgresql-19-spock50_5.0.13-1.resolute_amd64.deb",
+    "version": "5.0.13-1.resolute"
+   },
+   {
+    "arch": "amd64",
+    "class": "debug",
+    "file": "pgedge-postgresql-19-spock50-dbgsym_5.0.13-1.resolute_amd64.deb",
+    "name": "pgedge-postgresql-19-spock50-dbgsym",
+    "sha256": "38066300e1e4544ce0598e09a1e3fb05cdc3f9eb1f1a4f7bc7e38d1e632d03ec",
+    "url": "https://apt.pgedge.com/staging/resolute/pool/main/p/pgedge-spock50/pgedge-postgresql-19-spock50-dbgsym_5.0.13-1.resolute_amd64.deb",
+    "version": "5.0.13-1.resolute"
+   }
+  ],
+  "pepcell.v1.deb.resolute.arm64.pkg.pg16": [
+   {
+    "arch": "arm64",
+    "class": "runtime",
+    "file": "pgedge-postgresql-16-spock50_5.0.13-1.resolute_arm64.deb",
+    "name": "pgedge-postgresql-16-spock50",
+    "sha256": "062eb4550daca412397c8882de13c3380401bf4f8664a66be5b0e5684a438ddf",
+    "url": "https://apt.pgedge.com/staging/resolute/pool/main/p/pgedge-spock50/pgedge-postgresql-16-spock50_5.0.13-1.resolute_arm64.deb",
+    "version": "5.0.13-1.resolute"
+   },
+   {
+    "arch": "arm64",
+    "class": "debug",
+    "file": "pgedge-postgresql-16-spock50-dbgsym_5.0.13-1.resolute_arm64.deb",
+    "name": "pgedge-postgresql-16-spock50-dbgsym",
+    "sha256": "050415248bb9486a1140c760595aca3aae22e15a4768669bb027a8f4a87d7a99",
+    "url": "https://apt.pgedge.com/staging/resolute/pool/main/p/pgedge-spock50/pgedge-postgresql-16-spock50-dbgsym_5.0.13-1.resolute_arm64.deb",
+    "version": "5.0.13-1.resolute"
+   }
+  ],
+  "pepcell.v1.deb.resolute.arm64.pkg.pg17": [
+   {
+    "arch": "arm64",
+    "class": "runtime",
+    "file": "pgedge-postgresql-17-spock50_5.0.13-1.resolute_arm64.deb",
+    "name": "pgedge-postgresql-17-spock50",
+    "sha256": "8fd357c0291eeae14be43deeb5aff60817872910c1ec4e8069ec0e2f308b2398",
+    "url": "https://apt.pgedge.com/staging/resolute/pool/main/p/pgedge-spock50/pgedge-postgresql-17-spock50_5.0.13-1.resolute_arm64.deb",
+    "version": "5.0.13-1.resolute"
+   },
+   {
+    "arch": "arm64",
+    "class": "debug",
+    "file": "pgedge-postgresql-17-spock50-dbgsym_5.0.13-1.resolute_arm64.deb",
+    "name": "pgedge-postgresql-17-spock50-dbgsym",
+    "sha256": "668c30666b9807d25b19d6625c136ad9f368e1675ecbddbd7674c120866bc0ec",
+    "url": "https://apt.pgedge.com/staging/resolute/pool/main/p/pgedge-spock50/pgedge-postgresql-17-spock50-dbgsym_5.0.13-1.resolute_arm64.deb",
+    "version": "5.0.13-1.resolute"
+   }
+  ],
+  "pepcell.v1.deb.resolute.arm64.pkg.pg18": [
+   {
+    "arch": "arm64",
+    "class": "runtime",
+    "file": "pgedge-postgresql-18-spock50_5.0.13-1.resolute_arm64.deb",
+    "name": "pgedge-postgresql-18-spock50",
+    "sha256": "1b8bcb5892c7111daff85fe1e21a00152e23e68980a85acb5d8cde304b5236f4",
+    "url": "https://apt.pgedge.com/staging/resolute/pool/main/p/pgedge-spock50/pgedge-postgresql-18-spock50_5.0.13-1.resolute_arm64.deb",
+    "version": "5.0.13-1.resolute"
+   },
+   {
+    "arch": "arm64",
+    "class": "debug",
+    "file": "pgedge-postgresql-18-spock50-dbgsym_5.0.13-1.resolute_arm64.deb",
+    "name": "pgedge-postgresql-18-spock50-dbgsym",
+    "sha256": "9e4a01c0d0bc7bb55cdc13a71be04c969b5a1e40d004ed8b01bc5d2a7c7f0378",
+    "url": "https://apt.pgedge.com/staging/resolute/pool/main/p/pgedge-spock50/pgedge-postgresql-18-spock50-dbgsym_5.0.13-1.resolute_arm64.deb",
+    "version": "5.0.13-1.resolute"
+   }
+  ],
+  "pepcell.v1.deb.resolute.arm64.pkg.pg19": [
+   {
+    "arch": "arm64",
+    "class": "runtime",
+    "file": "pgedge-postgresql-19-spock50_5.0.13-1.resolute_arm64.deb",
+    "name": "pgedge-postgresql-19-spock50",
+    "sha256": "bb67d9c8df27f54a59ba10b0833f497ef23287cb92f2943046a94da2140fa943",
+    "url": "https://apt.pgedge.com/staging/resolute/pool/main/p/pgedge-spock50/pgedge-postgresql-19-spock50_5.0.13-1.resolute_arm64.deb",
+    "version": "5.0.13-1.resolute"
+   },
+   {
+    "arch": "arm64",
+    "class": "debug",
+    "file": "pgedge-postgresql-19-spock50-dbgsym_5.0.13-1.resolute_arm64.deb",
+    "name": "pgedge-postgresql-19-spock50-dbgsym",
+    "sha256": "bd76e92ed0e6f3928318cc6c3ca1b7faa966a8858ce8ec3f5ca1271b93db3942",
+    "url": "https://apt.pgedge.com/staging/resolute/pool/main/p/pgedge-spock50/pgedge-postgresql-19-spock50-dbgsym_5.0.13-1.resolute_arm64.deb",
+    "version": "5.0.13-1.resolute"
+   }
+  ],
+  "pepcell.v1.deb.trixie.amd64.pkg.pg16": [
+   {
+    "arch": "amd64",
+    "class": "runtime",
+    "file": "pgedge-postgresql-16-spock50_5.0.13-1.trixie_amd64.deb",
+    "name": "pgedge-postgresql-16-spock50",
+    "sha256": "8cd6f5047bf96b97da5f501a1a586e212f91016c5193a48143a20c1c489e168b",
+    "url": "https://apt.pgedge.com/staging/trixie/pool/main/p/pgedge-spock50/pgedge-postgresql-16-spock50_5.0.13-1.trixie_amd64.deb",
+    "version": "5.0.13-1.trixie"
+   },
+   {
+    "arch": "amd64",
+    "class": "debug",
+    "file": "pgedge-postgresql-16-spock50-dbgsym_5.0.13-1.trixie_amd64.deb",
+    "name": "pgedge-postgresql-16-spock50-dbgsym",
+    "sha256": "fa1c3e1d0b5dc1b1c0492154b8b6eddc60732a9ace7867e673236a179e5a16d6",
+    "url": "https://apt.pgedge.com/staging/trixie/pool/main/p/pgedge-spock50/pgedge-postgresql-16-spock50-dbgsym_5.0.13-1.trixie_amd64.deb",
+    "version": "5.0.13-1.trixie"
+   }
+  ],
+  "pepcell.v1.deb.trixie.amd64.pkg.pg17": [
+   {
+    "arch": "amd64",
+    "class": "runtime",
+    "file": "pgedge-postgresql-17-spock50_5.0.13-1.trixie_amd64.deb",
+    "name": "pgedge-postgresql-17-spock50",
+    "sha256": "cf75357f2680cd6da6afb88094ed80369b09a863e3eaa5714518599d1a4f90bc",
+    "url": "https://apt.pgedge.com/staging/trixie/pool/main/p/pgedge-spock50/pgedge-postgresql-17-spock50_5.0.13-1.trixie_amd64.deb",
+    "version": "5.0.13-1.trixie"
+   },
+   {
+    "arch": "amd64",
+    "class": "debug",
+    "file": "pgedge-postgresql-17-spock50-dbgsym_5.0.13-1.trixie_amd64.deb",
+    "name": "pgedge-postgresql-17-spock50-dbgsym",
+    "sha256": "9076797587874c489d73880381b8db44d68beaf7f6e34acb3469ff4388327190",
+    "url": "https://apt.pgedge.com/staging/trixie/pool/main/p/pgedge-spock50/pgedge-postgresql-17-spock50-dbgsym_5.0.13-1.trixie_amd64.deb",
+    "version": "5.0.13-1.trixie"
+   }
+  ],
+  "pepcell.v1.deb.trixie.amd64.pkg.pg18": [
+   {
+    "arch": "amd64",
+    "class": "runtime",
+    "file": "pgedge-postgresql-18-spock50_5.0.13-1.trixie_amd64.deb",
+    "name": "pgedge-postgresql-18-spock50",
+    "sha256": "c90ba5620750f4afc53a3a4592f81c787ac2263c709b12747967d7dca255fce2",
+    "url": "https://apt.pgedge.com/staging/trixie/pool/main/p/pgedge-spock50/pgedge-postgresql-18-spock50_5.0.13-1.trixie_amd64.deb",
+    "version": "5.0.13-1.trixie"
+   },
+   {
+    "arch": "amd64",
+    "class": "debug",
+    "file": "pgedge-postgresql-18-spock50-dbgsym_5.0.13-1.trixie_amd64.deb",
+    "name": "pgedge-postgresql-18-spock50-dbgsym",
+    "sha256": "20af4297d104a4ad99d0cb491bdfd7e84b1095b3f1195a15d0e984b68a5f3192",
+    "url": "https://apt.pgedge.com/staging/trixie/pool/main/p/pgedge-spock50/pgedge-postgresql-18-spock50-dbgsym_5.0.13-1.trixie_amd64.deb",
+    "version": "5.0.13-1.trixie"
+   }
+  ],
+  "pepcell.v1.deb.trixie.amd64.pkg.pg19": [
+   {
+    "arch": "amd64",
+    "class": "runtime",
+    "file": "pgedge-postgresql-19-spock50_5.0.13-1.trixie_amd64.deb",
+    "name": "pgedge-postgresql-19-spock50",
+    "sha256": "e6485e551bb38a617155c7ac4340341f69f37178f60f5450ffcced58e04abced",
+    "url": "https://apt.pgedge.com/staging/trixie/pool/main/p/pgedge-spock50/pgedge-postgresql-19-spock50_5.0.13-1.trixie_amd64.deb",
+    "version": "5.0.13-1.trixie"
+   },
+   {
+    "arch": "amd64",
+    "class": "debug",
+    "file": "pgedge-postgresql-19-spock50-dbgsym_5.0.13-1.trixie_amd64.deb",
+    "name": "pgedge-postgresql-19-spock50-dbgsym",
+    "sha256": "320cc668282a97ea5ac5cc976a8b60583f5e8ed37b15aab7b189109e46970ee1",
+    "url": "https://apt.pgedge.com/staging/trixie/pool/main/p/pgedge-spock50/pgedge-postgresql-19-spock50-dbgsym_5.0.13-1.trixie_amd64.deb",
+    "version": "5.0.13-1.trixie"
+   }
+  ],
+  "pepcell.v1.deb.trixie.arm64.pkg.pg16": [
+   {
+    "arch": "arm64",
+    "class": "runtime",
+    "file": "pgedge-postgresql-16-spock50_5.0.13-1.trixie_arm64.deb",
+    "name": "pgedge-postgresql-16-spock50",
+    "sha256": "749f2ae41bc0330559c7932b3b16c1984136def086daa6c87447c482d8469b7b",
+    "url": "https://apt.pgedge.com/staging/trixie/pool/main/p/pgedge-spock50/pgedge-postgresql-16-spock50_5.0.13-1.trixie_arm64.deb",
+    "version": "5.0.13-1.trixie"
+   },
+   {
+    "arch": "arm64",
+    "class": "debug",
+    "file": "pgedge-postgresql-16-spock50-dbgsym_5.0.13-1.trixie_arm64.deb",
+    "name": "pgedge-postgresql-16-spock50-dbgsym",
+    "sha256": "cde8f3eab6985f37763233c197fef1da392fd6d2e0fea8b5338b147b38792aba",
+    "url": "https://apt.pgedge.com/staging/trixie/pool/main/p/pgedge-spock50/pgedge-postgresql-16-spock50-dbgsym_5.0.13-1.trixie_arm64.deb",
+    "version": "5.0.13-1.trixie"
+   }
+  ],
+  "pepcell.v1.deb.trixie.arm64.pkg.pg17": [
+   {
+    "arch": "arm64",
+    "class": "runtime",
+    "file": "pgedge-postgresql-17-spock50_5.0.13-1.trixie_arm64.deb",
+    "name": "pgedge-postgresql-17-spock50",
+    "sha256": "cd86c876a6bf288cf0423b42b8a13489e076aa1f2c95ab385ade14c810bb039f",
+    "url": "https://apt.pgedge.com/staging/trixie/pool/main/p/pgedge-spock50/pgedge-postgresql-17-spock50_5.0.13-1.trixie_arm64.deb",
+    "version": "5.0.13-1.trixie"
+   },
+   {
+    "arch": "arm64",
+    "class": "debug",
+    "file": "pgedge-postgresql-17-spock50-dbgsym_5.0.13-1.trixie_arm64.deb",
+    "name": "pgedge-postgresql-17-spock50-dbgsym",
+    "sha256": "1d95f0635d5a6bbf611c6c164e417d9d0eef717d8401a7deb03c2fdfc9340652",
+    "url": "https://apt.pgedge.com/staging/trixie/pool/main/p/pgedge-spock50/pgedge-postgresql-17-spock50-dbgsym_5.0.13-1.trixie_arm64.deb",
+    "version": "5.0.13-1.trixie"
+   }
+  ],
+  "pepcell.v1.deb.trixie.arm64.pkg.pg18": [
+   {
+    "arch": "arm64",
+    "class": "runtime",
+    "file": "pgedge-postgresql-18-spock50_5.0.13-1.trixie_arm64.deb",
+    "name": "pgedge-postgresql-18-spock50",
+    "sha256": "521308a00dc446592a30d46e42fecd40b60b87dcbea2105400e681638f575ab6",
+    "url": "https://apt.pgedge.com/staging/trixie/pool/main/p/pgedge-spock50/pgedge-postgresql-18-spock50_5.0.13-1.trixie_arm64.deb",
+    "version": "5.0.13-1.trixie"
+   },
+   {
+    "arch": "arm64",
+    "class": "debug",
+    "file": "pgedge-postgresql-18-spock50-dbgsym_5.0.13-1.trixie_arm64.deb",
+    "name": "pgedge-postgresql-18-spock50-dbgsym",
+    "sha256": "8ac2fbe28810531a6ab68d72754f67993bf147315c849bf97c595f19745f2528",
+    "url": "https://apt.pgedge.com/staging/trixie/pool/main/p/pgedge-spock50/pgedge-postgresql-18-spock50-dbgsym_5.0.13-1.trixie_arm64.deb",
+    "version": "5.0.13-1.trixie"
+   }
+  ],
+  "pepcell.v1.deb.trixie.arm64.pkg.pg19": [
+   {
+    "arch": "arm64",
+    "class": "runtime",
+    "file": "pgedge-postgresql-19-spock50_5.0.13-1.trixie_arm64.deb",
+    "name": "pgedge-postgresql-19-spock50",
+    "sha256": "13c49e1bc7ea30c6509da688b7f72ab8eefa65bb6c55a6eeda1f51e53e760d0c",
+    "url": "https://apt.pgedge.com/staging/trixie/pool/main/p/pgedge-spock50/pgedge-postgresql-19-spock50_5.0.13-1.trixie_arm64.deb",
+    "version": "5.0.13-1.trixie"
+   },
+   {
+    "arch": "arm64",
+    "class": "debug",
+    "file": "pgedge-postgresql-19-spock50-dbgsym_5.0.13-1.trixie_arm64.deb",
+    "name": "pgedge-postgresql-19-spock50-dbgsym",
+    "sha256": "372fc0e80bfb746677108b12222ed6122da0506a0309e03626a6e091defef64a",
+    "url": "https://apt.pgedge.com/staging/trixie/pool/main/p/pgedge-spock50/pgedge-postgresql-19-spock50-dbgsym_5.0.13-1.trixie_arm64.deb",
+    "version": "5.0.13-1.trixie"
+   }
+  ],
+  "pepcell.v1.rpm.el-10.amd64.pkg.pg16": [
+   {
+    "arch": "x86_64",
+    "class": "runtime",
+    "file": "pgedge-spock50_16-5.0.13-1.el10.x86_64.rpm",
+    "name": "pgedge-spock50_16",
+    "sha256": "66061d10fc7c1540c982b54c4f70479270871f8d3d4fe1a77bed5d4982fb811c",
+    "url": "https://dnf.pgedge.com/staging/10/RPMS/x86_64/pgedge-spock50_16-5.0.13-1.el10.x86_64.rpm",
+    "version": "5.0.13-1.el10"
+   },
+   {
+    "arch": "x86_64",
+    "class": "llvmjit",
+    "file": "pgedge-spock50_16-llvmjit-5.0.13-1.el10.x86_64.rpm",
+    "name": "pgedge-spock50_16-llvmjit",
+    "sha256": "7e98783152dc0f85a991a1f28fd10656d3274bbbfed3630acfe670154c37191d",
+    "url": "https://dnf.pgedge.com/staging/10/RPMS/x86_64/pgedge-spock50_16-llvmjit-5.0.13-1.el10.x86_64.rpm",
+    "version": "5.0.13-1.el10"
+   },
+   {
+    "arch": "x86_64",
+    "class": "debug",
+    "file": "pgedge-spock50_16-debuginfo-5.0.13-1.el10.x86_64.rpm",
+    "name": "pgedge-spock50_16-debuginfo",
+    "sha256": "51d3e425e058806aabb2b14bbc5d5f0ce9604c131ee015f17a2ff320fb342b27",
+    "url": "https://dnf.pgedge.com/staging/10/RPMS/x86_64/pgedge-spock50_16-debuginfo-5.0.13-1.el10.x86_64.rpm",
+    "version": "5.0.13-1.el10"
+   },
+   {
+    "arch": "x86_64",
+    "class": "debug",
+    "file": "pgedge-spock50_16-debugsource-5.0.13-1.el10.x86_64.rpm",
+    "name": "pgedge-spock50_16-debugsource",
+    "sha256": "4612af0e740661f1c30efac78eb37217875950baa2b96004fcfb7deafbc30e5f",
+    "url": "https://dnf.pgedge.com/staging/10/RPMS/x86_64/pgedge-spock50_16-debugsource-5.0.13-1.el10.x86_64.rpm",
+    "version": "5.0.13-1.el10"
+   },
+   {
+    "arch": "src",
+    "class": "source",
+    "file": "pgedge-spock50_16-5.0.13-1.el10.src.rpm",
+    "header_arch": "aarch64",
+    "name": "pgedge-spock50_16",
+    "sha256": "76545651e783bf5a643970cc3d7d98231d99553a497c7ca309ae7ecbb46f46d0",
+    "url": "https://dnf.pgedge.com/staging/10/SRPMS/pgedge-spock50_16-5.0.13-1.el10.src.rpm",
+    "version": "5.0.13-1.el10"
+   }
+  ],
+  "pepcell.v1.rpm.el-10.amd64.pkg.pg17": [
+   {
+    "arch": "x86_64",
+    "class": "runtime",
+    "file": "pgedge-spock50_17-5.0.13-1.el10.x86_64.rpm",
+    "name": "pgedge-spock50_17",
+    "sha256": "9ad65eaa032e263b09fffdcfdf3f301a2748715872edf0caf29962d804f6b35f",
+    "url": "https://dnf.pgedge.com/staging/10/RPMS/x86_64/pgedge-spock50_17-5.0.13-1.el10.x86_64.rpm",
+    "version": "5.0.13-1.el10"
+   },
+   {
+    "arch": "x86_64",
+    "class": "llvmjit",
+    "file": "pgedge-spock50_17-llvmjit-5.0.13-1.el10.x86_64.rpm",
+    "name": "pgedge-spock50_17-llvmjit",
+    "sha256": "94fe774ab93b893046dd3098033c451b1f9e34be92b41f88463c0f70f9053b7b",
+    "url": "https://dnf.pgedge.com/staging/10/RPMS/x86_64/pgedge-spock50_17-llvmjit-5.0.13-1.el10.x86_64.rpm",
+    "version": "5.0.13-1.el10"
+   },
+   {
+    "arch": "x86_64",
+    "class": "debug",
+    "file": "pgedge-spock50_17-debuginfo-5.0.13-1.el10.x86_64.rpm",
+    "name": "pgedge-spock50_17-debuginfo",
+    "sha256": "70d95f1254d9b46b24549722d70527551f2b1dd923b99ca8c72aec5e70a71c1c",
+    "url": "https://dnf.pgedge.com/staging/10/RPMS/x86_64/pgedge-spock50_17-debuginfo-5.0.13-1.el10.x86_64.rpm",
+    "version": "5.0.13-1.el10"
+   },
+   {
+    "arch": "x86_64",
+    "class": "debug",
+    "file": "pgedge-spock50_17-debugsource-5.0.13-1.el10.x86_64.rpm",
+    "name": "pgedge-spock50_17-debugsource",
+    "sha256": "a079891fd0563966ce544eb7cabbc1f56e9e581761b823c818e6f0719029110f",
+    "url": "https://dnf.pgedge.com/staging/10/RPMS/x86_64/pgedge-spock50_17-debugsource-5.0.13-1.el10.x86_64.rpm",
+    "version": "5.0.13-1.el10"
+   },
+   {
+    "arch": "src",
+    "class": "source",
+    "file": "pgedge-spock50_17-5.0.13-1.el10.src.rpm",
+    "header_arch": "aarch64",
+    "name": "pgedge-spock50_17",
+    "sha256": "e204d9a6763f6baa6b5f2556032afda24d6e7f5bd7de4372ff38a4d13d0da9cc",
+    "url": "https://dnf.pgedge.com/staging/10/SRPMS/pgedge-spock50_17-5.0.13-1.el10.src.rpm",
+    "version": "5.0.13-1.el10"
+   }
+  ],
+  "pepcell.v1.rpm.el-10.amd64.pkg.pg18": [
+   {
+    "arch": "x86_64",
+    "class": "runtime",
+    "file": "pgedge-spock50_18-5.0.13-1.el10.x86_64.rpm",
+    "name": "pgedge-spock50_18",
+    "sha256": "0a54f954cfbd0438fb9d1c06d355f71c89cd65346cde4fd22e67c69f58214980",
+    "url": "https://dnf.pgedge.com/staging/10/RPMS/x86_64/pgedge-spock50_18-5.0.13-1.el10.x86_64.rpm",
+    "version": "5.0.13-1.el10"
+   },
+   {
+    "arch": "x86_64",
+    "class": "llvmjit",
+    "file": "pgedge-spock50_18-llvmjit-5.0.13-1.el10.x86_64.rpm",
+    "name": "pgedge-spock50_18-llvmjit",
+    "sha256": "f5fcdc7047c664c006b27a2e17f87f06c3729fa6bfb2e5ce3f687b5232e744df",
+    "url": "https://dnf.pgedge.com/staging/10/RPMS/x86_64/pgedge-spock50_18-llvmjit-5.0.13-1.el10.x86_64.rpm",
+    "version": "5.0.13-1.el10"
+   },
+   {
+    "arch": "x86_64",
+    "class": "debug",
+    "file": "pgedge-spock50_18-debuginfo-5.0.13-1.el10.x86_64.rpm",
+    "name": "pgedge-spock50_18-debuginfo",
+    "sha256": "faa5fbbf527b7bd94003f95be1b0f5afdc0b020b52b16bd5f0adef1fcefe7827",
+    "url": "https://dnf.pgedge.com/staging/10/RPMS/x86_64/pgedge-spock50_18-debuginfo-5.0.13-1.el10.x86_64.rpm",
+    "version": "5.0.13-1.el10"
+   },
+   {
+    "arch": "x86_64",
+    "class": "debug",
+    "file": "pgedge-spock50_18-debugsource-5.0.13-1.el10.x86_64.rpm",
+    "name": "pgedge-spock50_18-debugsource",
+    "sha256": "a7ddb9b2f73fdc430dfdbe25f943c7994b3bcdadd7e6d66c5202224791d4bae1",
+    "url": "https://dnf.pgedge.com/staging/10/RPMS/x86_64/pgedge-spock50_18-debugsource-5.0.13-1.el10.x86_64.rpm",
+    "version": "5.0.13-1.el10"
+   },
+   {
+    "arch": "src",
+    "class": "source",
+    "file": "pgedge-spock50_18-5.0.13-1.el10.src.rpm",
+    "header_arch": "aarch64",
+    "name": "pgedge-spock50_18",
+    "sha256": "fc4329d9a74d4f8036b036232b764dc67649e994e17451d4a9cbb1b249e1381f",
+    "url": "https://dnf.pgedge.com/staging/10/SRPMS/pgedge-spock50_18-5.0.13-1.el10.src.rpm",
+    "version": "5.0.13-1.el10"
+   }
+  ],
+  "pepcell.v1.rpm.el-10.amd64.pkg.pg19": [
+   {
+    "arch": "x86_64",
+    "class": "runtime",
+    "file": "pgedge-spock50_19-5.0.13-1.el10.x86_64.rpm",
+    "name": "pgedge-spock50_19",
+    "sha256": "a7ff029630fbb195b8cbb82ab42490a18299830ea399b2949c65e6279346c1ab",
+    "url": "https://dnf.pgedge.com/staging/10/RPMS/x86_64/pgedge-spock50_19-5.0.13-1.el10.x86_64.rpm",
+    "version": "5.0.13-1.el10"
+   },
+   {
+    "arch": "x86_64",
+    "class": "llvmjit",
+    "file": "pgedge-spock50_19-llvmjit-5.0.13-1.el10.x86_64.rpm",
+    "name": "pgedge-spock50_19-llvmjit",
+    "sha256": "7d85ed5783387638f98c53cbff7338f02057766f3ebb69137c549d323446cae0",
+    "url": "https://dnf.pgedge.com/staging/10/RPMS/x86_64/pgedge-spock50_19-llvmjit-5.0.13-1.el10.x86_64.rpm",
+    "version": "5.0.13-1.el10"
+   },
+   {
+    "arch": "x86_64",
+    "class": "debug",
+    "file": "pgedge-spock50_19-debuginfo-5.0.13-1.el10.x86_64.rpm",
+    "name": "pgedge-spock50_19-debuginfo",
+    "sha256": "3abd61ddd5ba342a0092382d2ed2fae4ffcda5064129c1fb3b1ce261768a748c",
+    "url": "https://dnf.pgedge.com/staging/10/RPMS/x86_64/pgedge-spock50_19-debuginfo-5.0.13-1.el10.x86_64.rpm",
+    "version": "5.0.13-1.el10"
+   },
+   {
+    "arch": "x86_64",
+    "class": "debug",
+    "file": "pgedge-spock50_19-debugsource-5.0.13-1.el10.x86_64.rpm",
+    "name": "pgedge-spock50_19-debugsource",
+    "sha256": "504de9e9209b172029c5114943803d17a8d5d69984dbdfd6e32070f025612241",
+    "url": "https://dnf.pgedge.com/staging/10/RPMS/x86_64/pgedge-spock50_19-debugsource-5.0.13-1.el10.x86_64.rpm",
+    "version": "5.0.13-1.el10"
+   },
+   {
+    "arch": "src",
+    "class": "source",
+    "file": "pgedge-spock50_19-5.0.13-1.el10.src.rpm",
+    "header_arch": "aarch64",
+    "name": "pgedge-spock50_19",
+    "sha256": "61dd82641e3ea197e8d336e7d1ff375d9bf8a249023260f42b87549c0937d437",
+    "url": "https://dnf.pgedge.com/staging/10/SRPMS/pgedge-spock50_19-5.0.13-1.el10.src.rpm",
+    "version": "5.0.13-1.el10"
+   }
+  ],
+  "pepcell.v1.rpm.el-10.arm64.pkg.pg16": [
+   {
+    "arch": "aarch64",
+    "class": "runtime",
+    "file": "pgedge-spock50_16-5.0.13-1.el10.aarch64.rpm",
+    "name": "pgedge-spock50_16",
+    "sha256": "4972668009aab35b11322fb11f7314ef6133098263e91c3f1c7daf361b317179",
+    "url": "https://dnf.pgedge.com/staging/10/RPMS/aarch64/pgedge-spock50_16-5.0.13-1.el10.aarch64.rpm",
+    "version": "5.0.13-1.el10"
+   },
+   {
+    "arch": "aarch64",
+    "class": "llvmjit",
+    "file": "pgedge-spock50_16-llvmjit-5.0.13-1.el10.aarch64.rpm",
+    "name": "pgedge-spock50_16-llvmjit",
+    "sha256": "971e505c1dc1a5cedf43cc7c5482d1fae11be39b1f5b2326ef322d1d945324aa",
+    "url": "https://dnf.pgedge.com/staging/10/RPMS/aarch64/pgedge-spock50_16-llvmjit-5.0.13-1.el10.aarch64.rpm",
+    "version": "5.0.13-1.el10"
+   },
+   {
+    "arch": "aarch64",
+    "class": "debug",
+    "file": "pgedge-spock50_16-debuginfo-5.0.13-1.el10.aarch64.rpm",
+    "name": "pgedge-spock50_16-debuginfo",
+    "sha256": "103b31d83d60ea60669ffd149b93b89f846ab6a543a8ab601510c812fa1d7f09",
+    "url": "https://dnf.pgedge.com/staging/10/RPMS/aarch64/pgedge-spock50_16-debuginfo-5.0.13-1.el10.aarch64.rpm",
+    "version": "5.0.13-1.el10"
+   },
+   {
+    "arch": "aarch64",
+    "class": "debug",
+    "file": "pgedge-spock50_16-debugsource-5.0.13-1.el10.aarch64.rpm",
+    "name": "pgedge-spock50_16-debugsource",
+    "sha256": "4e594836a204fdaab44905eb0225cea9e1ae972a08d2d2525708ad69ccf1a8fc",
+    "url": "https://dnf.pgedge.com/staging/10/RPMS/aarch64/pgedge-spock50_16-debugsource-5.0.13-1.el10.aarch64.rpm",
+    "version": "5.0.13-1.el10"
+   },
+   {
+    "arch": "src",
+    "class": "source",
+    "file": "pgedge-spock50_16-5.0.13-1.el10.src.rpm",
+    "header_arch": "aarch64",
+    "name": "pgedge-spock50_16",
+    "sha256": "76545651e783bf5a643970cc3d7d98231d99553a497c7ca309ae7ecbb46f46d0",
+    "url": "https://dnf.pgedge.com/staging/10/SRPMS/pgedge-spock50_16-5.0.13-1.el10.src.rpm",
+    "version": "5.0.13-1.el10"
+   }
+  ],
+  "pepcell.v1.rpm.el-10.arm64.pkg.pg17": [
+   {
+    "arch": "aarch64",
+    "class": "runtime",
+    "file": "pgedge-spock50_17-5.0.13-1.el10.aarch64.rpm",
+    "name": "pgedge-spock50_17",
+    "sha256": "652154f008537f3b879ea5518c92316c5daef2f3e6b0fbaf5ab3609c77c1adf6",
+    "url": "https://dnf.pgedge.com/staging/10/RPMS/aarch64/pgedge-spock50_17-5.0.13-1.el10.aarch64.rpm",
+    "version": "5.0.13-1.el10"
+   },
+   {
+    "arch": "aarch64",
+    "class": "llvmjit",
+    "file": "pgedge-spock50_17-llvmjit-5.0.13-1.el10.aarch64.rpm",
+    "name": "pgedge-spock50_17-llvmjit",
+    "sha256": "24fb657a88539ef66dbc21e04ce421c3e5438fd81a39ba13d72758bb1f025245",
+    "url": "https://dnf.pgedge.com/staging/10/RPMS/aarch64/pgedge-spock50_17-llvmjit-5.0.13-1.el10.aarch64.rpm",
+    "version": "5.0.13-1.el10"
+   },
+   {
+    "arch": "aarch64",
+    "class": "debug",
+    "file": "pgedge-spock50_17-debuginfo-5.0.13-1.el10.aarch64.rpm",
+    "name": "pgedge-spock50_17-debuginfo",
+    "sha256": "5a165ea4385f579c03634e6511be9496afb7c491e3d9696ad8b1fc763a81304a",
+    "url": "https://dnf.pgedge.com/staging/10/RPMS/aarch64/pgedge-spock50_17-debuginfo-5.0.13-1.el10.aarch64.rpm",
+    "version": "5.0.13-1.el10"
+   },
+   {
+    "arch": "aarch64",
+    "class": "debug",
+    "file": "pgedge-spock50_17-debugsource-5.0.13-1.el10.aarch64.rpm",
+    "name": "pgedge-spock50_17-debugsource",
+    "sha256": "58b4dc6705ba9d36b527198f332d576fe540b5bba94c6df61678d937e5e0f44e",
+    "url": "https://dnf.pgedge.com/staging/10/RPMS/aarch64/pgedge-spock50_17-debugsource-5.0.13-1.el10.aarch64.rpm",
+    "version": "5.0.13-1.el10"
+   },
+   {
+    "arch": "src",
+    "class": "source",
+    "file": "pgedge-spock50_17-5.0.13-1.el10.src.rpm",
+    "header_arch": "aarch64",
+    "name": "pgedge-spock50_17",
+    "sha256": "e204d9a6763f6baa6b5f2556032afda24d6e7f5bd7de4372ff38a4d13d0da9cc",
+    "url": "https://dnf.pgedge.com/staging/10/SRPMS/pgedge-spock50_17-5.0.13-1.el10.src.rpm",
+    "version": "5.0.13-1.el10"
+   }
+  ],
+  "pepcell.v1.rpm.el-10.arm64.pkg.pg18": [
+   {
+    "arch": "aarch64",
+    "class": "runtime",
+    "file": "pgedge-spock50_18-5.0.13-1.el10.aarch64.rpm",
+    "name": "pgedge-spock50_18",
+    "sha256": "60db3001c32527c92d8b89324effbc33c08518c1306de182cf9fb623eee294ed",
+    "url": "https://dnf.pgedge.com/staging/10/RPMS/aarch64/pgedge-spock50_18-5.0.13-1.el10.aarch64.rpm",
+    "version": "5.0.13-1.el10"
+   },
+   {
+    "arch": "aarch64",
+    "class": "llvmjit",
+    "file": "pgedge-spock50_18-llvmjit-5.0.13-1.el10.aarch64.rpm",
+    "name": "pgedge-spock50_18-llvmjit",
+    "sha256": "3cdfd353705b34fdc25392c42693a12233f3783a899854f8258429f162d5712e",
+    "url": "https://dnf.pgedge.com/staging/10/RPMS/aarch64/pgedge-spock50_18-llvmjit-5.0.13-1.el10.aarch64.rpm",
+    "version": "5.0.13-1.el10"
+   },
+   {
+    "arch": "aarch64",
+    "class": "debug",
+    "file": "pgedge-spock50_18-debuginfo-5.0.13-1.el10.aarch64.rpm",
+    "name": "pgedge-spock50_18-debuginfo",
+    "sha256": "f92cac38a8ab64ea15127f2da114b4fa20a257a73db8ad0b90d6978a0933b560",
+    "url": "https://dnf.pgedge.com/staging/10/RPMS/aarch64/pgedge-spock50_18-debuginfo-5.0.13-1.el10.aarch64.rpm",
+    "version": "5.0.13-1.el10"
+   },
+   {
+    "arch": "aarch64",
+    "class": "debug",
+    "file": "pgedge-spock50_18-debugsource-5.0.13-1.el10.aarch64.rpm",
+    "name": "pgedge-spock50_18-debugsource",
+    "sha256": "53aba094176c76a72d58c34e0cad4493b346e56e6b6f2334c8c80345b124254a",
+    "url": "https://dnf.pgedge.com/staging/10/RPMS/aarch64/pgedge-spock50_18-debugsource-5.0.13-1.el10.aarch64.rpm",
+    "version": "5.0.13-1.el10"
+   },
+   {
+    "arch": "src",
+    "class": "source",
+    "file": "pgedge-spock50_18-5.0.13-1.el10.src.rpm",
+    "header_arch": "aarch64",
+    "name": "pgedge-spock50_18",
+    "sha256": "fc4329d9a74d4f8036b036232b764dc67649e994e17451d4a9cbb1b249e1381f",
+    "url": "https://dnf.pgedge.com/staging/10/SRPMS/pgedge-spock50_18-5.0.13-1.el10.src.rpm",
+    "version": "5.0.13-1.el10"
+   }
+  ],
+  "pepcell.v1.rpm.el-10.arm64.pkg.pg19": [
+   {
+    "arch": "aarch64",
+    "class": "runtime",
+    "file": "pgedge-spock50_19-5.0.13-1.el10.aarch64.rpm",
+    "name": "pgedge-spock50_19",
+    "sha256": "ad15fa4ee1e3b3f37b18d7c5e5e3aa2c9ca2e5259ea7ba41e384abf31c72b909",
+    "url": "https://dnf.pgedge.com/staging/10/RPMS/aarch64/pgedge-spock50_19-5.0.13-1.el10.aarch64.rpm",
+    "version": "5.0.13-1.el10"
+   },
+   {
+    "arch": "aarch64",
+    "class": "llvmjit",
+    "file": "pgedge-spock50_19-llvmjit-5.0.13-1.el10.aarch64.rpm",
+    "name": "pgedge-spock50_19-llvmjit",
+    "sha256": "af8bc1945bdc7be48dbbd2f5253cf2175055f4238c7f2ec869eb1002461aefba",
+    "url": "https://dnf.pgedge.com/staging/10/RPMS/aarch64/pgedge-spock50_19-llvmjit-5.0.13-1.el10.aarch64.rpm",
+    "version": "5.0.13-1.el10"
+   },
+   {
+    "arch": "aarch64",
+    "class": "debug",
+    "file": "pgedge-spock50_19-debuginfo-5.0.13-1.el10.aarch64.rpm",
+    "name": "pgedge-spock50_19-debuginfo",
+    "sha256": "fbee92c322a1d20b590e9ccd658159e8f761dc424e63f52b72415c402674d281",
+    "url": "https://dnf.pgedge.com/staging/10/RPMS/aarch64/pgedge-spock50_19-debuginfo-5.0.13-1.el10.aarch64.rpm",
+    "version": "5.0.13-1.el10"
+   },
+   {
+    "arch": "aarch64",
+    "class": "debug",
+    "file": "pgedge-spock50_19-debugsource-5.0.13-1.el10.aarch64.rpm",
+    "name": "pgedge-spock50_19-debugsource",
+    "sha256": "8f4820f8ad5099656622776e6690658d61db6a79af6f9fbc53ecfeaf00bdaa52",
+    "url": "https://dnf.pgedge.com/staging/10/RPMS/aarch64/pgedge-spock50_19-debugsource-5.0.13-1.el10.aarch64.rpm",
+    "version": "5.0.13-1.el10"
+   },
+   {
+    "arch": "src",
+    "class": "source",
+    "file": "pgedge-spock50_19-5.0.13-1.el10.src.rpm",
+    "header_arch": "aarch64",
+    "name": "pgedge-spock50_19",
+    "sha256": "61dd82641e3ea197e8d336e7d1ff375d9bf8a249023260f42b87549c0937d437",
+    "url": "https://dnf.pgedge.com/staging/10/SRPMS/pgedge-spock50_19-5.0.13-1.el10.src.rpm",
+    "version": "5.0.13-1.el10"
+   }
+  ],
+  "pepcell.v1.rpm.el-9.amd64.pkg.pg16": [
+   {
+    "arch": "x86_64",
+    "class": "runtime",
+    "file": "pgedge-spock50_16-5.0.13-1.el9.x86_64.rpm",
+    "name": "pgedge-spock50_16",
+    "sha256": "94d3647d87068034815077da9090fa6d41a17d3cde13b07d56b577f5d2b4b530",
+    "url": "https://dnf.pgedge.com/staging/9/RPMS/x86_64/pgedge-spock50_16-5.0.13-1.el9.x86_64.rpm",
+    "version": "5.0.13-1.el9"
+   },
+   {
+    "arch": "x86_64",
+    "class": "llvmjit",
+    "file": "pgedge-spock50_16-llvmjit-5.0.13-1.el9.x86_64.rpm",
+    "name": "pgedge-spock50_16-llvmjit",
+    "sha256": "bd6d1a54c291204e567a34088f61662a028d9cf4e099572c476215d34454224c",
+    "url": "https://dnf.pgedge.com/staging/9/RPMS/x86_64/pgedge-spock50_16-llvmjit-5.0.13-1.el9.x86_64.rpm",
+    "version": "5.0.13-1.el9"
+   },
+   {
+    "arch": "x86_64",
+    "class": "debug",
+    "file": "pgedge-spock50_16-debuginfo-5.0.13-1.el9.x86_64.rpm",
+    "name": "pgedge-spock50_16-debuginfo",
+    "sha256": "b31632b524122564abe976169499c6d828925140e475b3f0f73638e64387ae18",
+    "url": "https://dnf.pgedge.com/staging/9/RPMS/x86_64/pgedge-spock50_16-debuginfo-5.0.13-1.el9.x86_64.rpm",
+    "version": "5.0.13-1.el9"
+   },
+   {
+    "arch": "x86_64",
+    "class": "debug",
+    "file": "pgedge-spock50_16-debugsource-5.0.13-1.el9.x86_64.rpm",
+    "name": "pgedge-spock50_16-debugsource",
+    "sha256": "bbd526d0087b943607fe2c55512dc4bfb8344f3b775002c466a09a5e6a8c438d",
+    "url": "https://dnf.pgedge.com/staging/9/RPMS/x86_64/pgedge-spock50_16-debugsource-5.0.13-1.el9.x86_64.rpm",
+    "version": "5.0.13-1.el9"
+   },
+   {
+    "arch": "src",
+    "class": "source",
+    "file": "pgedge-spock50_16-5.0.13-1.el9.src.rpm",
+    "header_arch": "aarch64",
+    "name": "pgedge-spock50_16",
+    "sha256": "cb1e842c600f7cef94b7e050930b11aaaeb23de9901c18e4f9cff719e25540a8",
+    "url": "https://dnf.pgedge.com/staging/9/SRPMS/pgedge-spock50_16-5.0.13-1.el9.src.rpm",
+    "version": "5.0.13-1.el9"
+   }
+  ],
+  "pepcell.v1.rpm.el-9.amd64.pkg.pg17": [
+   {
+    "arch": "x86_64",
+    "class": "runtime",
+    "file": "pgedge-spock50_17-5.0.13-1.el9.x86_64.rpm",
+    "name": "pgedge-spock50_17",
+    "sha256": "b91123bef742ec7b961a24fb758532dd3d10195548e3b6b615d9ae4233561748",
+    "url": "https://dnf.pgedge.com/staging/9/RPMS/x86_64/pgedge-spock50_17-5.0.13-1.el9.x86_64.rpm",
+    "version": "5.0.13-1.el9"
+   },
+   {
+    "arch": "x86_64",
+    "class": "llvmjit",
+    "file": "pgedge-spock50_17-llvmjit-5.0.13-1.el9.x86_64.rpm",
+    "name": "pgedge-spock50_17-llvmjit",
+    "sha256": "f563e066c0ac19dc073cedef3fa67a01b7688c10b17a9887072b5e57d2a26749",
+    "url": "https://dnf.pgedge.com/staging/9/RPMS/x86_64/pgedge-spock50_17-llvmjit-5.0.13-1.el9.x86_64.rpm",
+    "version": "5.0.13-1.el9"
+   },
+   {
+    "arch": "x86_64",
+    "class": "debug",
+    "file": "pgedge-spock50_17-debuginfo-5.0.13-1.el9.x86_64.rpm",
+    "name": "pgedge-spock50_17-debuginfo",
+    "sha256": "da84f82085d0f96c8f09caefeef897dff779f00c6423ec554ee1e7c3a98d3d2b",
+    "url": "https://dnf.pgedge.com/staging/9/RPMS/x86_64/pgedge-spock50_17-debuginfo-5.0.13-1.el9.x86_64.rpm",
+    "version": "5.0.13-1.el9"
+   },
+   {
+    "arch": "x86_64",
+    "class": "debug",
+    "file": "pgedge-spock50_17-debugsource-5.0.13-1.el9.x86_64.rpm",
+    "name": "pgedge-spock50_17-debugsource",
+    "sha256": "5bf47a11205ccca49326a169e1e5573c80ff7dbccddb54e3c73833ede4972143",
+    "url": "https://dnf.pgedge.com/staging/9/RPMS/x86_64/pgedge-spock50_17-debugsource-5.0.13-1.el9.x86_64.rpm",
+    "version": "5.0.13-1.el9"
+   },
+   {
+    "arch": "src",
+    "class": "source",
+    "file": "pgedge-spock50_17-5.0.13-1.el9.src.rpm",
+    "header_arch": "aarch64",
+    "name": "pgedge-spock50_17",
+    "sha256": "9ef544bd2cd8ca87015c7bccb039835bea78009fec4eb8b5961edefbc7518d8c",
+    "url": "https://dnf.pgedge.com/staging/9/SRPMS/pgedge-spock50_17-5.0.13-1.el9.src.rpm",
+    "version": "5.0.13-1.el9"
+   }
+  ],
+  "pepcell.v1.rpm.el-9.amd64.pkg.pg18": [
+   {
+    "arch": "x86_64",
+    "class": "runtime",
+    "file": "pgedge-spock50_18-5.0.13-1.el9.x86_64.rpm",
+    "name": "pgedge-spock50_18",
+    "sha256": "454a27188568a38ea735230dff642ade0431e0dbbfbade194b4cfe0d3a74108b",
+    "url": "https://dnf.pgedge.com/staging/9/RPMS/x86_64/pgedge-spock50_18-5.0.13-1.el9.x86_64.rpm",
+    "version": "5.0.13-1.el9"
+   },
+   {
+    "arch": "x86_64",
+    "class": "llvmjit",
+    "file": "pgedge-spock50_18-llvmjit-5.0.13-1.el9.x86_64.rpm",
+    "name": "pgedge-spock50_18-llvmjit",
+    "sha256": "14eed99db4994c1b504f365885ee6e78cfcf61e41cc71f544bba48d3e01353b5",
+    "url": "https://dnf.pgedge.com/staging/9/RPMS/x86_64/pgedge-spock50_18-llvmjit-5.0.13-1.el9.x86_64.rpm",
+    "version": "5.0.13-1.el9"
+   },
+   {
+    "arch": "x86_64",
+    "class": "debug",
+    "file": "pgedge-spock50_18-debuginfo-5.0.13-1.el9.x86_64.rpm",
+    "name": "pgedge-spock50_18-debuginfo",
+    "sha256": "5adc632a64cc24b5908f75b39a5519bfee0ef072b11b30de94b1079abde6d882",
+    "url": "https://dnf.pgedge.com/staging/9/RPMS/x86_64/pgedge-spock50_18-debuginfo-5.0.13-1.el9.x86_64.rpm",
+    "version": "5.0.13-1.el9"
+   },
+   {
+    "arch": "x86_64",
+    "class": "debug",
+    "file": "pgedge-spock50_18-debugsource-5.0.13-1.el9.x86_64.rpm",
+    "name": "pgedge-spock50_18-debugsource",
+    "sha256": "66eda197a55a4c3ec154115453b4ad52175a39b79ce4be147d45abcb91151025",
+    "url": "https://dnf.pgedge.com/staging/9/RPMS/x86_64/pgedge-spock50_18-debugsource-5.0.13-1.el9.x86_64.rpm",
+    "version": "5.0.13-1.el9"
+   },
+   {
+    "arch": "src",
+    "class": "source",
+    "file": "pgedge-spock50_18-5.0.13-1.el9.src.rpm",
+    "header_arch": "aarch64",
+    "name": "pgedge-spock50_18",
+    "sha256": "511480165c37729f344a57b0359daf218796dd572ed7f78dcb1dfba0d598411e",
+    "url": "https://dnf.pgedge.com/staging/9/SRPMS/pgedge-spock50_18-5.0.13-1.el9.src.rpm",
+    "version": "5.0.13-1.el9"
+   }
+  ],
+  "pepcell.v1.rpm.el-9.amd64.pkg.pg19": [
+   {
+    "arch": "x86_64",
+    "class": "runtime",
+    "file": "pgedge-spock50_19-5.0.13-1.el9.x86_64.rpm",
+    "name": "pgedge-spock50_19",
+    "sha256": "f317fff1db5cfa3b808b192d363358a03e17b1de109f06ee5d1b2eb91cdb3273",
+    "url": "https://dnf.pgedge.com/staging/9/RPMS/x86_64/pgedge-spock50_19-5.0.13-1.el9.x86_64.rpm",
+    "version": "5.0.13-1.el9"
+   },
+   {
+    "arch": "x86_64",
+    "class": "llvmjit",
+    "file": "pgedge-spock50_19-llvmjit-5.0.13-1.el9.x86_64.rpm",
+    "name": "pgedge-spock50_19-llvmjit",
+    "sha256": "b111d367e7ee69554ffa0cc5e269f891a5374c63600783c88bf5f1bb91c5eb15",
+    "url": "https://dnf.pgedge.com/staging/9/RPMS/x86_64/pgedge-spock50_19-llvmjit-5.0.13-1.el9.x86_64.rpm",
+    "version": "5.0.13-1.el9"
+   },
+   {
+    "arch": "x86_64",
+    "class": "debug",
+    "file": "pgedge-spock50_19-debuginfo-5.0.13-1.el9.x86_64.rpm",
+    "name": "pgedge-spock50_19-debuginfo",
+    "sha256": "178d5c7d8dea3ae29e1773567ddce88a53b7ff1d4e9cf90921428e037a6e104c",
+    "url": "https://dnf.pgedge.com/staging/9/RPMS/x86_64/pgedge-spock50_19-debuginfo-5.0.13-1.el9.x86_64.rpm",
+    "version": "5.0.13-1.el9"
+   },
+   {
+    "arch": "x86_64",
+    "class": "debug",
+    "file": "pgedge-spock50_19-debugsource-5.0.13-1.el9.x86_64.rpm",
+    "name": "pgedge-spock50_19-debugsource",
+    "sha256": "33de9d4c3f102bbca8849338d5922a49dacfc3767475d47dfc39e5f6d72d478c",
+    "url": "https://dnf.pgedge.com/staging/9/RPMS/x86_64/pgedge-spock50_19-debugsource-5.0.13-1.el9.x86_64.rpm",
+    "version": "5.0.13-1.el9"
+   },
+   {
+    "arch": "src",
+    "class": "source",
+    "file": "pgedge-spock50_19-5.0.13-1.el9.src.rpm",
+    "header_arch": "aarch64",
+    "name": "pgedge-spock50_19",
+    "sha256": "29da083034b0d497c076d7dd35be6d6e69d70e4cada02cd18d2792acf31ccb00",
+    "url": "https://dnf.pgedge.com/staging/9/SRPMS/pgedge-spock50_19-5.0.13-1.el9.src.rpm",
+    "version": "5.0.13-1.el9"
+   }
+  ],
+  "pepcell.v1.rpm.el-9.arm64.pkg.pg16": [
+   {
+    "arch": "aarch64",
+    "class": "runtime",
+    "file": "pgedge-spock50_16-5.0.13-1.el9.aarch64.rpm",
+    "name": "pgedge-spock50_16",
+    "sha256": "9c3d4c6f3ae92958ab3de1e271a421a4d1a7495b2f901a0476ead77d172fe85f",
+    "url": "https://dnf.pgedge.com/staging/9/RPMS/aarch64/pgedge-spock50_16-5.0.13-1.el9.aarch64.rpm",
+    "version": "5.0.13-1.el9"
+   },
+   {
+    "arch": "aarch64",
+    "class": "llvmjit",
+    "file": "pgedge-spock50_16-llvmjit-5.0.13-1.el9.aarch64.rpm",
+    "name": "pgedge-spock50_16-llvmjit",
+    "sha256": "44d93ad8e3ae002d94eb6db1aca8bfb2e45ef5d202baef1f11dc625706aa20f0",
+    "url": "https://dnf.pgedge.com/staging/9/RPMS/aarch64/pgedge-spock50_16-llvmjit-5.0.13-1.el9.aarch64.rpm",
+    "version": "5.0.13-1.el9"
+   },
+   {
+    "arch": "aarch64",
+    "class": "debug",
+    "file": "pgedge-spock50_16-debuginfo-5.0.13-1.el9.aarch64.rpm",
+    "name": "pgedge-spock50_16-debuginfo",
+    "sha256": "d63cafe35c4e3322a6cb3ec09e4105554f9ffbd26194f7876b7c091327de3fec",
+    "url": "https://dnf.pgedge.com/staging/9/RPMS/aarch64/pgedge-spock50_16-debuginfo-5.0.13-1.el9.aarch64.rpm",
+    "version": "5.0.13-1.el9"
+   },
+   {
+    "arch": "aarch64",
+    "class": "debug",
+    "file": "pgedge-spock50_16-debugsource-5.0.13-1.el9.aarch64.rpm",
+    "name": "pgedge-spock50_16-debugsource",
+    "sha256": "eed163d5444bd65aecb565144aa72653fc6dad91677cd2c97048446ab070857e",
+    "url": "https://dnf.pgedge.com/staging/9/RPMS/aarch64/pgedge-spock50_16-debugsource-5.0.13-1.el9.aarch64.rpm",
+    "version": "5.0.13-1.el9"
+   },
+   {
+    "arch": "src",
+    "class": "source",
+    "file": "pgedge-spock50_16-5.0.13-1.el9.src.rpm",
+    "header_arch": "aarch64",
+    "name": "pgedge-spock50_16",
+    "sha256": "cb1e842c600f7cef94b7e050930b11aaaeb23de9901c18e4f9cff719e25540a8",
+    "url": "https://dnf.pgedge.com/staging/9/SRPMS/pgedge-spock50_16-5.0.13-1.el9.src.rpm",
+    "version": "5.0.13-1.el9"
+   }
+  ],
+  "pepcell.v1.rpm.el-9.arm64.pkg.pg17": [
+   {
+    "arch": "aarch64",
+    "class": "runtime",
+    "file": "pgedge-spock50_17-5.0.13-1.el9.aarch64.rpm",
+    "name": "pgedge-spock50_17",
+    "sha256": "26611eb08d6d6c78919830a7fc1710c83e6781cb7d09b3e217158a5c14e12f33",
+    "url": "https://dnf.pgedge.com/staging/9/RPMS/aarch64/pgedge-spock50_17-5.0.13-1.el9.aarch64.rpm",
+    "version": "5.0.13-1.el9"
+   },
+   {
+    "arch": "aarch64",
+    "class": "llvmjit",
+    "file": "pgedge-spock50_17-llvmjit-5.0.13-1.el9.aarch64.rpm",
+    "name": "pgedge-spock50_17-llvmjit",
+    "sha256": "e2c1aba19bd4aac0fb9dfbc26f34c7b228c5262179c20f21faa492ade5421fe2",
+    "url": "https://dnf.pgedge.com/staging/9/RPMS/aarch64/pgedge-spock50_17-llvmjit-5.0.13-1.el9.aarch64.rpm",
+    "version": "5.0.13-1.el9"
+   },
+   {
+    "arch": "aarch64",
+    "class": "debug",
+    "file": "pgedge-spock50_17-debuginfo-5.0.13-1.el9.aarch64.rpm",
+    "name": "pgedge-spock50_17-debuginfo",
+    "sha256": "4cddf3cdfdc5e782715f4bf839ace6aadc54becfad09caf368ca72df81dd3989",
+    "url": "https://dnf.pgedge.com/staging/9/RPMS/aarch64/pgedge-spock50_17-debuginfo-5.0.13-1.el9.aarch64.rpm",
+    "version": "5.0.13-1.el9"
+   },
+   {
+    "arch": "aarch64",
+    "class": "debug",
+    "file": "pgedge-spock50_17-debugsource-5.0.13-1.el9.aarch64.rpm",
+    "name": "pgedge-spock50_17-debugsource",
+    "sha256": "10191c5902b2b71eef2118f56a76514102df3be2c0a2f95f729a4a6ad81bdffc",
+    "url": "https://dnf.pgedge.com/staging/9/RPMS/aarch64/pgedge-spock50_17-debugsource-5.0.13-1.el9.aarch64.rpm",
+    "version": "5.0.13-1.el9"
+   },
+   {
+    "arch": "src",
+    "class": "source",
+    "file": "pgedge-spock50_17-5.0.13-1.el9.src.rpm",
+    "header_arch": "aarch64",
+    "name": "pgedge-spock50_17",
+    "sha256": "9ef544bd2cd8ca87015c7bccb039835bea78009fec4eb8b5961edefbc7518d8c",
+    "url": "https://dnf.pgedge.com/staging/9/SRPMS/pgedge-spock50_17-5.0.13-1.el9.src.rpm",
+    "version": "5.0.13-1.el9"
+   }
+  ],
+  "pepcell.v1.rpm.el-9.arm64.pkg.pg18": [
+   {
+    "arch": "aarch64",
+    "class": "runtime",
+    "file": "pgedge-spock50_18-5.0.13-1.el9.aarch64.rpm",
+    "name": "pgedge-spock50_18",
+    "sha256": "73fc0ce2c0b78a23ddea854f2888ac32adc9d6b943399bffcf7831a2d0c90201",
+    "url": "https://dnf.pgedge.com/staging/9/RPMS/aarch64/pgedge-spock50_18-5.0.13-1.el9.aarch64.rpm",
+    "version": "5.0.13-1.el9"
+   },
+   {
+    "arch": "aarch64",
+    "class": "llvmjit",
+    "file": "pgedge-spock50_18-llvmjit-5.0.13-1.el9.aarch64.rpm",
+    "name": "pgedge-spock50_18-llvmjit",
+    "sha256": "f753ee3df84d0862a255fb8e7bd588998d5061d29e65d1fbbff6bf5da75c8c66",
+    "url": "https://dnf.pgedge.com/staging/9/RPMS/aarch64/pgedge-spock50_18-llvmjit-5.0.13-1.el9.aarch64.rpm",
+    "version": "5.0.13-1.el9"
+   },
+   {
+    "arch": "aarch64",
+    "class": "debug",
+    "file": "pgedge-spock50_18-debuginfo-5.0.13-1.el9.aarch64.rpm",
+    "name": "pgedge-spock50_18-debuginfo",
+    "sha256": "b89c0b6b8f27bd502be3bd08e677fb4fe4cc3a982a12fe2c8300cfcbf2ff4e76",
+    "url": "https://dnf.pgedge.com/staging/9/RPMS/aarch64/pgedge-spock50_18-debuginfo-5.0.13-1.el9.aarch64.rpm",
+    "version": "5.0.13-1.el9"
+   },
+   {
+    "arch": "aarch64",
+    "class": "debug",
+    "file": "pgedge-spock50_18-debugsource-5.0.13-1.el9.aarch64.rpm",
+    "name": "pgedge-spock50_18-debugsource",
+    "sha256": "2ab225fb8b790780f580c21b4a235ad17faf9074e6d530914fa5bed9f1830fd0",
+    "url": "https://dnf.pgedge.com/staging/9/RPMS/aarch64/pgedge-spock50_18-debugsource-5.0.13-1.el9.aarch64.rpm",
+    "version": "5.0.13-1.el9"
+   },
+   {
+    "arch": "src",
+    "class": "source",
+    "file": "pgedge-spock50_18-5.0.13-1.el9.src.rpm",
+    "header_arch": "aarch64",
+    "name": "pgedge-spock50_18",
+    "sha256": "511480165c37729f344a57b0359daf218796dd572ed7f78dcb1dfba0d598411e",
+    "url": "https://dnf.pgedge.com/staging/9/SRPMS/pgedge-spock50_18-5.0.13-1.el9.src.rpm",
+    "version": "5.0.13-1.el9"
+   }
+  ],
+  "pepcell.v1.rpm.el-9.arm64.pkg.pg19": [
+   {
+    "arch": "aarch64",
+    "class": "runtime",
+    "file": "pgedge-spock50_19-5.0.13-1.el9.aarch64.rpm",
+    "name": "pgedge-spock50_19",
+    "sha256": "490322e8970c746ec9b08b59de55bba8943fe1eeaf3dd8cb4dffa0c8d7fd0664",
+    "url": "https://dnf.pgedge.com/staging/9/RPMS/aarch64/pgedge-spock50_19-5.0.13-1.el9.aarch64.rpm",
+    "version": "5.0.13-1.el9"
+   },
+   {
+    "arch": "aarch64",
+    "class": "llvmjit",
+    "file": "pgedge-spock50_19-llvmjit-5.0.13-1.el9.aarch64.rpm",
+    "name": "pgedge-spock50_19-llvmjit",
+    "sha256": "2fbe62621e65de2830af10e3deaf975b7ac4176348c8fd266b96bcf1fdde0b58",
+    "url": "https://dnf.pgedge.com/staging/9/RPMS/aarch64/pgedge-spock50_19-llvmjit-5.0.13-1.el9.aarch64.rpm",
+    "version": "5.0.13-1.el9"
+   },
+   {
+    "arch": "aarch64",
+    "class": "debug",
+    "file": "pgedge-spock50_19-debuginfo-5.0.13-1.el9.aarch64.rpm",
+    "name": "pgedge-spock50_19-debuginfo",
+    "sha256": "982ab662e10f7a8adb515402e669966ebde59765d3c39a762f5694800394eb41",
+    "url": "https://dnf.pgedge.com/staging/9/RPMS/aarch64/pgedge-spock50_19-debuginfo-5.0.13-1.el9.aarch64.rpm",
+    "version": "5.0.13-1.el9"
+   },
+   {
+    "arch": "aarch64",
+    "class": "debug",
+    "file": "pgedge-spock50_19-debugsource-5.0.13-1.el9.aarch64.rpm",
+    "name": "pgedge-spock50_19-debugsource",
+    "sha256": "c47d6411ba20a2cdfb6fec58b553f06a1a47d5896ce82893ad55b9bb330bf535",
+    "url": "https://dnf.pgedge.com/staging/9/RPMS/aarch64/pgedge-spock50_19-debugsource-5.0.13-1.el9.aarch64.rpm",
+    "version": "5.0.13-1.el9"
+   },
+   {
+    "arch": "src",
+    "class": "source",
+    "file": "pgedge-spock50_19-5.0.13-1.el9.src.rpm",
+    "header_arch": "aarch64",
+    "name": "pgedge-spock50_19",
+    "sha256": "29da083034b0d497c076d7dd35be6d6e69d70e4cada02cd18d2792acf31ccb00",
+    "url": "https://dnf.pgedge.com/staging/9/SRPMS/pgedge-spock50_19-5.0.13-1.el9.src.rpm",
+    "version": "5.0.13-1.el9"
+   }
+  ]
+ },
+ "channel": "staging",
+ "detector": {
+  "pepcell.v1.deb.bookworm.amd64.pkg.pg16": {
+   "arch": "amd64",
+   "family": "deb",
+   "image": "debian:bookworm",
+   "os": "bookworm",
+   "pg_major": "16"
+  },
+  "pepcell.v1.deb.bookworm.amd64.pkg.pg17": {
+   "arch": "amd64",
+   "family": "deb",
+   "image": "debian:bookworm",
+   "os": "bookworm",
+   "pg_major": "17"
+  },
+  "pepcell.v1.deb.bookworm.amd64.pkg.pg18": {
+   "arch": "amd64",
+   "family": "deb",
+   "image": "debian:bookworm",
+   "os": "bookworm",
+   "pg_major": "18"
+  },
+  "pepcell.v1.deb.bookworm.amd64.pkg.pg19": {
+   "arch": "amd64",
+   "family": "deb",
+   "image": "debian:bookworm",
+   "os": "bookworm",
+   "pg_major": "19"
+  },
+  "pepcell.v1.deb.bookworm.arm64.pkg.pg16": {
+   "arch": "arm64",
+   "family": "deb",
+   "image": "debian:bookworm",
+   "os": "bookworm",
+   "pg_major": "16"
+  },
+  "pepcell.v1.deb.bookworm.arm64.pkg.pg17": {
+   "arch": "arm64",
+   "family": "deb",
+   "image": "debian:bookworm",
+   "os": "bookworm",
+   "pg_major": "17"
+  },
+  "pepcell.v1.deb.bookworm.arm64.pkg.pg18": {
+   "arch": "arm64",
+   "family": "deb",
+   "image": "debian:bookworm",
+   "os": "bookworm",
+   "pg_major": "18"
+  },
+  "pepcell.v1.deb.bookworm.arm64.pkg.pg19": {
+   "arch": "arm64",
+   "family": "deb",
+   "image": "debian:bookworm",
+   "os": "bookworm",
+   "pg_major": "19"
+  },
+  "pepcell.v1.deb.jammy.amd64.pkg.pg16": {
+   "arch": "amd64",
+   "family": "deb",
+   "image": "ubuntu:jammy",
+   "os": "jammy",
+   "pg_major": "16"
+  },
+  "pepcell.v1.deb.jammy.amd64.pkg.pg17": {
+   "arch": "amd64",
+   "family": "deb",
+   "image": "ubuntu:jammy",
+   "os": "jammy",
+   "pg_major": "17"
+  },
+  "pepcell.v1.deb.jammy.amd64.pkg.pg18": {
+   "arch": "amd64",
+   "family": "deb",
+   "image": "ubuntu:jammy",
+   "os": "jammy",
+   "pg_major": "18"
+  },
+  "pepcell.v1.deb.jammy.amd64.pkg.pg19": {
+   "arch": "amd64",
+   "family": "deb",
+   "image": "ubuntu:jammy",
+   "os": "jammy",
+   "pg_major": "19"
+  },
+  "pepcell.v1.deb.jammy.arm64.pkg.pg16": {
+   "arch": "arm64",
+   "family": "deb",
+   "image": "ubuntu:jammy",
+   "os": "jammy",
+   "pg_major": "16"
+  },
+  "pepcell.v1.deb.jammy.arm64.pkg.pg17": {
+   "arch": "arm64",
+   "family": "deb",
+   "image": "ubuntu:jammy",
+   "os": "jammy",
+   "pg_major": "17"
+  },
+  "pepcell.v1.deb.jammy.arm64.pkg.pg18": {
+   "arch": "arm64",
+   "family": "deb",
+   "image": "ubuntu:jammy",
+   "os": "jammy",
+   "pg_major": "18"
+  },
+  "pepcell.v1.deb.jammy.arm64.pkg.pg19": {
+   "arch": "arm64",
+   "family": "deb",
+   "image": "ubuntu:jammy",
+   "os": "jammy",
+   "pg_major": "19"
+  },
+  "pepcell.v1.deb.noble.amd64.pkg.pg16": {
+   "arch": "amd64",
+   "family": "deb",
+   "image": "ubuntu:noble",
+   "os": "noble",
+   "pg_major": "16"
+  },
+  "pepcell.v1.deb.noble.amd64.pkg.pg17": {
+   "arch": "amd64",
+   "family": "deb",
+   "image": "ubuntu:noble",
+   "os": "noble",
+   "pg_major": "17"
+  },
+  "pepcell.v1.deb.noble.amd64.pkg.pg18": {
+   "arch": "amd64",
+   "family": "deb",
+   "image": "ubuntu:noble",
+   "os": "noble",
+   "pg_major": "18"
+  },
+  "pepcell.v1.deb.noble.amd64.pkg.pg19": {
+   "arch": "amd64",
+   "family": "deb",
+   "image": "ubuntu:noble",
+   "os": "noble",
+   "pg_major": "19"
+  },
+  "pepcell.v1.deb.noble.arm64.pkg.pg16": {
+   "arch": "arm64",
+   "family": "deb",
+   "image": "ubuntu:noble",
+   "os": "noble",
+   "pg_major": "16"
+  },
+  "pepcell.v1.deb.noble.arm64.pkg.pg17": {
+   "arch": "arm64",
+   "family": "deb",
+   "image": "ubuntu:noble",
+   "os": "noble",
+   "pg_major": "17"
+  },
+  "pepcell.v1.deb.noble.arm64.pkg.pg18": {
+   "arch": "arm64",
+   "family": "deb",
+   "image": "ubuntu:noble",
+   "os": "noble",
+   "pg_major": "18"
+  },
+  "pepcell.v1.deb.noble.arm64.pkg.pg19": {
+   "arch": "arm64",
+   "family": "deb",
+   "image": "ubuntu:noble",
+   "os": "noble",
+   "pg_major": "19"
+  },
+  "pepcell.v1.deb.resolute.amd64.pkg.pg16": {
+   "arch": "amd64",
+   "family": "deb",
+   "image": "ubuntu:resolute",
+   "os": "resolute",
+   "pg_major": "16"
+  },
+  "pepcell.v1.deb.resolute.amd64.pkg.pg17": {
+   "arch": "amd64",
+   "family": "deb",
+   "image": "ubuntu:resolute",
+   "os": "resolute",
+   "pg_major": "17"
+  },
+  "pepcell.v1.deb.resolute.amd64.pkg.pg18": {
+   "arch": "amd64",
+   "family": "deb",
+   "image": "ubuntu:resolute",
+   "os": "resolute",
+   "pg_major": "18"
+  },
+  "pepcell.v1.deb.resolute.amd64.pkg.pg19": {
+   "arch": "amd64",
+   "family": "deb",
+   "image": "ubuntu:resolute",
+   "os": "resolute",
+   "pg_major": "19"
+  },
+  "pepcell.v1.deb.resolute.arm64.pkg.pg16": {
+   "arch": "arm64",
+   "family": "deb",
+   "image": "ubuntu:resolute",
+   "os": "resolute",
+   "pg_major": "16"
+  },
+  "pepcell.v1.deb.resolute.arm64.pkg.pg17": {
+   "arch": "arm64",
+   "family": "deb",
+   "image": "ubuntu:resolute",
+   "os": "resolute",
+   "pg_major": "17"
+  },
+  "pepcell.v1.deb.resolute.arm64.pkg.pg18": {
+   "arch": "arm64",
+   "family": "deb",
+   "image": "ubuntu:resolute",
+   "os": "resolute",
+   "pg_major": "18"
+  },
+  "pepcell.v1.deb.resolute.arm64.pkg.pg19": {
+   "arch": "arm64",
+   "family": "deb",
+   "image": "ubuntu:resolute",
+   "os": "resolute",
+   "pg_major": "19"
+  },
+  "pepcell.v1.deb.trixie.amd64.pkg.pg16": {
+   "arch": "amd64",
+   "family": "deb",
+   "image": "debian:trixie",
+   "os": "trixie",
+   "pg_major": "16"
+  },
+  "pepcell.v1.deb.trixie.amd64.pkg.pg17": {
+   "arch": "amd64",
+   "family": "deb",
+   "image": "debian:trixie",
+   "os": "trixie",
+   "pg_major": "17"
+  },
+  "pepcell.v1.deb.trixie.amd64.pkg.pg18": {
+   "arch": "amd64",
+   "family": "deb",
+   "image": "debian:trixie",
+   "os": "trixie",
+   "pg_major": "18"
+  },
+  "pepcell.v1.deb.trixie.amd64.pkg.pg19": {
+   "arch": "amd64",
+   "family": "deb",
+   "image": "debian:trixie",
+   "os": "trixie",
+   "pg_major": "19"
+  },
+  "pepcell.v1.deb.trixie.arm64.pkg.pg16": {
+   "arch": "arm64",
+   "family": "deb",
+   "image": "debian:trixie",
+   "os": "trixie",
+   "pg_major": "16"
+  },
+  "pepcell.v1.deb.trixie.arm64.pkg.pg17": {
+   "arch": "arm64",
+   "family": "deb",
+   "image": "debian:trixie",
+   "os": "trixie",
+   "pg_major": "17"
+  },
+  "pepcell.v1.deb.trixie.arm64.pkg.pg18": {
+   "arch": "arm64",
+   "family": "deb",
+   "image": "debian:trixie",
+   "os": "trixie",
+   "pg_major": "18"
+  },
+  "pepcell.v1.deb.trixie.arm64.pkg.pg19": {
+   "arch": "arm64",
+   "family": "deb",
+   "image": "debian:trixie",
+   "os": "trixie",
+   "pg_major": "19"
+  },
+  "pepcell.v1.rpm.el-10.amd64.pkg.pg16": {
+   "arch": "amd64",
+   "family": "rpm",
+   "image": "almalinux:10",
+   "os": "el-10",
+   "pg_major": "16"
+  },
+  "pepcell.v1.rpm.el-10.amd64.pkg.pg17": {
+   "arch": "amd64",
+   "family": "rpm",
+   "image": "almalinux:10",
+   "os": "el-10",
+   "pg_major": "17"
+  },
+  "pepcell.v1.rpm.el-10.amd64.pkg.pg18": {
+   "arch": "amd64",
+   "family": "rpm",
+   "image": "almalinux:10",
+   "os": "el-10",
+   "pg_major": "18"
+  },
+  "pepcell.v1.rpm.el-10.amd64.pkg.pg19": {
+   "arch": "amd64",
+   "family": "rpm",
+   "image": "almalinux:10",
+   "os": "el-10",
+   "pg_major": "19"
+  },
+  "pepcell.v1.rpm.el-10.arm64.pkg.pg16": {
+   "arch": "arm64",
+   "family": "rpm",
+   "image": "almalinux:10",
+   "os": "el-10",
+   "pg_major": "16"
+  },
+  "pepcell.v1.rpm.el-10.arm64.pkg.pg17": {
+   "arch": "arm64",
+   "family": "rpm",
+   "image": "almalinux:10",
+   "os": "el-10",
+   "pg_major": "17"
+  },
+  "pepcell.v1.rpm.el-10.arm64.pkg.pg18": {
+   "arch": "arm64",
+   "family": "rpm",
+   "image": "almalinux:10",
+   "os": "el-10",
+   "pg_major": "18"
+  },
+  "pepcell.v1.rpm.el-10.arm64.pkg.pg19": {
+   "arch": "arm64",
+   "family": "rpm",
+   "image": "almalinux:10",
+   "os": "el-10",
+   "pg_major": "19"
+  },
+  "pepcell.v1.rpm.el-9.amd64.pkg.pg16": {
+   "arch": "amd64",
+   "family": "rpm",
+   "image": "almalinux:9",
+   "os": "el-9",
+   "pg_major": "16"
+  },
+  "pepcell.v1.rpm.el-9.amd64.pkg.pg17": {
+   "arch": "amd64",
+   "family": "rpm",
+   "image": "almalinux:9",
+   "os": "el-9",
+   "pg_major": "17"
+  },
+  "pepcell.v1.rpm.el-9.amd64.pkg.pg18": {
+   "arch": "amd64",
+   "family": "rpm",
+   "image": "almalinux:9",
+   "os": "el-9",
+   "pg_major": "18"
+  },
+  "pepcell.v1.rpm.el-9.amd64.pkg.pg19": {
+   "arch": "amd64",
+   "family": "rpm",
+   "image": "almalinux:9",
+   "os": "el-9",
+   "pg_major": "19"
+  },
+  "pepcell.v1.rpm.el-9.arm64.pkg.pg16": {
+   "arch": "arm64",
+   "family": "rpm",
+   "image": "almalinux:9",
+   "os": "el-9",
+   "pg_major": "16"
+  },
+  "pepcell.v1.rpm.el-9.arm64.pkg.pg17": {
+   "arch": "arm64",
+   "family": "rpm",
+   "image": "almalinux:9",
+   "os": "el-9",
+   "pg_major": "17"
+  },
+  "pepcell.v1.rpm.el-9.arm64.pkg.pg18": {
+   "arch": "arm64",
+   "family": "rpm",
+   "image": "almalinux:9",
+   "os": "el-9",
+   "pg_major": "18"
+  },
+  "pepcell.v1.rpm.el-9.arm64.pkg.pg19": {
+   "arch": "arm64",
+   "family": "rpm",
+   "image": "almalinux:9",
+   "os": "el-9",
+   "pg_major": "19"
+  }
+ },
+ "source_table_sha256": "327e6190db5350f640e53361c1a321b458a42f9fe07edc4b4b5d6f7b7f1d828c",
+ "version": "5.0.13-1"
+}
