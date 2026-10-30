@@ -1,0 +1,372 @@
+# -------------------------------------------------------------------------
+# TEMPORARY VALIDATION HARNESS: branch-scoped, never merged, NOT a release.
+#
+# T4, Spock v5 negative cases (preview). Checks that PEP at v1_STABLE keeps each
+# kind of bad package evidence visible and apart, while valid cells beside it are
+# still planned: this workflow -> pep-release-certify (PEP v1_STABLE) -> pep-certify
+# -> pep-integration, with `simulated: true`. One push of this branch, one run.
+#
+# Five real detector cells, one case each (exact expectations: .github/validation):
+#   control  bookworm amd64 PG17  its real 2 files, normal receipt
+#   N1       bookworm amd64 PG16  its real 2 files, receipt step not run
+#   N2       el-9 amd64 PG16      its real 5 files + the PG17 runtime, normal receipt
+#   N2b      el-9 amd64 PG18      only the PG17 runtime, normal receipt
+#   N3       bookworm amd64 PG18  its real 2 files, receipt digest = the upload's
+#                                 digest with its last hex digit changed
+# N3 is present but invalid evidence, so PEP's enforce job is EXPECTED to end red
+# (incomplete / block, package_evidence_rejected). The assert job runs regardless
+# and checks every case separately, from evidence, not job colour.
+#
+# Validation fixtures, stated plainly:
+#   * Nothing is built and nothing is published. The package jobs download the
+#     already-published spock50 5.0.13-1 staging packages and verify each file's
+#     repository sha256. The receipts recorded here bind those files to this run's
+#     cells only; they do NOT establish or re-establish the packages' original
+#     build provenance. N2, N2b and N3 are deliberately wrong evidence.
+#   * `simulated: true` with `rpm_publication` / `deb_publication: skipped` is what
+#     a simulate_tag run reports. No publication occurred in this run.
+#   * The certify job's secrets lines are release.yml's: on a simulated run they
+#     pass empty values, and PEP gives a preview no credentials in any case.
+#   * No Slack message is sent and no PEP acceptance rule is changed for this harness.
+# -------------------------------------------------------------------------
+
+name: PEP Spock v5 negative check (validation, no build or publication)
+
+on:
+    push:
+        branches: [validate/pep-v1-stable-spock-v5-negative]
+
+permissions:
+    contents: read
+
+jobs:
+    # As in release.yml (pep/v5-release-certify): the real detector decides the cell identities.
+    detect-matrix:
+        name: Detect build matrix
+        runs-on: ubuntu-latest
+        timeout-minutes: 10   # bounded: a stalled job fails instead of running for hours
+        outputs:
+            rpm_matrix: ${{ steps.detect.outputs.rpm_matrix }}
+            deb_matrix: ${{ steps.detect.outputs.deb_matrix }}
+        steps:
+            - name: Checkout code
+              uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+              with:
+                  persist-credentials: false
+
+            - name: Checkout pgedge-detect-build-matrix
+              env:
+                  TOKEN: ${{ secrets.PGEDGE_BUILDER_TOKEN }}
+              run: |
+                  set -euo pipefail
+                  mkdir -p .github/actions
+                  git clone --depth 1 \
+                      "https://x-access-token:${TOKEN}@github.com/pgEdge/pgedge-detect-build-matrix.git" \
+                      ".github/actions/pgedge-detect-build-matrix"
+
+            - name: Detect build matrix
+              id: detect
+              uses: ./.github/actions/pgedge-detect-build-matrix
+              with:
+                  component_name: pkg
+                  pg_versions: '16,17,18,19'
+                  archs: '["amd64","arm64"]'
+                  rpm_images: '["almalinux:9","almalinux:10"]'
+                  deb_images: '["ubuntu:jammy","ubuntu:noble","ubuntu:resolute","debian:bookworm","debian:trixie"]'
+                  skip_rpm: 'false'
+                  skip_deb: 'false'
+
+    # Exactly the five case cells, each found exactly once in the detector output.
+    select-cells:
+        name: Select the five negative-case cells
+        needs: detect-matrix
+        runs-on: ubuntu-latest
+        timeout-minutes: 10   # bounded: a stalled job fails instead of running for hours
+        outputs:
+            rpm_matrix: ${{ steps.pick.outputs.rpm_matrix }}
+            deb_matrix: ${{ steps.pick.outputs.deb_matrix }}
+        steps:
+            - name: Check out the case table
+              uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+              with:
+                  sparse-checkout: .github/validation
+                  persist-credentials: false
+            - name: Keep the control, N1, N2, N2b and N3 cells
+              id: pick
+              env:
+                  RPM: ${{ needs.detect-matrix.outputs.rpm_matrix }}
+                  DEB: ${{ needs.detect-matrix.outputs.deb_matrix }}
+                  FIX: .github/validation/spock-negative-fixtures.json
+              run: |
+                  set -euo pipefail
+                  ids=$(jq -c '[.cases[].cell_id]' "$FIX")
+                  [ "$(jq 'length' <<<"$ids")" = 5 ] || { echo "::error::expected five case cells in $FIX"; exit 1; }
+                  for cid in $(jq -r '.[]' <<<"$ids"); do
+                      n=$(jq --arg c "$cid" '[.include[] | select(.cell_id == $c)] | length' <<<"$RPM")
+                      m=$(jq --arg c "$cid" '[.include[] | select(.cell_id == $c)] | length' <<<"$DEB")
+                      [ "$((n + m))" = 1 ] || { echo "::error::cell $cid appears $((n + m)) times in the detector output, expected exactly once"; exit 1; }
+                  done
+                  rpm=$(jq -c --argjson ids "$ids" '{include: [.include[] | select(.cell_id as $c | $ids | index($c))]}' <<<"$RPM")
+                  deb=$(jq -c --argjson ids "$ids" '{include: [.include[] | select(.cell_id as $c | $ids | index($c))]}' <<<"$DEB")
+                  [ "$(jq '.include | length' <<<"$rpm")" = 2 ] || { echo "::error::expected exactly two RPM case cells"; exit 1; }
+                  [ "$(jq '.include | length' <<<"$deb")" = 3 ] || { echo "::error::expected exactly three DEB case cells"; exit 1; }
+                  echo "rpm_matrix=$rpm" >> "$GITHUB_OUTPUT"
+                  echo "deb_matrix=$deb" >> "$GITHUB_OUTPUT"
+
+    # Fixed identity of the already-published staging build. Synthetic inputs: see the header.
+    determine-repo-type:
+        name: Fixed validation identity (synthetic inputs; nothing is published)
+        runs-on: ubuntu-latest
+        timeout-minutes: 10   # bounded: a stalled job fails instead of running for hours
+        outputs:
+            repo-type:          staging
+            component-version:  "5.0.13"
+            component-buildnum: "1"
+            effective-tag:      v5.0.13
+            simulated:          "true"
+        steps:
+            - name: Label this run
+              run: |
+                  cat >> "$GITHUB_STEP_SUMMARY" <<'EOF'
+                  ## Validation harness, not a release
+                  No build and no publication occur in this run. The packages are the already-published
+                  `spock50` 5.0.13-1 staging packages, downloaded and checksum-verified; the receipts bind
+                  those files to this run's cells only and do not establish their original build provenance.
+                  This is a preview (`simulated: true`, publication `skipped`) of five negative cases: control,
+                  N1 (no receipt), N2 (wrong-PG package beside a valid one), N2b (wrong-PG package only) and
+                  N3 (tampered receipt digest). PEP's enforce job is expected to fail on N3; the assert job
+                  checks each case separately.
+                  EOF
+
+    package-rpm:
+        name: Package RPM (${{ matrix.image }} ${{ matrix.arch }} pg${{ matrix.pg_major }}) [pep-cell:${{ matrix.cell_id }}]
+        needs: [select-cells, determine-repo-type]
+        runs-on: ubuntu-latest
+        timeout-minutes: 15   # bounded: a stalled job fails instead of running for hours
+        strategy:
+            fail-fast: false
+            matrix: ${{ fromJSON(needs.select-cells.outputs.rpm_matrix) }}
+        steps:
+            - name: Check out the case table
+              uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+              with:
+                  sparse-checkout: .github/validation
+                  persist-credentials: false
+            - name: Derive os_version from image
+              id: cell
+              env:
+                  IMAGE: ${{ matrix.image }}
+              run: |
+                  set -euo pipefail
+                  echo "os_version=${IMAGE##*:}" >> "$GITHUB_OUTPUT"
+            - name: Look up this cell's case
+              id: case
+              env:
+                  CELL: ${{ matrix.cell_id }}
+                  FIX:  .github/validation/spock-negative-fixtures.json
+              run: |
+                  set -euo pipefail
+                  [ "$(jq --arg c "$CELL" '[.cases[] | select(.cell_id == $c)] | length' "$FIX")" = 1 ] || { echo "::error::$CELL is not exactly one case"; exit 1; }
+                  name=$(jq -r --arg c "$CELL" '.cases[] | select(.cell_id == $c) | .case' "$FIX")
+                  receipt=$(jq -r --arg c "$CELL" '.cases[] | select(.cell_id == $c) | .receipt' "$FIX")
+                  [ "$receipt" = normal ] || { echo "::error::an RPM case cell here takes a normal receipt, not $receipt"; exit 1; }
+                  echo "case $name: $(jq -r --arg c "$CELL" '.cases[] | select(.cell_id == $c) | .description' "$FIX")"
+                  echo "receipt=$receipt" >> "$GITHUB_OUTPUT"
+            - name: Download the published packages for this case (validation fixture; nothing is built)
+              env:
+                  CELL: ${{ matrix.cell_id }}
+                  FIX:  .github/validation/spock-negative-fixtures.json
+                  DIR:  output/el${{ steps.cell.outputs.os_version }}-${{ matrix.arch }}
+              run: |
+                  set -euo pipefail
+                  mkdir -p "$DIR"
+                  list="$RUNNER_TEMP/case-files.tsv"
+                  jq -r --arg c "$CELL" '.cases[] | select(.cell_id == $c) | .files[] | [.url, .sha256, .file] | @tsv' "$FIX" > "$list"
+                  [ -s "$list" ] || { echo "::error::no files listed for $CELL"; exit 1; }
+                  while IFS=$'\t' read -r url sha file; do
+                      [[ "$file" =~ ^[A-Za-z0-9._+-]+$ && "$url" == https://* && "${url##*/}" == "$file" ]] || { echo "::error::bad fixture entry for $CELL"; exit 1; }
+                      curl -fsSL --proto '=https' --proto-redir '=https' --retry 3 --connect-timeout 20 --max-time 300 -o "$DIR/$file" "$url"
+                      echo "$sha  $DIR/$file" | sha256sum -c -
+                  done < "$list"
+            - name: Upload RPM cell artifact
+              id: up_pkg
+              uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+              with:
+                  # pg major is part of the name: without it the PG cells of one
+                  # (os, arch) would collide on a single artifact name.
+                  name: rpm__el-${{ steps.cell.outputs.os_version }}__${{ matrix.arch }}__pg${{ matrix.pg_major }}
+                  path: output/el${{ steps.cell.outputs.os_version }}-${{ matrix.arch }}/
+                  # A cell that produced no packages is a failure, not a warning:
+                  # the default (warn) would let the push job proceed with an
+                  # incomplete set.
+                  if-no-files-found: error
+                  retention-days: 7
+            # release.yml's receipt step without continue-on-error: a receipt failure must show.
+            - name: Generate pep-receipt/2 for the RPM cell
+              if: steps.case.outputs.receipt == 'normal'
+              uses: pgEdge/pgedge-pep-test/.github/actions/pep-package-receipt@52cd787341f719191e817d3f1c134fc210fbcc53
+              with:
+                  cell_id: ${{ matrix.cell_id }}
+                  family: rpm
+                  package_dir: output/el${{ steps.cell.outputs.os_version }}-${{ matrix.arch }}
+                  package_artifact_id: ${{ steps.up_pkg.outputs.artifact-id }}
+                  package_artifact_name: rpm__el-${{ steps.cell.outputs.os_version }}__${{ matrix.arch }}__pg${{ matrix.pg_major }}
+                  package_artifact_digest: ${{ steps.up_pkg.outputs.artifact-digest }}
+
+    package-deb:
+        name: Package DEB (${{ matrix.image }} ${{ matrix.arch }} pg${{ matrix.pg_major }}) [pep-cell:${{ matrix.cell_id }}]
+        needs: [select-cells, determine-repo-type]
+        runs-on: ubuntu-latest
+        timeout-minutes: 15   # bounded: a stalled job fails instead of running for hours
+        strategy:
+            fail-fast: false
+            matrix: ${{ fromJSON(needs.select-cells.outputs.deb_matrix) }}
+        steps:
+            - name: Check out the case table
+              uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+              with:
+                  sparse-checkout: .github/validation
+                  persist-credentials: false
+            - name: Derive distro from image
+              id: cell
+              env:
+                  IMAGE: ${{ matrix.image }}
+              run: |
+                  set -euo pipefail
+                  echo "distro=${IMAGE##*:}" >> "$GITHUB_OUTPUT"
+            - name: Look up this cell's case
+              id: case
+              env:
+                  CELL: ${{ matrix.cell_id }}
+                  FIX:  .github/validation/spock-negative-fixtures.json
+              run: |
+                  set -euo pipefail
+                  [ "$(jq --arg c "$CELL" '[.cases[] | select(.cell_id == $c)] | length' "$FIX")" = 1 ] || { echo "::error::$CELL is not exactly one case"; exit 1; }
+                  name=$(jq -r --arg c "$CELL" '.cases[] | select(.cell_id == $c) | .case' "$FIX")
+                  receipt=$(jq -r --arg c "$CELL" '.cases[] | select(.cell_id == $c) | .receipt' "$FIX")
+                  case "$receipt" in normal|none|tampered) ;; *) echo "::error::unknown receipt handling $receipt"; exit 1 ;; esac
+                  echo "case $name: $(jq -r --arg c "$CELL" '.cases[] | select(.cell_id == $c) | .description' "$FIX")"
+                  if [ "$receipt" = none ]; then echo "case $name: the receipt step is deliberately not run"; fi
+                  echo "receipt=$receipt" >> "$GITHUB_OUTPUT"
+            - name: Download the published packages for this case (validation fixture; nothing is built)
+              env:
+                  CELL: ${{ matrix.cell_id }}
+                  FIX:  .github/validation/spock-negative-fixtures.json
+                  DIR:  output/${{ steps.cell.outputs.distro }}-${{ matrix.arch }}
+              run: |
+                  set -euo pipefail
+                  mkdir -p "$DIR"
+                  list="$RUNNER_TEMP/case-files.tsv"
+                  jq -r --arg c "$CELL" '.cases[] | select(.cell_id == $c) | .files[] | [.url, .sha256, .file] | @tsv' "$FIX" > "$list"
+                  [ -s "$list" ] || { echo "::error::no files listed for $CELL"; exit 1; }
+                  while IFS=$'\t' read -r url sha file; do
+                      [[ "$file" =~ ^[A-Za-z0-9._+-]+$ && "$url" == https://* && "${url##*/}" == "$file" ]] || { echo "::error::bad fixture entry for $CELL"; exit 1; }
+                      curl -fsSL --proto '=https' --proto-redir '=https' --retry 3 --connect-timeout 20 --max-time 300 -o "$DIR/$file" "$url"
+                      echo "$sha  $DIR/$file" | sha256sum -c -
+                  done < "$list"
+            - name: Upload DEB cell artifact
+              id: up_pkg
+              uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+              with:
+                  name: deb__${{ steps.cell.outputs.distro }}__${{ matrix.arch }}__pg${{ matrix.pg_major }}
+                  path: output/${{ steps.cell.outputs.distro }}-${{ matrix.arch }}/
+                  # A cell that produced no packages is a failure, not a warning:
+                  # the default (warn) would let the push job proceed with an
+                  # incomplete set.
+                  if-no-files-found: error
+                  retention-days: 7
+            # release.yml's receipt step without continue-on-error: a receipt failure must show.
+            - name: Generate pep-receipt/2 for the DEB cell
+              if: steps.case.outputs.receipt == 'normal'
+              uses: pgEdge/pgedge-pep-test/.github/actions/pep-package-receipt@52cd787341f719191e817d3f1c134fc210fbcc53
+              with:
+                  cell_id: ${{ matrix.cell_id }}
+                  family: deb
+                  package_dir: output/${{ steps.cell.outputs.distro }}-${{ matrix.arch }}
+                  package_artifact_id: ${{ steps.up_pkg.outputs.artifact-id }}
+                  package_artifact_name: deb__${{ steps.cell.outputs.distro }}__${{ matrix.arch }}__pg${{ matrix.pg_major }}
+                  package_artifact_digest: ${{ steps.up_pkg.outputs.artifact-digest }}
+            # N3 only: deliberately wrong evidence. The receipt records the upload's digest with its
+            # last hex digit changed; both values are printed so the assert job can compare them.
+            - name: Change the last hex digit of the recorded digest (N3 only)
+              id: tamper
+              if: steps.case.outputs.receipt == 'tampered'
+              env:
+                  DIGEST: ${{ steps.up_pkg.outputs.artifact-digest }}
+              run: |
+                  set -euo pipefail
+                  [[ "$DIGEST" =~ ^(sha256:)?[0-9a-f]{64}$ ]] || { echo "::error::unexpected upload digest form"; exit 1; }
+                  last="${DIGEST: -1}"
+                  next=$(printf '%x' $(( (16#$last + 1) % 16 )))
+                  tampered="${DIGEST%?}$next"
+                  echo "upload digest:   $DIGEST"
+                  echo "receipt digest:  $tampered"
+                  echo "digest=$tampered" >> "$GITHUB_OUTPUT"
+            - name: Generate pep-receipt/2 for the DEB cell with the changed digest (N3 only)
+              if: steps.case.outputs.receipt == 'tampered'
+              uses: pgEdge/pgedge-pep-test/.github/actions/pep-package-receipt@52cd787341f719191e817d3f1c134fc210fbcc53
+              with:
+                  cell_id: ${{ matrix.cell_id }}
+                  family: deb
+                  package_dir: output/${{ steps.cell.outputs.distro }}-${{ matrix.arch }}
+                  package_artifact_id: ${{ steps.up_pkg.outputs.artifact-id }}
+                  package_artifact_name: deb__${{ steps.cell.outputs.distro }}__${{ matrix.arch }}__pg${{ matrix.pg_major }}
+                  package_artifact_digest: ${{ steps.tamper.outputs.digest }}
+
+    # release.yml's certify job, with the five selected cells and a simulated run's
+    # publication results. The secrets lines are release.yml's, unchanged.
+    certify:
+        name: Certify packages (PEP)
+        needs: [select-cells, determine-repo-type, package-rpm, package-deb]
+        if: always() && needs.determine-repo-type.result == 'success'
+        permissions:
+            contents: read      # nested checkouts of the pinned PEP implementation
+            actions: read       # PEP lists THIS run's jobs and downloads its artifacts by id
+        uses: pgEdge/pgedge-pep-test/.github/workflows/pep-release-certify.yml@v1_STABLE
+        with:
+            rpm_matrix:      ${{ needs.select-cells.outputs.rpm_matrix }}
+            deb_matrix:      ${{ needs.select-cells.outputs.deb_matrix }}
+            component:       spock
+            version:         ${{ needs.determine-repo-type.outputs.component-version }}
+            buildnum:        ${{ needs.determine-repo-type.outputs.component-buildnum }}
+            effective_tag:   ${{ needs.determine-repo-type.outputs.effective-tag }}
+            channel:         ${{ needs.determine-repo-type.outputs.repo-type }}
+            simulated:       ${{ needs.determine-repo-type.outputs.simulated }}
+            rpm_publication: skipped      # what a simulate_tag run reports; nothing is published
+            deb_publication: skipped
+            enforcement:     observe      # report-only: product test failures do not fail the run
+        secrets:
+            DOCKERHUB_USERNAME: ${{ needs.determine-repo-type.outputs.simulated == 'false' && secrets.DOCKERHUB_USERNAME || '' }}
+            DOCKERHUB_TOKEN:    ${{ needs.determine-repo-type.outputs.simulated == 'false' && secrets.DOCKERHUB_TOKEN || '' }}
+            PGEDGE_REPO_CLIENT_CRT: ${{ needs.determine-repo-type.outputs.simulated == 'false' && secrets.PGEDGE_REPO_CLIENT_CRT || '' }}
+            PGEDGE_REPO_CLIENT_KEY: ${{ needs.determine-repo-type.outputs.simulated == 'false' && secrets.PGEDGE_REPO_CLIENT_KEY || '' }}
+
+    assert:
+        name: assert negative-case evidence (preview)
+        needs: [certify]
+        if: always()
+        runs-on: ubuntu-24.04
+        timeout-minutes: 15
+        permissions:
+            contents: read      # the verifier script and case table on this branch
+            actions: read       # run metadata, this attempt's jobs and logs, this run's artifacts
+        env:
+            NEEDS_JSON: ${{ toJSON(needs) }}
+            GH_TOKEN:   ${{ github.token }}
+        steps:
+            - name: Check out the verifier
+              uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+              with:
+                  sparse-checkout: .github/validation
+                  persist-credentials: false
+            - name: Download this run's PEP evidence (current attempt only)
+              uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+              with:
+                  pattern: pep-*-r${{ github.run_number }}-a${{ github.run_attempt }}
+                  path: evidence
+            # Expected capture verdicts, plan, gaps, result and decision live in the case table,
+            # derived offline from PEP's own modules at the stable commit before this branch is pushed.
+            - name: Check each case from evidence, not job colour
+              env:
+                  SELF_JOB_ID: ${{ job.check_run_id }}   # this job: still running, so the one log not read
+              run: python3 .github/validation/verify_spock_negative.py preview evidence
