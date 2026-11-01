@@ -108,8 +108,8 @@ addition to the base settings.
 | `spock.standby_slots_min_confirmed` | primary | `-1` | How many of those slots must confirm. `-1` means all. |
 | `spock.failover_slots_naptime` | standby | `1000` | Worker sleep between slot-sync passes, in ms (SIGHUP; range 1–3600000). |
 | `spock.failover_slots_feedback_naptime` | standby | `10000` | Shorter retry, in ms, while waiting for standby WAL feedback (SIGHUP; range 1–3600000). |
-| `spock.failover_slots_recreate_invalidated` | standby | `on` | Drop and recreate a synchronized slot whose copy was invalidated on the standby. `off` leaves it as it is and reports it once (SIGHUP). |
-| `spock.failover_slots_database` | standby | `''` | Database the worker connects to so it can decode each copy on the standby and give it a consistent snapshot. Without it, transactions can be lost after a promotion. PG16-17 only; on PG16 it must be the slots' database (restart). |
+| `spock.failover_slots_recreate_invalidated` | standby | `on` | Drop and recreate a synchronized slot whose copy was invalidated on the standby. `off` leaves it as it is and reports it once. PG15-17 only; ignored on PG17 with native slot sync and on PG18+ (SIGHUP). |
+| `spock.failover_slots_database` | standby | `''` | Database the worker connects to so it can decode each copy on the standby and give it a consistent snapshot. Off by default; without it, transactions can be lost after a promotion. PG16-17 only, ignored on PG18+; on PG16 it must be the slots' database (restart). |
 
 `hot_standby_feedback = on` plus a physical slot named by `primary_slot_name` is
 the important pair. Without both, the primary can remove catalog rows a slot
@@ -123,7 +123,11 @@ PostgreSQL 17 it is optional: the Spock worker runs by default, and setting
 `sync_replication_slots = on` on the standby tells Spock to step aside and let
 core PostgreSQL do the sync instead. Native sync only copies slots that have
 `failover = true`. Spock 6.0.0 sets that flag when it creates a slot. If you
-have slots from an older Spock release, see the upgrade section below.
+have slots from an older Spock release, see the upgrade section below. To
+switch a PostgreSQL 17 standby the Spock worker has been syncing, follow
+[Switching a PostgreSQL 17 standby from the Spock worker](#switching-a-postgresql-17-standby-from-the-spock-worker)
+instead: setting `sync_replication_slots = on` alone leaves most or all
+slots unsynchronized.
 
 ### 1. Create a physical replication slot on the primary
 
@@ -170,6 +174,75 @@ synchronized LSN with no data loss and no slot recreation required.
 must adjust it before replication will resume. See
 [Runbook: clear `synchronized_standby_slots` after promotion](#runbook-clear-synchronized_standby_slots-after-promotion)
 below.
+
+## Switching a PostgreSQL 17 standby from the Spock worker
+
+Copies that the Spock worker made on the standby have `synced = false`.
+Native slot sync will not take over a slot of the same name, and keeps
+failing until those copies are gone. To switch:
+
+1. On the primary, list the slots the standby should carry. The Spock
+   worker copies every logical slot that `spock.synchronize_slot_names`
+   matches (all of them by default), but native slot sync copies only
+   slots with `failover = true`:
+
+    ```sql
+    SELECT slot_name, plugin, failover
+    FROM pg_replication_slots
+    WHERE slot_type = 'logical' AND NOT temporary;
+    ```
+
+    `spock.slot_enable_failover()` sets the flag on Spock's own slots (see
+    [Upgrading Spock to 6.0.0](#upgrading-spock-to-600)). Set it on any other
+    slot you want kept, for example with
+    `ALTER SUBSCRIPTION ... SET (failover = true)` on a PostgreSQL
+    subscriber, with the subscription disabled while you run it. A slot
+    without it is not synchronized after the switch.
+    Leave the primary's standby holdback (`spock.pg_standby_slot_names` or
+    `synchronized_standby_slots`) as it is; if neither is set, see
+    [step 2 of the native setup](#2-configure-the-primary-postgresqlconf).
+2. On the standby, check `wal_level = logical` and that `primary_conninfo`
+   includes `dbname`. Native slot sync opens a normal database connection
+   with `primary_conninfo`, not a replication one, so its user needs a
+   `pg_hba.conf` entry and `CONNECT` on that database on the primary; the
+   Spock worker may have connected as someone else through
+   `spock.primary_dsn`. Then set `sync_replication_slots = on` and reload.
+   The Spock worker stops synchronizing.
+3. Wait one `spock.failover_slots_naptime`, then list the copies the Spock
+   worker made on the standby. A pass that was already running can outlast
+   the wait and make a copy after the drop; step 4 finds it.
+
+    ```sql
+    SELECT slot_name, plugin, active, active_pid
+    FROM pg_replication_slots
+    WHERE slot_type = 'logical' AND NOT synced AND NOT temporary;
+    ```
+
+    A copy has the same name as a slot on the primary. A slot that exists
+    only on the standby, such as one created there for decoding on the
+    standby, is not a copy: leave it. A copy that shows `active = true` is
+    in use, and the drop fails until the process in `active_pid` stops
+    using it; stop that client, or end it with
+    `pg_terminate_backend(active_pid)`. Drop each copy by name:
+
+    ```sql
+    SELECT pg_drop_replication_slot('<slot_name>');
+    ```
+
+4. Run the query from
+   [Verify slot synchronization](#4-verify-slot-synchronization) until every
+   slot with `failover = true` on the primary appears on the standby with
+   `synced = true` and no `invalidation_reason`. If a drop in step 3
+   failed, or a copy still shows `synced = false`, drop it again. If no
+   slot appears, check the standby's log for slot sync connection errors.
+   Native slot sync keeps a new copy temporary, and out of this query,
+   until the slot's consumer on the primary has moved past the position
+   the standby reserved for it; meanwhile the standby logs "could not
+   synchronize replication slot". A slot whose subscriber is idle, paused
+   or down can stay that way until the subscriber catches up.
+
+Until native slot sync has recreated a slot, the standby has no usable copy
+of it, so do not promote the standby in between.
 
 ## Runbook: clear `synchronized_standby_slots` after promotion
 
@@ -263,7 +336,9 @@ with the `FAILOVER` flag, so with `sync_replication_slots = on` the slotsync
 worker keeps them current on every member, and Patroni, from 4.1.0 on,
 stays out of their way. On PostgreSQL 18 this is the only path, because
 Spock's worker is not registered there. On PostgreSQL 17 Spock's worker
-runs unless `sync_replication_slots = on` is set, so under Patroni set it.
+runs unless `sync_replication_slots = on` is set, so under Patroni set it;
+for a member the Spock worker has already been syncing, follow
+[Switching a PostgreSQL 17 standby from the Spock worker](#switching-a-postgresql-17-standby-from-the-spock-worker).
 The mechanism is the one described under
 [Setup: PostgreSQL 17 and 18 (Native)](#setup-postgresql-17-and-18-native);
 this section is about where those settings go in a Patroni configuration
@@ -480,8 +555,8 @@ primary it idles.
 | `spock.standby_slots_min_confirmed` | `-1` | How many slots from `pg_standby_slot_names` must confirm (`-1` = all) |
 | `spock.failover_slots_naptime` | `1000` | Worker sleep between slot-sync passes, in ms (SIGHUP; range 1–3600000) |
 | `spock.failover_slots_feedback_naptime` | `10000` | Shorter retry, in ms, while waiting for standby WAL feedback (SIGHUP; range 1–3600000) |
-| `spock.failover_slots_recreate_invalidated` | `on` | Drop and recreate a synchronized slot whose copy was invalidated on the standby; `off` leaves it as it is and reports it once (SIGHUP) |
-| `spock.failover_slots_database` | `''` | Database the worker connects to so it can decode each copy on the standby and give it a consistent snapshot; PG16-17 only, on PG16 the slots' database (restart) |
+| `spock.failover_slots_recreate_invalidated` | `on` | Drop and recreate a synchronized slot whose copy was invalidated on the standby; `off` leaves it as it is and reports it once. PG15-17 only; ignored on PG17 with native slot sync and on PG18+ (SIGHUP) |
+| `spock.failover_slots_database` | `''` | Database the worker connects to so it can decode each copy on the standby and give it a consistent snapshot; off by default. PG16-17 only, ignored on PG18+; on PG16 the slots' database (restart) |
 
 ### Example (`postgresql.conf` on standby)
 
@@ -548,10 +623,13 @@ FROM pg_replication_slots
 WHERE plugin = 'spock_output';
 ```
 
-The upgrade does not change any PostgreSQL settings. If you are switching to the
-native path on PostgreSQL 17, or you are on PostgreSQL 18, set
-`sync_replication_slots = on` on the standby yourself and confirm the primary
-lists the physical slot in `synchronized_standby_slots`.
+The upgrade does not change any PostgreSQL settings. On PostgreSQL 18,
+configure native slot sync on the standby yourself as described in
+[Setup: PostgreSQL 17 and 18 (Native)](#setup-postgresql-17-and-18-native):
+`sync_replication_slots = on`, `dbname` in `primary_conninfo`, and the
+physical slot listed in `synchronized_standby_slots` on the primary. To switch a
+PostgreSQL 17 standby to the native path, follow
+[Switching a PostgreSQL 17 standby from the Spock worker](#switching-a-postgresql-17-standby-from-the-spock-worker).
 
 ## Monitoring
 
@@ -614,4 +692,6 @@ failover will require manual slot recreation and table re-sync.
 **Q: Can I use both mechanisms on PG17?**
 
 No. If `sync_replication_slots = on` is set on PG17, Spock's worker detects
-this and skips its sync loop, deferring to the native worker entirely.
+this and skips its sync loop, deferring to the native worker entirely. To
+switch a standby the Spock worker has been syncing, follow
+[Switching a PostgreSQL 17 standby from the Spock worker](#switching-a-postgresql-17-standby-from-the-spock-worker).
