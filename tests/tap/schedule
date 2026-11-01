@@ -84,3 +84,5 @@ test: 113_tablesync_same_txn
 test: 114_failover_slot_consistent_snapshot
 test: 115_failover_slot_native_synced_copy
 test: 117_call_rollback_extended_protocol
+test: 118_exception_slot_same_name
+test: 119_exception_slot_exhausted
