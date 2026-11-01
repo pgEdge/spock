@@ -1,0 +1,352 @@
+# -------------------------------------------------------------------------
+# TEMPORARY VALIDATION HARNESS: branch-scoped, never merged, NOT a release.
+#
+# Full PEP certification of already-published Spock v5 packages with a CANDIDATE
+# PEP revision (pgEdge/pgedge-pep-test#39, which decides output_plugin_libraries
+# from the installed server instead of the configured PG_VERSION). Derived from the
+# T2 harness (validate/pep-v1-stable-spock-v5-full). One push of a branch starts
+# one run; .github/validation/profile.json on that branch decides the channel,
+# release identity, fixture table and cells.
+#
+# Validation fixtures, stated plainly:
+#   * Nothing is built, published, promoted or announced; no Slack, no manifests.
+#   * daily profiles: each package job downloads the cell artifact of Spock Release
+#     run 41320744862 (v5.0.13-test1, whose packages were published to daily) and
+#     checks every file's sha256 against the fixture table taken from the archived
+#     artifacts. staging profiles: as T2, the published spock50 5.0.13-1 files are
+#     downloaded from staging and checked against T2's fixture table.
+#     The receipts recorded here bind those files to this run's cells only.
+#   * `simulated: false` and `rpm_publication` / `deb_publication: success` are
+#     SYNTHETIC test inputs that drive the adapter's full path. PEP installs the
+#     packages from the channel, where they already are.
+#   * No PEP acceptance rule is changed for this harness. Enforcement: observe.
+# -------------------------------------------------------------------------
+
+name: PEP installed-server check (validation, no build or publication)
+
+on:
+    push:
+        branches: [validate/pep39-daily-subset, validate/pep39-staging-subset, validate/pep39-daily-full]
+
+permissions:
+    contents: read
+
+env:
+    # As in release.yml: the in-repo packaging directory the detector reads.
+    PACKAGING_DIR: pkg
+
+jobs:
+    # As in release.yml: the real detector decides the cell identities.
+    detect-matrix:
+        name: Detect build matrix
+        runs-on: ubuntu-latest
+        timeout-minutes: 10
+        outputs:
+            rpm_matrix: ${{ steps.detect.outputs.rpm_matrix }}
+            deb_matrix: ${{ steps.detect.outputs.deb_matrix }}
+        steps:
+            - name: Checkout code
+              uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+              with:
+                  persist-credentials: false
+
+            - name: Checkout pgedge-detect-build-matrix
+              env:
+                  TOKEN: ${{ secrets.PGEDGE_BUILDER_TOKEN }}
+              run: |
+                  set -euo pipefail
+                  mkdir -p .github/actions
+                  git clone --depth 1 \
+                      "https://x-access-token:${TOKEN}@github.com/pgEdge/pgedge-detect-build-matrix.git" \
+                      ".github/actions/pgedge-detect-build-matrix"
+
+            - name: Detect build matrix
+              id: detect
+              uses: ./.github/actions/pgedge-detect-build-matrix
+              with:
+                  component_name: ${{ env.PACKAGING_DIR }}
+                  pg_versions: '16,17,18,19'
+                  archs: '["amd64","arm64"]'
+                  rpm_images: '["almalinux:9","almalinux:10"]'
+                  deb_images: '["ubuntu:jammy","ubuntu:noble","ubuntu:resolute","debian:bookworm","debian:trixie"]'
+                  skip_rpm: 'false'
+                  skip_deb: 'false'
+
+    # The detector must produce exactly the 56 cells of the fixture table; the
+    # profile then keeps all of them or the listed subset.
+    select-cells:
+        name: Select the profile's detector cells
+        needs: detect-matrix
+        runs-on: ubuntu-latest
+        timeout-minutes: 10
+        outputs:
+            rpm_matrix: ${{ steps.pick.outputs.rpm_matrix }}
+            deb_matrix: ${{ steps.pick.outputs.deb_matrix }}
+        steps:
+            - name: Check out the profile and fixture tables
+              uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+              with:
+                  sparse-checkout: .github/validation
+                  persist-credentials: false
+            - name: Compare with the fixture table and keep the profile's cells
+              id: pick
+              env:
+                  RPM: ${{ needs.detect-matrix.outputs.rpm_matrix }}
+                  DEB: ${{ needs.detect-matrix.outputs.deb_matrix }}
+              run: |
+                  set -euo pipefail
+                  profile=.github/validation/profile.json
+                  fx=".github/validation/$(jq -er .fixture "$profile")"
+                  jq -en --argjson r "$RPM" --argjson d "$DEB" \
+                      '[$r.include[], $d.include[]] | all(.pg_coupled == true and .pg_major == .build_pg_major)' >/dev/null \
+                      || { echo "::error::a detector cell is not PG-coupled to its own PG major"; exit 1; }
+                  got=$(jq -cnS --argjson r "$RPM" --argjson d "$DEB" \
+                      '[$r.include[], $d.include[]] | map({key: .cell_id, value: {family, os, image, arch: .normalized_arch, pg_major}}) | sort_by(.key)')
+                  want=$(jq -cS '.detector | to_entries | sort_by(.key)' "$fx")
+                  if [ "$got" != "$want" ] || [ "$(jq 'length' <<<"$got")" != 56 ]; then
+                      echo "::error::the detector cells differ from the 56 expected cells"; exit 1
+                  fi
+                  keep=$(jq -c 'if .cells == "all" then null else .cells end' "$profile")
+                  pick() { jq -c --argjson k "$keep" '{include: [.include[] | select($k == null or (.cell_id as $c | $k | index($c)))]}' <<<"$1"; }
+                  rpm=$(pick "$RPM"); deb=$(pick "$DEB")
+                  n=$(jq -n --argjson r "$rpm" --argjson d "$deb" '($r.include | length) + ($d.include | length)')
+                  want_n=$(jq 'if .cells == "all" then 56 else (.cells | length) end' "$profile")
+                  [ "$n" = "$want_n" ] || { echo "::error::kept $n cells, the profile asks for $want_n"; exit 1; }
+                  if [ "$(jq '.include | length' <<<"$rpm")" = 0 ] || [ "$(jq '.include | length' <<<"$deb")" = 0 ]; then
+                      echo "::error::the profile must keep at least one RPM and one DEB cell"; exit 1
+                  fi
+                  echo "rpm_matrix=$rpm" >> "$GITHUB_OUTPUT"
+                  echo "deb_matrix=$deb" >> "$GITHUB_OUTPUT"
+                  jq -rn --argjson r "$rpm" --argjson d "$deb" '$r.include[].cell_id, $d.include[].cell_id' | sort | sed 's/^/kept: /'
+
+    # Fixed validation identity from the profile. Synthetic inputs: see the header.
+    determine-repo-type:
+        name: Fixed validation identity (synthetic inputs; nothing is published)
+        runs-on: ubuntu-latest
+        timeout-minutes: 10
+        outputs:
+            repo-type:          ${{ steps.p.outputs.channel }}
+            component-version:  ${{ steps.p.outputs.version }}
+            component-buildnum: ${{ steps.p.outputs.buildnum }}
+            effective-tag:      ${{ steps.p.outputs.effective_tag }}
+            simulated:          "false"
+        steps:
+            - name: Check out the profile
+              uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+              with:
+                  sparse-checkout: .github/validation
+                  persist-credentials: false
+            - name: Read the profile
+              id: p
+              run: |
+                  set -euo pipefail
+                  profile=.github/validation/profile.json
+                  for k in channel version buildnum effective_tag; do
+                      echo "$k=$(jq -er ".$k" "$profile")" >> "$GITHUB_OUTPUT"
+                  done
+                  {
+                    echo "## Validation harness, not a release"
+                    echo "Profile \`$(jq -r .label "$profile")\`: no build and no publication occur in this run."
+                    echo "Packages already published to \`$(jq -r .channel "$profile")\` are checked against the"
+                    echo "fixture table; \`simulated: false\` and the \`success\` publication inputs are synthetic."
+                    echo "PEP: candidate revision of pgEdge/pgedge-pep-test#39."
+                  } >> "$GITHUB_STEP_SUMMARY"
+
+    package-rpm:
+        # Display name, artifact name, output dir and receipt inputs as in release.yml.
+        name: Package RPM (${{ matrix.image }} ${{ matrix.arch }} pg${{ matrix.pg_major }}) [pep-cell:${{ matrix.cell_id }}]
+        needs: [select-cells, determine-repo-type]
+        runs-on: ubuntu-latest
+        timeout-minutes: 15
+        permissions:
+            contents: read
+            actions: read      # download the cell artifact of the release run
+        strategy:
+            fail-fast: false
+            matrix: ${{ fromJSON(needs.select-cells.outputs.rpm_matrix) }}
+        steps:
+            - name: Check out the profile and fixture tables
+              uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+              with:
+                  sparse-checkout: .github/validation
+                  persist-credentials: false
+            - name: Read the cell's source
+              id: cell
+              env:
+                  IMAGE: ${{ matrix.image }}
+                  CELL:  ${{ matrix.cell_id }}
+              run: |
+                  set -euo pipefail
+                  profile=.github/validation/profile.json
+                  {
+                    echo "os_version=${IMAGE##*:}"
+                    echo "source=$(jq -er .source "$profile")"
+                    echo "fixture=.github/validation/$(jq -er .fixture "$profile")"
+                    echo "run_id=$(jq -r '.source_run_id // ""' "$profile")"
+                  } >> "$GITHUB_OUTPUT"
+            - name: Download the release run's cell artifact (validation fixture; nothing is built)
+              if: steps.cell.outputs.source == 'run-artifacts'
+              uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+              with:
+                  name: rpm__el-${{ steps.cell.outputs.os_version }}__${{ matrix.arch }}__pg${{ matrix.pg_major }}
+                  path: output/el${{ steps.cell.outputs.os_version }}-${{ matrix.arch }}
+                  repository: pgEdge/spock
+                  run-id: ${{ steps.cell.outputs.run_id }}
+                  github-token: ${{ github.token }}
+            - name: Download the published files (validation fixture; nothing is built)
+              if: steps.cell.outputs.source == 'staging-urls'
+              env:
+                  CELL: ${{ matrix.cell_id }}
+                  FX:   ${{ steps.cell.outputs.fixture }}
+                  DIR:  output/el${{ steps.cell.outputs.os_version }}-${{ matrix.arch }}
+              run: |
+                  set -euo pipefail
+                  jq -r --arg c "$CELL" '.cells[$c][] | [.file, .url] | @tsv' "$FX" > files.tsv
+                  mkdir -p "$DIR"
+                  while IFS=$'\t' read -r file url; do
+                      [[ "$file" =~ ^[A-Za-z0-9._+~-]+$ && "$url" == https://dnf.pgedge.com/staging/*/"$file" ]] \
+                          || { echo "::error::unexpected fixture entry for $CELL"; exit 1; }
+                      curl -fsSL --proto '=https' --proto-redir '=https' --retry 3 --connect-timeout 20 --max-time 300 -o "$DIR/$file" "$url"
+                  done < files.tsv
+            - name: Check every file against the fixture table
+              env:
+                  CELL: ${{ matrix.cell_id }}
+                  FX:   ${{ steps.cell.outputs.fixture }}
+                  DIR:  output/el${{ steps.cell.outputs.os_version }}-${{ matrix.arch }}
+              run: |
+                  set -euo pipefail
+                  want=$(jq -r --arg c "$CELL" '.cells[$c][] | "\(.sha256)  \(.file)"' "$FX" | sort)
+                  [ -n "$want" ] || { echo "::error::no fixture files for $CELL"; exit 1; }
+                  got=$(cd "$DIR" && find . -type f -printf '%P\n' | sort | xargs -r sha256sum | sort)
+                  [ "$got" = "$want" ] || { echo "::error::$CELL files differ from the fixture table"; diff <(echo "$want") <(echo "$got") || true; exit 1; }
+                  echo "$want"
+            - name: Upload RPM cell artifact
+              id: up_pkg
+              uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+              with:
+                  name: rpm__el-${{ steps.cell.outputs.os_version }}__${{ matrix.arch }}__pg${{ matrix.pg_major }}
+                  path: output/el${{ steps.cell.outputs.os_version }}-${{ matrix.arch }}/
+                  if-no-files-found: error
+                  retention-days: 7
+            - name: Generate pep-receipt/2 for the RPM cell
+              uses: pgEdge/pgedge-pep-test/.github/actions/pep-package-receipt@52cd787341f719191e817d3f1c134fc210fbcc53
+              with:
+                  cell_id: ${{ matrix.cell_id }}
+                  family: rpm
+                  package_dir: output/el${{ steps.cell.outputs.os_version }}-${{ matrix.arch }}
+                  package_artifact_id: ${{ steps.up_pkg.outputs.artifact-id }}
+                  package_artifact_name: rpm__el-${{ steps.cell.outputs.os_version }}__${{ matrix.arch }}__pg${{ matrix.pg_major }}
+                  package_artifact_digest: ${{ steps.up_pkg.outputs.artifact-digest }}
+
+    package-deb:
+        # Display name, artifact name, output dir and receipt inputs as in release.yml.
+        name: Package DEB (${{ matrix.image }} ${{ matrix.arch }} pg${{ matrix.pg_major }}) [pep-cell:${{ matrix.cell_id }}]
+        needs: [select-cells, determine-repo-type]
+        runs-on: ubuntu-latest
+        timeout-minutes: 15
+        permissions:
+            contents: read
+            actions: read      # download the cell artifact of the release run
+        strategy:
+            fail-fast: false
+            matrix: ${{ fromJSON(needs.select-cells.outputs.deb_matrix) }}
+        steps:
+            - name: Check out the profile and fixture tables
+              uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+              with:
+                  sparse-checkout: .github/validation
+                  persist-credentials: false
+            - name: Read the cell's source
+              id: cell
+              env:
+                  IMAGE: ${{ matrix.image }}
+              run: |
+                  set -euo pipefail
+                  profile=.github/validation/profile.json
+                  {
+                    echo "distro=${IMAGE##*:}"
+                    echo "source=$(jq -er .source "$profile")"
+                    echo "fixture=.github/validation/$(jq -er .fixture "$profile")"
+                    echo "run_id=$(jq -r '.source_run_id // ""' "$profile")"
+                  } >> "$GITHUB_OUTPUT"
+            - name: Download the release run's cell artifact (validation fixture; nothing is built)
+              if: steps.cell.outputs.source == 'run-artifacts'
+              uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+              with:
+                  name: deb__${{ steps.cell.outputs.distro }}__${{ matrix.arch }}__pg${{ matrix.pg_major }}
+                  path: output/${{ steps.cell.outputs.distro }}-${{ matrix.arch }}
+                  repository: pgEdge/spock
+                  run-id: ${{ steps.cell.outputs.run_id }}
+                  github-token: ${{ github.token }}
+            - name: Download the published files (validation fixture; nothing is built)
+              if: steps.cell.outputs.source == 'staging-urls'
+              env:
+                  CELL: ${{ matrix.cell_id }}
+                  FX:   ${{ steps.cell.outputs.fixture }}
+                  DIR:  output/${{ steps.cell.outputs.distro }}-${{ matrix.arch }}
+              run: |
+                  set -euo pipefail
+                  jq -r --arg c "$CELL" '.cells[$c][] | [.file, .url] | @tsv' "$FX" > files.tsv
+                  mkdir -p "$DIR"
+                  while IFS=$'\t' read -r file url; do
+                      [[ "$file" =~ ^[A-Za-z0-9._+~-]+$ && "$url" == https://apt.pgedge.com/staging/*/"$file" ]] \
+                          || { echo "::error::unexpected fixture entry for $CELL"; exit 1; }
+                      curl -fsSL --proto '=https' --proto-redir '=https' --retry 3 --connect-timeout 20 --max-time 300 -o "$DIR/$file" "$url"
+                  done < files.tsv
+            - name: Check every file against the fixture table
+              env:
+                  CELL: ${{ matrix.cell_id }}
+                  FX:   ${{ steps.cell.outputs.fixture }}
+                  DIR:  output/${{ steps.cell.outputs.distro }}-${{ matrix.arch }}
+              run: |
+                  set -euo pipefail
+                  want=$(jq -r --arg c "$CELL" '.cells[$c][] | "\(.sha256)  \(.file)"' "$FX" | sort)
+                  [ -n "$want" ] || { echo "::error::no fixture files for $CELL"; exit 1; }
+                  got=$(cd "$DIR" && find . -type f -printf '%P\n' | sort | xargs -r sha256sum | sort)
+                  [ "$got" = "$want" ] || { echo "::error::$CELL files differ from the fixture table"; diff <(echo "$want") <(echo "$got") || true; exit 1; }
+                  echo "$want"
+            - name: Upload DEB cell artifact
+              id: up_pkg
+              uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+              with:
+                  name: deb__${{ steps.cell.outputs.distro }}__${{ matrix.arch }}__pg${{ matrix.pg_major }}
+                  path: output/${{ steps.cell.outputs.distro }}-${{ matrix.arch }}/
+                  if-no-files-found: error
+                  retention-days: 7
+            - name: Generate pep-receipt/2 for the DEB cell
+              uses: pgEdge/pgedge-pep-test/.github/actions/pep-package-receipt@52cd787341f719191e817d3f1c134fc210fbcc53
+              with:
+                  cell_id: ${{ matrix.cell_id }}
+                  family: deb
+                  package_dir: output/${{ steps.cell.outputs.distro }}-${{ matrix.arch }}
+                  package_artifact_id: ${{ steps.up_pkg.outputs.artifact-id }}
+                  package_artifact_name: deb__${{ steps.cell.outputs.distro }}__${{ matrix.arch }}__pg${{ matrix.pg_major }}
+                  package_artifact_digest: ${{ steps.up_pkg.outputs.artifact-digest }}
+
+    # release.yml's certify job, pinned to the CANDIDATE PEP commit (pgEdge/pgedge-pep-test#39)
+    # instead of v1_STABLE; only needs/if and the two synthetic publication inputs differ.
+    certify:
+        name: Certify packages (PEP)
+        needs: [select-cells, determine-repo-type, package-rpm, package-deb]
+        if: always() && needs.determine-repo-type.result == 'success' && needs.select-cells.result == 'success'
+        permissions:
+            contents: read      # nested checkouts of the pinned PEP implementation
+            actions: read       # PEP lists THIS run's jobs and downloads its artifacts by id
+        uses: pgEdge/pgedge-pep-test/.github/workflows/pep-release-certify.yml@ca5fb026bb2fec4427aa5bcc0891f64721a7be9c
+        with:
+            rpm_matrix:      ${{ needs.select-cells.outputs.rpm_matrix }}
+            deb_matrix:      ${{ needs.select-cells.outputs.deb_matrix }}
+            component:       spock
+            version:         ${{ needs.determine-repo-type.outputs.component-version }}
+            buildnum:        ${{ needs.determine-repo-type.outputs.component-buildnum }}
+            effective_tag:   ${{ needs.determine-repo-type.outputs.effective-tag }}
+            channel:         ${{ needs.determine-repo-type.outputs.repo-type }}
+            simulated:       ${{ needs.determine-repo-type.outputs.simulated }}
+            rpm_publication: success      # SYNTHETIC validation input: nothing is published in this run
+            deb_publication: success      # SYNTHETIC validation input: nothing is published in this run
+            enforcement:     observe      # report-only: product test failures do not fail the run
+        secrets:
+            DOCKERHUB_USERNAME: ${{ needs.determine-repo-type.outputs.simulated == 'false' && secrets.DOCKERHUB_USERNAME || '' }}
+            DOCKERHUB_TOKEN:    ${{ needs.determine-repo-type.outputs.simulated == 'false' && secrets.DOCKERHUB_TOKEN || '' }}
+            PGEDGE_REPO_CLIENT_CRT: ${{ needs.determine-repo-type.outputs.simulated == 'false' && secrets.PGEDGE_REPO_CLIENT_CRT || '' }}
+            PGEDGE_REPO_CLIENT_KEY: ${{ needs.determine-repo-type.outputs.simulated == 'false' && secrets.PGEDGE_REPO_CLIENT_KEY || '' }}
