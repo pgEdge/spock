@@ -273,7 +273,7 @@ sub run_failover_scenario {
     system_or_bail("$pg_bin/pg_basebackup",
         '-D', $standby_datadir,
         '-h', $host, '-p', $primary_port, '-U', $db_user,
-        '-X', 'stream', '-R');
+        '-X', 'stream', '-R', '-c', 'fast');
     pass('Physical standby created via pg_basebackup');
 
     # ==========================================================================

@@ -795,6 +795,7 @@ spock_worker_shmem_startup(void)
 		SpockCtx->lag_lock = &((GetNamedLWLockTranche("spock")[1]).lock);
 		SpockCtx->supervisor = NULL;
 		SpockCtx->subscriptions_changed = false;
+		SpockCtx->failover_slots_db_connecting = false;
 		pg_atomic_init_u32(&SpockCtx->pause_apply, 0);
 		ConditionVariableInit(&SpockCtx->pause_cv);
 		SpockCtx->total_workers = nworkers;
@@ -819,6 +820,23 @@ spock_worker_shmem_startup(void)
 							  HASH_ELEM | HASH_FUNCTION | HASH_FIXED_SIZE);
 
 	LWLockRelease(AddinShmemInitLock);
+}
+/*
+ * Whether the failover slot worker is connecting to
+ * spock.failover_slots_database.  Set across the connection attempt so
+ * that, if it fails or is interrupted, the restarted worker does not try
+ * again before a server restart.
+ */
+bool
+spock_failover_slots_db_connecting(void)
+{
+	return SpockCtx->failover_slots_db_connecting;
+}
+
+void
+spock_set_failover_slots_db_connecting(bool connecting)
+{
+	SpockCtx->failover_slots_db_connecting = connecting;
 }
 
 /*

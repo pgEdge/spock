@@ -34,20 +34,18 @@ use Time::HiRes qw(time);
 #   7. Create a slot on n1 that never moves, so its copy stays pending, then
 #      promote the standby and check the copy is dropped, not persisted.
 #
-# The worker does not exist on PG18+ (native slotsync only).
+# On v5_STABLE the worker runs on every PostgreSQL version unless
+# spock.use_native_failover_slots is on, which the test cluster leaves off.
 # =============================================================================
 
 my $pg_bin = get_test_config()->{pg_bin};
 my ($pg_major) = `$pg_bin/pg_config --version` =~ /\b(\d+)/;
-plan skip_all =>
-    "spock_failover_slots worker is disabled on PG18+ (native sync_replication_slots)"
-    if defined $pg_major && $pg_major >= 18;
 
 # The second slot uses test_decoding.
 my $pkglibdir = `$pg_bin/pg_config --pkglibdir`;
 chomp $pkglibdir;
 plan skip_all => "test_decoding is not installed in $pkglibdir"
-    unless -e "$pkglibdir/test_decoding.so";
+    unless grep { -e "$pkglibdir/test_decoding.$_" } qw(so dylib dll);
 
 sub qport {
     my ($port, $sql) = @_;
@@ -141,7 +139,7 @@ system("rm -rf $standby_datadir 2>/dev/null");
 system_or_bail("$pg_bin/pg_basebackup",
     '-D', $standby_datadir,
     '-h', $host, '-p', $primary_port, '-U', $db_user,
-    '-X', 'stream', '-R');
+    '-X', 'stream', '-R', '-c', 'fast');
 
 system_or_bail('mkdir', '-p', $standby_logdir);
 {
@@ -152,9 +150,11 @@ system_or_bail('mkdir', '-p', $standby_logdir);
     print $conf "hot_standby = on\n";
     print $conf "hot_standby_feedback = on\n";
     print $conf "primary_slot_name = 'standby_slot'\n";
+    # Decode copies on the standby so they have a consistent snapshot
+    print $conf "spock.failover_slots_database = '$dbname'\n";
     print $conf "log_directory = '$standby_logdir'\n";
     print $conf "log_filename = 'standby.log'\n";
-    # PG17: keep native slotsync off so the spock worker does the sync
+    # PG17+: keep native slotsync off so the spock worker does the sync
     print $conf "sync_replication_slots = off\n" if ($pg_major // 0) >= 17;
     close($conf);
 }
@@ -300,11 +300,15 @@ ok($pending, "recreated copy of '$slot_name' waits as a temporary slot");
 # The canary's copy is recreated too.  Its own slot on n1 moves, so it must
 # become persistent and keep following even though '$slot_name' is stalled
 # below it.  Two separate advances, each followed on the standby, show sync
-# keeps running across passes while the copy above is pending.
+# keeps running across passes while the copy above is pending.  The copy
+# reserved its restart_lsn at the standby's position, and one advance moves
+# n1's restart_lsn only to the running-xacts record before the last one,
+# so keep advancing until n1's slot has passed the copy.
 for my $round (1 .. 2)
 {
     my $target = advance_canary();
     my $followed = wait_until(90, 2, sub {
+        advance_canary();
         return qport($standby_port,
             "SELECT NOT temporary AND wal_status <> 'lost'
                     AND confirmed_flush_lsn >= '$target'::pg_lsn
