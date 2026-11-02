@@ -37,6 +37,12 @@
   slot until the primary has caught up, and is dropped if the standby is
   promoted first.
 
+* A slot copy carried the primary's positions but not its snapshot, so after
+  a promotion the transactions that committed before decoding was consistent
+  were never sent. With the new `spock.failover_slots_database` setting the
+  worker decodes each copy on the standby so that it has a consistent
+  snapshot.
+
 ## Spock 5.0.12
 
 ### Upgrade Notes

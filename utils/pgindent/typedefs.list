@@ -497,6 +497,7 @@ CopyMethod
 CopyMultiInsertBuffer
 CopyMultiInsertInfo
 CopyOnErrorChoice
+CopySnapshotState
 CopySource
 CopyStmt
 CopyToState

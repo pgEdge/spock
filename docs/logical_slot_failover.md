@@ -347,6 +347,7 @@ on the standby and periodically copies slot state from the primary.
 | `spock.failover_slots_naptime` | `1000` | Worker sleep between slot-sync passes, in ms (SIGHUP; range 1000–3600000) |
 | `spock.failover_slots_feedback_naptime` | `10000` | Shorter retry, in ms, while waiting for standby WAL feedback (SIGHUP; range 1000–3600000) |
 | `spock.failover_slots_recreate_invalidated` | `on` | Drop and recreate a synchronized slot whose copy was invalidated on the standby; `off` leaves it as it is and reports it once (SIGHUP) |
+| `spock.failover_slots_database` | `''` | Database the worker connects to so it can decode each copy on the standby and give it a consistent snapshot; without it, transactions can be lost after a promotion. PostgreSQL 16 and later; on 16 it must be the slots' database (restart) |
 
 ### Example (`postgresql.conf` on standby)
 

@@ -119,6 +119,13 @@ typedef struct SpockContext {
 	/* Signal that subscription info have changed. */
 	bool		subscriptions_changed;
 
+	/*
+	 * Set while the failover slot worker connects to
+	 * spock.failover_slots_database, so that after a failed connection the
+	 * restarted worker does not try again.
+	 */
+	bool		failover_slots_db_connecting;
+
 	/* Spock slot-group data */
 	LWLock				   *slot_group_master_lock;
 	int						slot_ngroups;
@@ -190,6 +197,13 @@ extern void handle_sigterm(SIGNAL_ARGS);
 extern void spock_subscription_changed(Oid subid, bool kill);
 
 extern void spock_worker_shmem_init(void);
+
+/*
+ * Whether the failover slot worker is connecting to
+ * spock.failover_slots_database; see failover_slots_connect().
+ */
+extern bool spock_failover_slots_db_connecting(void);
+extern void spock_set_failover_slots_db_connecting(bool connecting);
 
 extern int spock_worker_register(SpockWorker *worker);
 extern void spock_worker_attach(int slot, SpockWorkerType type);
