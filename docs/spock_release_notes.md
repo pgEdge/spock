@@ -25,6 +25,12 @@
   `spock.resume_apply_workers()`. Sync now skips pausing and resuming in that
   case.
 
+* On a physical standby, the failover slot worker kept advancing a slot copy
+  that had been invalidated, so it looked current but could not serve a
+  subscriber after a promotion. The worker now reports such a copy, drops it
+  and recreates it from the primary. The new
+  `spock.failover_slots_recreate_invalidated` setting turns that off.
+
 ## Spock 5.0.12
 
 ### Upgrade Notes
