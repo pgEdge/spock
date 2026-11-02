@@ -58,6 +58,7 @@
 #endif
 #include "spock_executor.h"
 #include "spock_group.h"
+#include "spock_monitor.h"
 #include "spock_node.h"
 #include "spock_conflict.h"
 #include "spock_rmgr.h"
@@ -460,7 +461,8 @@ spock_connect_base(const char *connstr, const char *appname,
 
 		PQfinish(conn);
 		ereport(ERROR,
-				(errmsg("could not connect to the postgresql server%s: %s",
+				(errcode(ERRCODE_CONNECTION_FAILURE),
+				 errmsg("could not connect to the postgresql server%s: %s",
 						replication ? " in replication mode" : "",
 						conn_errmsg),
 				 errdetail("dsn was: %s", s.data)));
@@ -608,6 +610,11 @@ spock_manage_extension(void)
 			alter_stmt.options = NIL;
 			alter_stmt.extname = EXTENSION_NAME;
 			ExecAlterExtensionStmt(&alter_stmt);
+
+			spock_monitor_record_event(SPOCK_EVENT_EXTENSION_UPGRADED,
+									   InvalidOid, InvalidXLogRecPtr,
+									   "extension updated from %s to %s",
+									   extversion, SPOCK_VERSION);
 		}
 	}
 
@@ -772,6 +779,8 @@ spock_start_replication(PGconn *streamConn, const char *slot_name,
 	PQclear(res);
 
 	elog(LOG, "SPOCK %s: connected", MySubscription->name);
+
+	spock_monitor_provider_connected(slot_name, start_pos);
 }
 
 /*
@@ -996,7 +1005,7 @@ spock_temp_directory_assing_hook(const char *newval, void *extra)
  * Case insensitive substring search.
  * NOTE: No memory allocations is allowed here.
  */
-static char *
+char *
 pg_strcasestr(const char *str, const char *substr)
 {
 	size_t		nlen;
@@ -1031,7 +1040,21 @@ replace_symbols(char *strpos)
 	}
 }
 
-#define PSWD_KEYWORD	"password"
+/*
+ * Replace what follows a "password" keyword in str, if any.  No memory
+ * allocations are allowed here; the text is changed in place.
+ */
+static void
+mask_password(const char *str)
+{
+	char	   *strpos;
+
+	if (str == NULL)
+		return;
+	strpos = pg_strcasestr(str, SPOCK_PSWD_KEYWORD);
+	if (strpos != NULL)
+		replace_symbols(strpos + sizeof(SPOCK_PSWD_KEYWORD) - 1);
+}
 
 /*
  * Spock-specific filters on log messages.
@@ -1048,32 +1071,25 @@ log_message_filter(ErrorData *edata)
 	if (prev_emit_log_hook)
 		prev_emit_log_hook(edata);
 
+	/* Remember errors of spock workers for the monitoring views. */
+	spock_monitor_report_error(edata);
+
 	if (!edata->output_to_client && !edata->output_to_server)
 		/* Previous hook already done this job. */
 		return;
 
 	if (edata->elevel == ERROR)
 	{
-		char	   *strpos;
-		const int	len = sizeof(PSWD_KEYWORD) - 1;
-
 		/*
-		 * Password may bubble up in the error message and query string. XXX:
-		 * Can it be exposed somewhere else - in the detail_log string, for
-		 * example?
+		 * Password may bubble up in the error message, in its detail (the
+		 * "dsn was:" of a failed connection), in the hint and in the query
+		 * string.
 		 */
-		strpos = pg_strcasestr(edata->message, PSWD_KEYWORD);
-		if (strpos != NULL)
-		{
-			strpos += len;
-			replace_symbols(strpos);
-		}
-		strpos = pg_strcasestr(debug_query_string, PSWD_KEYWORD);
-		if (strpos != NULL)
-		{
-			strpos += len;
-			replace_symbols(strpos);
-		}
+		mask_password(edata->message);
+		mask_password(edata->detail);
+		mask_password(edata->detail_log);
+		mask_password(edata->hint);
+		mask_password(debug_query_string);
 	}
 
 	/*
@@ -1511,6 +1527,9 @@ _PG_init(void)
 
 	if (IsBinaryUpgrade)
 		return;
+
+	/* GUCs of the monitoring subsystem */
+	spock_monitor_init();
 
 	/* Init shared memory for all subsystems needed it */
 	spock_shmem_init();

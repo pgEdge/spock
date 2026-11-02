@@ -64,6 +64,7 @@
 #include "spock_repset.h"
 #include "spock_rpc.h"
 #include "spock_sync.h"
+#include "spock_monitor.h"
 #include "spock_worker.h"
 #include "spock.h"
 
@@ -104,6 +105,9 @@ enum PeerProgressCol
 PGDLLEXPORT void spock_sync_main(Datum main_arg);
 
 static SpockSyncWorker *MySyncWorker = NULL;
+
+/* Set when the initial copy of this worker's table failed. */
+static bool sync_worker_failed = false;
 
 
 /*
@@ -1273,10 +1277,34 @@ copy_table_data(PGconn *origin_conn, PGconn *target_conn,
 	if (PQresultStatus(res) != PGRES_COMMAND_OK)
 	{
 		char	   *msg = pstrdup(PQerrorMessage(target_conn));
+		const char *sqlstate = PQresultErrorField(res, PG_DIAG_SQLSTATE);
+		int			sqlerrcode = ERRCODE_INTERNAL_ERROR;
 
+		/*
+		 * Keep the destination's error code, e.g. a constraint violation. Not
+		 * a connection code though: the monitor takes one of those for a lost
+		 * provider connection, and this session is local.  A SQLSTATE is five
+		 * digits or capitals; take it only in that exact shape.
+		 */
+		if (sqlstate != NULL)
+		{
+			int			i;
+
+			for (i = 0; i < 5; i++)
+				if (!((sqlstate[i] >= '0' && sqlstate[i] <= '9') ||
+					  (sqlstate[i] >= 'A' && sqlstate[i] <= 'Z')))
+					break;
+			if (i == 5 && sqlstate[5] == '\0')
+				sqlerrcode = MAKE_SQLSTATE(sqlstate[0], sqlstate[1],
+										   sqlstate[2], sqlstate[3],
+										   sqlstate[4]);
+		}
+		if (spock_monitor_is_connection_error(sqlerrcode))
+			sqlerrcode = ERRCODE_INTERNAL_ERROR;
 		PQclear(res);
 		ereport(ERROR,
-				(errmsg("COPY to destination table failed"),
+				(errcode(sqlerrcode),
+				 errmsg("COPY to destination table failed"),
 				 errdetail("destination connection reported: %s", msg)));
 	}
 	PQclear(res);
@@ -1990,6 +2018,15 @@ spock_sync_worker_finish(void)
 	elog(LOG, "finished sync of table %s.%s for subscriber %s",
 		 NameStr(MySyncWorker->nspname), NameStr(MySyncWorker->relname),
 		 MySubscription->name);
+
+	if (!sync_worker_failed)
+	{
+		spock_monitor_count(SPOCK_MONITOR_TABLES_SYNCED, 1);
+		spock_monitor_record_event(SPOCK_EVENT_SYNC_FINISHED, MySubscription->id,
+								   InvalidXLogRecPtr, "table %s.%s",
+								   NameStr(MySyncWorker->nspname),
+								   NameStr(MySyncWorker->relname));
+	}
 }
 
 void
@@ -2053,11 +2090,26 @@ spock_sync_main(Datum main_arg)
 
 	elog(LOG, "starting sync of table %s.%s for subscriber %s",
 		 copytable->schemaname, copytable->relname, MySubscription->name);
+	spock_monitor_record_event(SPOCK_EVENT_SYNC_STARTED, MySubscription->id,
+							   InvalidXLogRecPtr, "table %s.%s",
+							   copytable->schemaname, copytable->relname);
 	elog(DEBUG1, "connecting to provider %s, dsn %s",
 		 MySubscription->origin_if->name, MySubscription->origin_if->dsn);
 
 	/* Do the initial sync first. */
 	status = spock_sync_table(MySubscription, copytable, &status_lsn);
+	if (status == SYNC_STATUS_FAILED)
+	{
+		/*
+		 * spock_sync_table() gives up when an earlier attempt on this table
+		 * failed; that attempt recorded its own sync_failed with the error.
+		 */
+		sync_worker_failed = true;
+		spock_monitor_record_event(SPOCK_EVENT_SYNC_FAILED, MySubscription->id,
+								   InvalidXLogRecPtr,
+								   "table %s.%s abandoned after an earlier failure",
+								   copytable->schemaname, copytable->relname);
+	}
 	if (status == SYNC_STATUS_SYNCDONE || status == SYNC_STATUS_READY ||
 		status == SYNC_STATUS_FAILED)
 	{

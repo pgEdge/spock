@@ -1388,7 +1388,7 @@ spock_apply_heap_delete(SpockRelation *rel, SpockTupleData *oldtup)
 
 	/* update stats */
 	handle_stats_counter(rel->rel, MyApplyWorker->subid,
-						 SPOCK_STATS_UPDATE_COUNT, 1);
+						 SPOCK_STATS_DELETE_COUNT, 1);
 
 	/* Build the search tuple. */
 	oldctx = MemoryContextSwitchTo(GetPerTupleMemoryContext(estate));

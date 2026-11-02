@@ -8,7 +8,6 @@ engines:
     exclude_paths:
       - "src/spock_apply.c"
       - "src/spock_apply_heap.c"
-      - "src/spock_apply_spi.c"
       - "src/spock.c"
       - "src/spock_conflict.c"
       - "src/spock_dependency.c"
@@ -16,7 +15,6 @@ engines:
       - "src/spock_fe.c"
       - "src/spock_functions.c"
       - "src/spock_manager.c"
-      - "src/spock_monitoring.c"
       - "src/spock_node.c"
       - "src/spock_output.c"
       - "src/spock_output_config.c"
@@ -35,7 +33,6 @@ engines:
     exclude_paths:
       - "src/spock_apply.c"
       - "src/spock_apply_heap.c"
-      - "src/spock_apply_spi.c"
       - "src/spock.c"
       - "src/spock_conflict.c"
       - "src/spock_dependency.c"
@@ -43,7 +40,6 @@ engines:
       - "src/spock_fe.c"
       - "src/spock_functions.c"
       - "src/spock_manager.c"
-      - "src/spock_monitoring.c"
       - "src/spock_node.c"
       - "src/spock_output.c"
       - "src/spock_output_config.c"
