@@ -1322,6 +1322,9 @@ BEGIN
                        subscription_name, provider_node, pid, lsn, detail
                   FROM spock.events
                  ORDER BY event_id DESC LIMIT %s', recent));
+END;
+$$;
+
 -- Internal: fetch one already-known node's current info via the given
 -- dsn. Not meant to be called directly; see spock.node_refresh_info(),
 -- which is the one that writes the result into spock.node.
