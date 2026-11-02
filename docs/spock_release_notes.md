@@ -31,6 +31,12 @@
   and recreates it from the primary. The new
   `spock.failover_slots_recreate_invalidated` setting turns that off.
 
+* Creating a slot copy on the standby held up the sync of every other slot
+  until the primary's slot caught up, and a copy still waiting at promotion
+  was kept with positions it could not serve. A new copy is now a temporary
+  slot until the primary has caught up, and is dropped if the standby is
+  promoted first.
+
 ## Spock 5.0.12
 
 ### Upgrade Notes
