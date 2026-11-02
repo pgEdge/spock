@@ -43,6 +43,10 @@
   worker decodes each copy on the standby so that it has a consistent
   snapshot.
 
+* On PostgreSQL 17 and later, a copy made by native slot sync whose slot the
+  primary later dropped made the worker fail and restart every minute. The
+  worker now leaves it and reports it once.
+
 ## Spock 5.0.12
 
 ### Upgrade Notes
