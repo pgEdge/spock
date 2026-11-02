@@ -130,6 +130,7 @@ nav:
       - spock.sub_wait_for_sync(): spock_functions/functions/spock_sub_wait_for_sync.md
       - spock.spock_version(): spock_functions/functions/spock_version.md
       - spock.spock_version_num(): spock_functions/functions/spock_version_num.md
+      - spock.core_patchset(): spock_functions/functions/spock_core_patchset.md
       - spock.wait_slot_confirm_lsn(): spock_functions/functions/spock_wait_slot_confirm_lsn.md
       - spock.xact_commit_timestamp_origin(): spock_functions/functions/spock_xact_commit_timestamp_origin.md
     - pglogical to Spock Function Names: pgl-cheat-sheet.md

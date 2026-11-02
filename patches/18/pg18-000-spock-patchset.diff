@@ -1,0 +1,28 @@
+diff --git a/src/backend/utils/init/globals.c b/src/backend/utils/init/globals.c
+index d31cb45..4f8c9fd 100644
+--- a/src/backend/utils/init/globals.c
++++ b/src/backend/utils/init/globals.c
+@@ -44,6 +44,9 @@ volatile uint32 InterruptHoldoffCount = 0;
+ volatile uint32 QueryCancelHoldoffCount = 0;
+ volatile uint32 CritSectionCount = 0;
+ 
++/* Spock core patch-set generation. Bumped when the patch set changes. */
++int			SpockCorePatchsetVersion = 1;
++
+ int			MyProcPid;
+ pg_time_t	MyStartTime;
+ TimestampTz MyStartTimestamp;
+diff --git a/src/include/miscadmin.h b/src/include/miscadmin.h
+index 9a7d733..b8a7764 100644
+--- a/src/include/miscadmin.h
++++ b/src/include/miscadmin.h
+@@ -105,6 +105,9 @@ extern PGDLLIMPORT volatile uint32 InterruptHoldoffCount;
+ extern PGDLLIMPORT volatile uint32 QueryCancelHoldoffCount;
+ extern PGDLLIMPORT volatile uint32 CritSectionCount;
+ 
++/* Spock core patch-set generation, defined in globals.c */
++extern PGDLLIMPORT int SpockCorePatchsetVersion;
++
+ /* in tcop/postgres.c */
+ extern void ProcessInterrupts(void);
+ 

@@ -72,7 +72,8 @@ typedef enum OutputPluginParamKey
 	PARAM_NO_TXINFO,
 	PARAM_STARTUP_FORMAT,
 	PARAM_SPOCK_VERSION,
-	PARAM_SPOCK_VERSION_NUM
+	PARAM_SPOCK_VERSION_NUM,
+	PARAM_CORE_PATCHES
 } OutputPluginParamKey;
 
 typedef struct OutputPluginParam
@@ -106,6 +107,7 @@ static OutputPluginParam param_lookup[] = {
 	{"startup_params_format", PARAM_STARTUP_FORMAT},
 	{"spock_version", PARAM_SPOCK_VERSION},
 	{"spock_version_num", PARAM_SPOCK_VERSION_NUM},
+	{"core_patches", PARAM_CORE_PATCHES},
 	{NULL, PARAM_UNRECOGNISED}
 };
 
@@ -304,6 +306,12 @@ process_parameters_v1(List *options, SpockOutputData *data)
 			case PARAM_SPOCK_VERSION_NUM:
 				val = get_param_value(elem, false, OUTPUT_PARAM_TYPE_UINT32);
 				data->spock_version_num = DatumGetUInt32(val);
+				break;
+
+			case PARAM_CORE_PATCHES:
+				val = get_param_value(elem, false, OUTPUT_PARAM_TYPE_BOOL);
+				data->client_core_patches_set = true;
+				data->client_core_patches = DatumGetBool(val);
 				break;
 
 				/* Backwards compat. */
@@ -562,6 +570,12 @@ prepare_startup_message(SpockOutputData *data)
 	/* and ourselves */
 	l = add_startup_msg_s(l, "spock_version", SPOCK_VERSION);
 	l = add_startup_msg_i(l, "spock_version_num", SPOCK_VERSION_NUM);
+
+	/*
+	 * Whether this server has the Spock core patches.  Subscribers that do
+	 * not know this key ignore it, so it needs no protocol version bump.
+	 */
+	l = add_startup_msg_b(l, "core_patches", spock_subxact_setts != NULL);
 
 	/* binary options enabled */
 	l = add_startup_msg_b(l, "binary.internal_basetypes",

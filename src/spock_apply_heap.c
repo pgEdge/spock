@@ -693,8 +693,13 @@ spock_handle_conflict_and_apply(SpockRelation *rel, EState *estate,
 		if (!apply)
 		{
 			/*
-			 * We are overriding apply=false because of delta apply.
+			 * We are overriding apply=false because of delta apply.  The
+			 * relcache only marks delta columns when the core patches are
+			 * present, so this should never fire; check before the update
+			 * rather than crash calling the NULL pointer below.
 			 */
+			if (spock_subxact_setts == NULL)
+				elog(ERROR, "SPOCK: delta apply requires the Spock core patches");
 			apply = true;
 			is_delta_apply = true;
 
@@ -793,8 +798,15 @@ spock_handle_conflict_and_apply(SpockRelation *rel, EState *estate,
 		if (is_delta_apply)
 		{
 			CurrentResourceOwner = save_resowner;
-			SubTransactionIdSetCommitTsData(GetCurrentTransactionId(),
-											local_ts, local_origin);
+
+			/*
+			 * Called through the dlsym-resolved pointer so spock.so has no
+			 * hard link-time reference to the patch-provided symbol (see
+			 * spock.h). is_delta_apply is only set after checking it is not
+			 * NULL.
+			 */
+			spock_subxact_setts(GetCurrentTransactionId(),
+								local_ts, local_origin);
 			ReleaseCurrentSubTransaction();
 		}
 

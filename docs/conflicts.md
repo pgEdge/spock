@@ -48,6 +48,10 @@ ALTER TABLE pgbench_tellers ALTER COLUMN tbalance
   SET (log_old_value=true, delta_apply_function=spock.delta_apply);
 ```
 
+Delta-apply columns require PostgreSQL built with the Spock core patches.
+Unpatched PostgreSQL rejects the `log_old_value` and `delta_apply_function`
+column options, and Spock disables delta apply on such a server.
+
 As a special safety-valve feature, if you ever need to re-set a
 `log_old_value` column you can temporarily alter the column to
 `log_old_value` is `false`.
