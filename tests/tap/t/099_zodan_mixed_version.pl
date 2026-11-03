@@ -14,8 +14,8 @@ use SpockTest qw(
 );
 
 # =============================================================================
-# Test: mixed-version add_node with zodan, old Spock (default 5.0.12, built
-# from v5_STABLE) and new Spock (HEAD).  Two layouts, chosen by ZODAN_SCENARIO:
+# Test: mixed-version add_node with zodan, old Spock (by default built from
+# v5_STABLE) and new Spock (HEAD).  Two layouts, chosen by ZODAN_SCENARIO:
 #
 #   chain (default)  n1 runs the old version alone.  n2 (new version) joins it
 #                    with add_node, making the cluster mixed.  n3 (new version)

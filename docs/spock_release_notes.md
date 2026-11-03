@@ -33,9 +33,13 @@ will be removed at general availability.
      For any slot still showing `false`, pause the subscriber that holds it
      and run `SELECT spock.slot_enable_failover();` on the primary.
 
-  The first command adds the objects beta 2 needs, removes
-  `spock.wait_for_apply_worker()`, and sets the `failover` flag on existing
-  slots.  The second only sets the version name back to `6.0.0`.
+  The first command adds the objects beta 2 needs (the
+  `spock.reserved_object` catalog and its functions, the node metadata
+  functions and the trigger on `spock.node`, and the monitoring views and
+  functions with their `pg_monitor` grants), removes
+  `spock.wait_for_apply_worker()` and `spock.get_apply_worker_status()`,
+  and sets the `failover` flag on existing slots.  The second only sets the
+  version name back to `6.0.0`.
 
   The `failover` flag matters on PostgreSQL 17 and 18, where native slot sync
   copies only flagged slots to a standby.  Beta 1's upgrade from 5.x did not
@@ -48,33 +52,107 @@ will be removed at general availability.
 
   Until a database has been updated, AutoDDL, adding tables to a replication
   set and structure sync fail there with `catalog "spock.reserved_object"
-  does not exist`.  Running the commands on a node that already has beta 2's
+  does not exist`, and its apply workers fail when a peer changes its
+  location, country or info, because `spock.node_info_apply()` is missing.
+  Running the commands on a node that already has beta 2's
   catalog changes nothing.  These two update steps will be removed at general
   availability.
-* The upgrade from 5.0.x now starts at 5.0.12.  A 5.0.11 node still
-  upgrades in one `ALTER EXTENSION spock UPDATE`, through 5.0.12.
+* The upgrade from 5.0.x now starts at 5.0.13.  A 5.0.11 or 5.0.12 node
+  still upgrades in one `ALTER EXTENSION spock UPDATE`, through 5.0.13.
 * On a server with PostgreSQL's fix for CVE-2026-6471, `spock_output` must be
   listed in `output_plugin_libraries`.  See *Upgrading* below.
 
-### GUC changes
+### Node monitoring
 
-* New `spock.sync_timeout` (seconds, default `0`, `USERSET`): the time
-  limit for a single wait in the node management routines.  `0` keeps each
+The largest change since beta 1.  See *Node monitoring views* in the 6.0.0
+notes for what each view shows.  SELECT on the views, and EXECUTE on the
+functions they read, is granted to `pg_monitor`.  USAGE on the `spock`
+schema is not, so a monitoring role needs that granted as well.
+
+**GUC**
+
+* `spock.event_history_size` (integer, default `1024`, range 16 to
+  1048576, `POSTMASTER`): how many recent events the `spock.events` view
+  keeps in shared memory.
+
+**Views**
+
+* `spock.node_status`: the whole node on one row: versions, pending
+  upgrade, worker and subscription counts, WAL retained by slots,
+  replication lag, last events.
+* `spock.peer_status`: the known nodes.
+* `spock.subscription_status`: configuration, status, serving worker,
+  replication position and lag, and the last error of every subscription.
+* `spock.subscription_stats`: per-subscription worker starts and failures,
+  provider connects, messages, transactions, tuple and conflict counters.
+* `spock.worker_status`: supervisor, manager, apply and sync workers,
+  including workers waiting for a restart.
+* `spock.slot_status`: provider side: spock slots with their walsender,
+  positions, retained WAL and feedback lag.
+* `spock.table_sync_status`: table synchronization state.
+* `spock.replication_set_status`: the replication sets.
+* `spock.system_status`: disk space, load, connections, long and idle
+  transactions, wraparound age, archiving.
+* `spock.settings`: the parameters replication depends on.
+* `spock.events`: the history of recent events.
+
+**Functions**
+
+* `spock.node_report(recent integer DEFAULT 50) RETURNS SETOF text`: the
+  whole node as one text report for support cases: host and versions,
+  installed extensions, settings, every monitoring view, and the most
+  recent exceptions, conflict resolutions and events.
+* `spock.replication_origin_status()`: the replication origins and their
+  progress, readable by `pg_monitor`, since `pg_replication_origin_status`
+  is for superusers only.
+* Internal functions behind the views and `node_report()`:
+  `spock.get_worker_status()`, `spock.get_events()`,
+  `spock.reset_events()`, `spock.get_apply_stats()`,
+  `spock.get_slot_groups()`, `spock.get_monitor_summary()`,
+  `spock.get_system_info()`, `spock.get_pending_exceptions()`,
+  `spock.redact_dsn()`, `spock.wal_size_bytes()` and
+  `spock.report_section()`.  `get_system_info()`, `get_events()`,
+  `get_apply_stats()` and `get_pending_exceptions()` are executable by
+  `pg_monitor` only, and `reset_events()` by superusers only.
+
+**Removed**
+
+* `spock.get_apply_worker_status()`, replaced by
+  `spock.get_worker_status()` and the `spock.worker_status` view.
+
+**Changed**
+
+* `spock.reset_subscription_stats()` also resets the new activity counters,
+  on every supported PostgreSQL version, and EXECUTE on it is revoked from
+  PUBLIC.
+
+### Other GUC changes
+
+**New**
+
+* `spock.sync_timeout` (seconds, default `0`, `USERSET`): the time limit
+  for a single wait in the node management routines.  `0` keeps each
   routine's built-in limit.
-* New `spock.failover_slots_naptime` (milliseconds, default `1000`,
-  `SIGHUP`) and `spock.failover_slots_feedback_naptime` (milliseconds,
-  default `10000`, `SIGHUP`): how often Spock's failover-slots worker
-  syncs slots.  It used to wait a fixed 60 seconds.
-* New `spock.failover_slots_recreate_invalidated` (boolean, default `on`,
+* `spock.non_conflicting_inserts` (boolean, default `off`, `POSTMASTER`):
+  asserts that a replicated `INSERT` can never collide with a local row, so
+  the apply worker skips the conflict lookup and the speculative insertion.
+* `spock.failover_slots_naptime` (milliseconds, default `1000`, `SIGHUP`)
+  and `spock.failover_slots_feedback_naptime` (milliseconds, default
+  `10000`, `SIGHUP`): how often Spock's failover-slots worker syncs slots.
+  It used to wait a fixed 60 seconds.
+* `spock.failover_slots_recreate_invalidated` (boolean, default `on`,
   `SIGHUP`): whether the failover-slots worker drops and recreates a
   synchronized slot whose copy was invalidated on the standby.  Off leaves
   the copy as it is and reports it once.
-* New `spock.failover_slots_database` (string, default empty, restart):
-  on PostgreSQL 16 and 17, the database the failover-slots worker connects
-  to so it can decode each slot copy on the standby.  Without it a copy has
-  no snapshot of its own, and after a promotion transactions committed
-  shortly before the failover can be skipped.  On PostgreSQL 16 it must be
-  the database the slots belong to.
+* `spock.failover_slots_database` (string, default empty, `POSTMASTER`): on
+  PostgreSQL 16 and 17, the database the failover-slots worker connects to
+  so it can decode each slot copy on the standby.  Without it a copy has no
+  snapshot of its own, and after a promotion transactions committed shortly
+  before the failover can be skipped.  On PostgreSQL 16 it must be the
+  database the slots belong to.
+
+**Changed**
+
 * `spock.pause_timeout`: the 300-second maximum is removed.
 * `spock.restart_delay_default`, `spock.restart_delay_on_exception` and
   `spock.output_delay` are now declared in milliseconds, so they accept
@@ -82,18 +160,38 @@ will be removed at general availability.
 * `spock.restart_delay_default` now applies to every apply-worker restart,
   including after a lost connection or a temporary error.
 
-### SQL function and catalog changes
+### Other SQL function and catalog changes
 
-* New table `spock.reserved_object`, listing the schemas and extensions Spock
+The monitoring views and functions are listed under *Node monitoring*
+above.
+
+**New**
+
+* Table `spock.reserved_object`, listing the schemas and extensions Spock
   keeps out of the structure-sync dump, out of replication sets, or out of
   DDL replication.
-* New `spock.reserved_object_add(p_name name, p_kind text,
-  p_exclude_from_dump boolean DEFAULT true, p_block_in_repset boolean
-  DEFAULT true, p_replicate_ddl boolean DEFAULT NULL)`.
-* New `spock.reserved_object_remove(p_name name, p_kind text)`.
-* New `spock.slot_enable_failover() RETURNS integer`, called by the 5.x
+* `spock.reserved_object_add(p_name name, p_kind text, p_exclude_from_dump
+  boolean DEFAULT true, p_block_in_repset boolean DEFAULT true,
+  p_replicate_ddl boolean DEFAULT NULL)`.
+* `spock.reserved_object_remove(p_name name, p_kind text)`.
+* `spock.node_alter(p_location text, p_country text, p_info_patch jsonb)`,
+  which changes the local node's metadata and validates a `tiebreaker`
+  value.
+* `spock.node_refresh_info(p_node_name name DEFAULT NULL)`, which fetches
+  the metadata of one peer, or of every peer, again.
+* `spock.slot_enable_failover() RETURNS integer`, called by the 5.x
   upgrade.
-* Removed `spock.wait_for_apply_worker(p_subbid bigint, timeout int)`.
+* Internal functions `spock.node_info_emit()`, `spock.node_info_apply()`,
+  `spock.node_info_broadcast()` and `spock.node_refresh_info_one()`, and
+  the `node_info_broadcast_trigger` trigger on `spock.node`.  EXECUTE on
+  the first two and on `node_refresh_info_one()` is revoked from PUBLIC.
+
+**Removed**
+
+* `spock.wait_for_apply_worker(p_subbid bigint, timeout int)`.
+
+**Changed**
+
 * `spock.repset_add_all_tables()` now skips a table it cannot add, with a
   warning, instead of failing the whole call.
 
@@ -103,6 +201,47 @@ will be removed at general availability.
   it waits for the primary's copy of a new slot to catch up.  The new copy
   stays a temporary slot until then and is dropped, not kept, if the
   standby is promoted first.
+* The failover-slots worker recreates a slot copy that was invalidated on
+  the standby, instead of advancing a copy that could never be used and
+  breaking the subscription only after a promotion.  See
+  `spock.failover_slots_recreate_invalidated` above.
+* On PostgreSQL 16 and 17, with `spock.failover_slots_database` set and
+  `wal_level = logical` on the standby, the failover-slots worker decodes
+  each slot copy on the standby so it has a consistent snapshot.  Without
+  it, transactions committed shortly before a failover could be missed
+  after the promotion.  A copy that cannot be decoded is reported once with
+  a WARNING.
+* On PostgreSQL 17, once the failover-slots worker has taken over from
+  native slot sync, a copy made by native slot sync whose slot the primary
+  drops no longer makes the worker fail and restart every minute.
+* A change already being applied when `spock.sub_resync_table()` empties
+  the table is skipped, instead of failing and, with
+  `spock.exception_behaviour = sub_disable`, disabling the subscription.
+  The same holds for a partition whose partitioned table is being
+  resynchronized.  A table sync requested in the middle of a remote
+  transaction now starts its sync worker.
+* Under `last_update_wins`, an incoming `UPDATE` always won against a local
+  row that `VACUUM` had frozen, even when the local change was newer, so
+  nodes could end up with different values.  The commit timestamp of a
+  frozen row is now found.
+* A procedure that runs `COMMIT` or `ROLLBACK`, called over the extended
+  query protocol with a bound parameter, could crash the server.
+  `spock.wait_for_sync_event()` does this, so a client such as psycopg or
+  JDBC waiting for a sync event could crash a node.
+* With `spock.apply_change_logging` on, a table whose columns are laid out
+  differently on the provider and the subscriber was logged with values
+  under the wrong columns, and could crash the apply worker on every
+  restart.
+* Two table syncs finishing at the same time could both write
+  `resource.dat`, ending the apply worker and leaving its subscription
+  disabled after the restart.
+* On PostgreSQL 19, AutoDDL runs `REPACK (ANALYZE)` and
+  `REPACK (CONCURRENTLY)` locally and does not replicate them, since
+  neither can run inside the apply worker's transaction.
+* `spock.sub_wait_for_sync()` and `spock.table_wait_for_sync()` raise an
+  error instead of waiting forever when a subscription has no sync status
+  row, and the apply worker rejects a Spock message too short to hold its
+  type.
 * Direct DDL against the `spock` and `snowflake` schemas is refused while
   DDL replication is on.
 * Large objects stored by lolor can be replicated, and Zodan `add_node`
@@ -115,8 +254,35 @@ will be removed at general availability.
   as a deadlock or lock timeout, instead of treating it as a data exception.
 * `pg_upgrade` of a Spock node on PostgreSQL 17 and later no longer fails
   with `resource manager with ID 144 not registered`.
-* Bug fixes from 5.0.11 and 5.0.12.
-* Builds against PostgreSQL 19 beta 3 and 4.
+* A node's location, country and info, including its `tiebreaker`, are sent
+  to its direct subscribers when they change.  `spock.sub_resync_table()`
+  warns when the provider's row differs from the local copy.
+* A replicated `INSERT` that collides with a row committed locally at the
+  same moment goes to conflict resolution instead of failing with a
+  duplicate key error.  Each `INSERT` into a table with a unique index now
+  takes a speculative insertion; see `spock.non_conflicting_inserts` above.
+* With three or more nodes, a conflict between two changes with the same
+  commit timestamp is decided by the existing row's real origin, so every
+  node picks the same winner.  The `CONFLICT: ... wins over ... by
+  tiebreaker` log messages now name the existing row's origin and the
+  incoming change's origin instead of the current and remote node.
+* Table sync no longer fails with `SET TRANSACTION SNAPSHOT must be called
+  before any query` when an extension such as pg_duckdb runs a query on
+  `SET`.
+* Documentation on running logical slot failover under Patroni, with the
+  sample `samples/set_synchronized_standby_slots.sh`.
+* Bug fixes from 5.0.11, 5.0.12 and 5.0.13.  From 5.0.13: a promoted
+  physical standby of a subscriber no longer asks the provider to resend
+  transactions the subscriber had already applied, which showed up as
+  conflicts or as duplicate rows in tables without a primary key;
+  `spock.sub_wait_for_sync()` and `spock.table_wait_for_sync()` no longer
+  crash the server when the subscription is dropped while they wait; a
+  pg_dump or pg_restore failure
+  during structure sync reports how the child exited instead of an
+  unrelated error such as `Invalid argument`; and table sync no longer
+  fails against an origin older than 5.0.7, which lacks
+  `spock.pause_apply_workers()`.
+* Builds against PostgreSQL 19 beta 3, beta 4 and RC1.
 
 ## Spock 6.0.0
 
@@ -165,9 +331,9 @@ see *Upgrading* below before running `ALTER EXTENSION spock UPDATE`.
   version-specific API changes (replication-origin session state folded into
   `replorigin_xact_state`, `CLUSTER` folded into `REPACK`, the `pgstat` and
   recovery-conflict signalling changes, and the `RepOriginId` rename).
-  Spock builds against PostgreSQL 19 beta 3 and 4. This support is preliminary:
-  PostgreSQL 19 is still in beta, and Spock on 19 is not supported for
-  production use.
+  Spock builds against PostgreSQL 19 beta 3, beta 4 and RC1. This support is
+  preliminary: PostgreSQL 19 has not been released, and Spock on 19 is not
+  supported for production use.
 
 ### Catastrophic node failure recovery
 
@@ -272,6 +438,23 @@ unrecoverable errors:
 * On **PostgreSQL 17**, Spock's worker remains active but automatically
   yields to the native slotsync worker if `sync_replication_slots = on`
   is set, preventing conflicts.
+* Where Spock's own worker runs (PostgreSQL 15 to 17):
+  * It syncs slots every `spock.failover_slots_naptime` (1 second by
+    default) instead of every 60 seconds.
+  * It recreates a slot copy that was invalidated on the standby, instead
+    of advancing a copy that could never be used.
+    `spock.failover_slots_recreate_invalidated = off` leaves such a copy in
+    place for inspection and reports it once.
+  * It no longer stops syncing every slot while the primary's slot catches
+    up with a new copy.  The new copy stays a temporary slot until then and
+    is dropped, not kept, if the standby is promoted first.
+  * On PostgreSQL 16 and 17, with `spock.failover_slots_database` set and
+    `wal_level = logical` on the standby, it decodes each copy on the
+    standby so the copy has a consistent snapshot, as PostgreSQL 17's own
+    slot sync does.  Without it, transactions committed shortly before a
+    failover could be missed after the promotion.  A copy that cannot be
+    decoded is reported once with a WARNING.  The worker stays connected to
+    that database, so commands such as `DROP DATABASE` on it fail.
 
 ### More granular conflict classification
 
@@ -349,11 +532,12 @@ details.
 
 On PostgreSQL 18+, Spock registers a custom pgstat kind
 (`SPOCK_PGSTAT_KIND_LRCONFLICTS`) to count replication conflicts per
-subscription.  New SQL functions
-`spock.get_subscription_stats(subid, peer_node_id)` and
-`spock.reset_subscription_stats(subid)` expose per-subscription apply
-statistics.  On PostgreSQL versions before 18 these functions raise a
-feature-not-supported error.
+subscription.  New SQL functions `spock.get_subscription_stats(subid)`
+and `spock.reset_subscription_stats(subid)` read and reset them.  On
+PostgreSQL versions before 18, `get_subscription_stats()` raises a
+feature-not-supported error; `reset_subscription_stats()` works on every
+version, since it also resets the activity counters behind
+`spock.subscription_stats`.
 
 ### Node monitoring views
 
@@ -393,7 +577,8 @@ The event history size is set by the new `spock.event_history_size` GUC.
 `spock.reset_subscription_stats()` now resets both the activity and the
 conflict counters. The internal `spock.get_apply_worker_status()` function
 is replaced by `spock.get_worker_status()` and the `spock.worker_status`
-view.
+view.  The GUC, views and functions are listed under *Node monitoring
+GUCs, views and functions* below.
 
 ### Liveness and feedback refactoring
 
@@ -644,6 +829,75 @@ or `NOTHING` is also rejected.
 * **Sync worker lost the original error** — a failure while creating the
   slot during table sync was reported as `errstart was not called` instead
   of the real error.
+* **Replicated `INSERT` racing a local insert** — the apply worker looked
+  for a conflicting row and, finding none, inserted.  A row committed
+  locally in between was missed, and the insert failed with a duplicate key
+  error instead of going to conflict resolution.  The row is now inserted
+  speculatively with every immediate unique index as an arbiter, and a
+  reported duplicate is looked up and resolved.  This adds a speculative
+  insertion to each `INSERT` into a table with a unique index;
+  `spock.non_conflicting_inserts` turns it off where collisions cannot
+  happen.  A collision on a unique index other than the one used to find
+  the row still raises a duplicate key error unless
+  `spock.check_all_uc_indexes` is on.
+* **Equal-timestamp ties in a mesh of three or more nodes** — the
+  tiebreaker compared the applying node with the origin of the incoming
+  change.  When a node resolved a conflict between writes from two other
+  nodes, it could pick a different winner than they did.  The tie is now
+  decided between the existing row's recorded origin and the incoming
+  change's origin, falling back to the applying node when the row's origin
+  is unknown.
+* **Table sync with pg_duckdb** — the session `SET`s were sent inside the
+  COPY transaction, so an extension that runs a query on `SET` made the
+  snapshot import fail with `SET TRANSACTION SNAPSHOT must be called before
+  any query`.  They are now sent before the transaction starts.
+* **Change in flight during a resync** — `spock.sub_resync_table()` marks
+  the table as being synchronized and empties it, but the apply worker
+  reread its list of tables under synchronization only between remote
+  transactions.  A change already being applied met the emptied table, and
+  an `UPDATE` that found no row disabled the subscription under
+  `sub_disable`.  Such changes are now skipped, including changes to a
+  partition whose partitioned table is being resynchronized; the sync
+  worker's copy contains them.  A table sync requested in the middle of a
+  remote transaction also failed to start its sync worker.
+* **`last_update_wins` against a frozen row** — the commit timestamp of a
+  local row was looked up through its xmin, which reads as frozen once
+  `VACUUM` freezes the row, and the row then counted as older than any
+  change.  An older incoming `UPDATE` overwrote the newer local value, so
+  nodes could diverge.  This affects every supported PostgreSQL version:
+  `VACUUM (FREEZE)` and aggressive vacuums freeze recently written rows,
+  and since PostgreSQL 16 a normal `VACUUM` can too.  The original xid is
+  now used.
+* **Crash after a procedure that ends its transaction** — after a `CALL`
+  that runs `COMMIT` or `ROLLBACK` over the extended query protocol with a
+  bound parameter, AutoDDL read the statement from freed memory and the
+  server crashed.  `spock.wait_for_sync_event()` runs `ROLLBACK`, so a
+  psycopg or JDBC client waiting for a sync event could crash a node.
+* **`spock.apply_change_logging` with different column layouts** — values
+  were read at the provider's column positions, so they were logged under
+  the wrong columns when the provider and the subscriber order or drop
+  columns differently, and a value of one type printed as another could
+  crash the apply worker on every restart.
+* **Concurrent `resource.dat` writes** — two table syncs finishing at the
+  same time wrote the same temporary file, and the second rename failed,
+  ending the apply worker and leaving its subscription disabled after the
+  restart.
+* **`REPACK` on PostgreSQL 19** — AutoDDL queued `REPACK (ANALYZE)` and
+  `REPACK (CONCURRENTLY)`, which cannot run inside the apply worker's
+  transaction.  They now run locally only, as table-less and partitioned
+  `CLUSTER` already did.
+* **Failover-slots worker** — on PostgreSQL 15 to 17 it advanced a slot
+  copy that had been invalidated on the standby, so the copy looked current
+  but the subscription broke after promotion; it waited for a lagging
+  primary slot without a time limit, syncing no other slot meanwhile, and
+  if promotion came during the wait it kept a copy that skipped commits; on
+  PostgreSQL 16 and 17 a copy had no snapshot of its own, so transactions
+  committed shortly before a failover could be missed; and on PostgreSQL 17
+  a copy made by native slot sync whose slot the primary dropped made the
+  worker restart every minute.  See *Logical Slot Failover* above.
+* **`spock.sub_wait_for_sync()` and `spock.table_wait_for_sync()` waited
+  forever** for a subscription that had no sync status row.  They now raise
+  an error.
 
 ### Security
 
@@ -673,7 +927,11 @@ or `NOTHING` is also rejected.
 * **Documentation** — a new guide on sizing PostgreSQL resources for Spock
   by node and database count (see [Sizing](sizing.md)), a `SECURITY.md`
   explaining how to report vulnerabilities, and the `output_plugin_libraries`
-  requirement in the README.
+  requirement in the README and the configuration, installation and
+  troubleshooting guides.  The guide to running logical slot failover under
+  Patroni, with the sample `samples/set_synchronized_standby_slots.sh`, is
+  carried over from 5.0.12 (see
+  [Logical Slot Failover](logical_slot_failover.md)).
 
 ### GUC changes
 
@@ -727,6 +985,24 @@ or `NOTHING` is also rejected.
   WAL a slot needs.  Both failover-slots settings matter only where Spock's
   own worker runs: PostgreSQL 15 and 16, and 17 when
   `sync_replication_slots` is off.
+* `spock.non_conflicting_inserts` (bool, default `off`, `POSTMASTER`) —
+  asserts that a replicated `INSERT` can never collide with a local row,
+  for example because each node generates keys from its own range.  The
+  apply worker then skips the conflict lookup and the speculative
+  insertion and inserts the row directly.  Nothing checks the assertion: a
+  collision raises a duplicate key error, handled by
+  `spock.exception_behaviour` rather than by conflict resolution.
+* `spock.failover_slots_recreate_invalidated` (bool, default `on`,
+  `SIGHUP`) — whether Spock's failover-slots worker drops and recreates a
+  slot copy that was invalidated on the standby.  `off` leaves the copy as
+  it is, so the cause can be looked into, and reports it once; the copy is
+  recreated on the first pass after the setting is turned back on.
+* `spock.failover_slots_database` (string, default empty, `POSTMASTER`) — on
+  PostgreSQL 16 and 17, the database Spock's failover-slots worker connects
+  to so it can decode each slot copy on the standby and give it a
+  consistent snapshot.  On PostgreSQL 16 it must be the database the slots
+  belong to.  Empty keeps the old behaviour, under which transactions
+  committed shortly before a failover can be missed after the promotion.
 
 **Removed**
 
@@ -765,6 +1041,8 @@ or `NOTHING` is also rejected.
   (the column was added as `text` in 5.0.2 but the C code always treated
   the bytes as `text[]`; the 5.0.7 step migration relabels the catalog so
   no rewrite or downtime is required).
+* New monitoring views: see *Node monitoring GUCs, views and functions*
+  below.
 
 ### New functions
 
@@ -772,9 +1050,9 @@ or `NOTHING` is also rejected.
   `spock.progress`).
 * `spock.read_peer_progress(slot, provider_node_id, subscriber_node_id)`
   — used by zodan when importing a slot snapshot.
-* `spock.get_subscription_stats(subid, peer_node_id)` /
-  `spock.reset_subscription_stats(subid)` — per-subscription apply
-  statistics.
+* `spock.get_subscription_stats(subid)` /
+  `spock.reset_subscription_stats(subid)` — per-subscription conflict
+  statistics (reading them needs PostgreSQL 18 or later).
 * `spock.cleanup_resolutions(days int DEFAULT NULL)` — TTL-based cleanup
   of the resolutions log.  Default permissions revoke EXECUTE from
   PUBLIC.
@@ -795,11 +1073,20 @@ or `NOTHING` is also rejected.
   — validated way to change the local node's own location/country/info
   (merging info, validating a `tiebreaker` patch); see *Automatic node
   metadata propagation* above.
+* `spock.node_refresh_info(p_node_name name DEFAULT NULL) RETURNS boolean`:
+  fetches a peer's location, country and info again from the peer itself,
+  or every peer's when called without a name, for a cached row that missed
+  a change.  Called with a name, it raises an error if that node cannot be
+  refreshed.  Called without one, it warns about each peer it cannot
+  refresh and returns `false` if any failed.
 * `spock.node_info_emit()` / `spock.node_info_apply()` /
   `spock.node_info_broadcast()` (trigger function, backing the new
-  `node_info_broadcast_trigger` on `spock.node`) — internal plumbing
-  behind automatic node metadata propagation; not intended to be called
-  directly (`EXECUTE` revoked from `PUBLIC`).
+  `node_info_broadcast_trigger` on `spock.node`) /
+  `spock.node_refresh_info_one()` — internal plumbing behind node metadata
+  propagation and refresh; not intended to be called directly (`EXECUTE`
+  revoked from `PUBLIC`, except on the trigger function).
+* The monitoring functions: see *Node monitoring GUCs, views and
+  functions* below.
 
 ### Removed functions
 
@@ -808,10 +1095,91 @@ or `NOTHING` is also rejected.
 * `spock.wait_for_apply_worker(p_subbid bigint, timeout int)` — had no
   callers since SpockCtrl was removed.
 
+### Node monitoring GUCs, views and functions
+
+The monitoring added in 6.0, in one place.  *Node monitoring views* above
+describes what it shows.  SELECT on the views, and EXECUTE on the functions
+they read, is granted to `pg_monitor`.  USAGE on the `spock` schema is not,
+so a monitoring role needs that granted as well.
+
+**GUC**
+
+* `spock.event_history_size` (int, default `1024`, range 16 to 1048576,
+  `POSTMASTER`): how many recent events the `spock.events` view keeps in
+  shared memory.  Once the history is full, each new event drops the
+  oldest, and the history is lost on restart.
+
+**Views**
+
+* `spock.node_status`: the whole node on one row: versions, pending
+  upgrade, worker and subscription counts, WAL retained by slots,
+  replication lag, last events.
+* `spock.peer_status`: the known nodes.
+* `spock.subscription_status`: configuration, status, serving worker,
+  replication position and lag, and the last error of every subscription.
+* `spock.subscription_stats`: per-subscription worker starts and failures,
+  provider connects, messages, transactions, tuple and conflict counters.
+* `spock.worker_status`: supervisor, manager, apply and sync workers,
+  including workers waiting for a restart.
+* `spock.slot_status`: provider side: spock slots with their walsender,
+  positions, retained WAL and feedback lag.
+* `spock.table_sync_status`: table synchronization state.
+* `spock.replication_set_status`: the replication sets.
+* `spock.system_status`: disk space, load, connections, long and idle
+  transactions, wraparound age, archiving.
+* `spock.settings`: the parameters replication depends on.
+* `spock.events`: the history of recent events.
+
+**Functions**
+
+* `spock.node_report(recent integer DEFAULT 50) RETURNS SETOF text`: the
+  whole node as one text report for support cases: host and versions,
+  installed extensions, settings, every monitoring view, and the most
+  recent exceptions, conflict resolutions and events.
+* `spock.replication_origin_status()`: the replication origins and their
+  progress, readable by `pg_monitor`, since `pg_replication_origin_status`
+  is for superusers only.
+* Internal functions behind the views and `node_report()`:
+  `spock.get_worker_status()`, `spock.get_events()`,
+  `spock.reset_events()`, `spock.get_apply_stats()`,
+  `spock.get_slot_groups()`, `spock.get_monitor_summary()`,
+  `spock.get_system_info()`, `spock.get_pending_exceptions()`,
+  `spock.redact_dsn()`, `spock.wal_size_bytes()` and
+  `spock.report_section()`.  `get_system_info()`, `get_events()`,
+  `get_apply_stats()` and `get_pending_exceptions()` are executable by
+  `pg_monitor` only, and `reset_events()` by superusers only.
+* `spock.reset_subscription_stats(subid)` also resets the activity
+  counters behind `spock.subscription_stats`, on every supported
+  PostgreSQL version, and only superusers can run it.
+
+**Removed**
+
+* `spock.get_apply_worker_status()`: replaced by
+  `spock.get_worker_status()`, which covers every worker type, and the
+  `spock.worker_status` view.
+
 ### Bug fixes carried forward from the 5.0.x line
 
-These shipped in 5.0.6 – 5.0.12 and are included in 6.0.0:
+These shipped in 5.0.6 – 5.0.13 and are included in 6.0.0:
 
+* A promoted physical standby of a subscriber could replay transactions the
+  subscriber had already applied.  The apply worker's commits record the
+  origin node's progress, not the subscription's, so crash recovery and a
+  physical standby left the subscription's replication origin where the
+  last checkpoint or base backup put it, and a promoted standby asked the
+  provider to resend everything after that point.  The apply and sync
+  workers now write the subscription's progress to WAL after each commit.
+  (5.0.13)
+* `spock.sub_wait_for_sync()` and `spock.table_wait_for_sync()` crashed
+  the server if the subscription was dropped while they waited.  They now
+  report that the subscription does not exist.  (5.0.13)
+* pg_dump and pg_restore failures during structure sync were reported with
+  a stale `errno` message such as `Invalid argument`.  The error now gives
+  the child's exit code or signal.  (5.0.13)
+* Table sync failed with `function does not exist` against an origin older
+  than 5.0.7, which lacks `spock.pause_apply_workers()` and
+  `spock.resume_apply_workers()`.  Sync now skips pausing and resuming in
+  that case.  (5.0.13)
 * Handle upstream connection loss cleanly without replication-origin
   advance leak.  Previously a stale libpq socket fd produced an
   `epoll_ctl(EINVAL)` cascade and the recovery path could silently
@@ -877,17 +1245,20 @@ These shipped in 5.0.6 – 5.0.12 and are included in 6.0.0:
 
 ### Upgrading
 
-The upgrade from 5.0.12 to 6.0.0 is a single `ALTER EXTENSION spock UPDATE`
+The upgrade from 5.0.13 to 6.0.0 is a single `ALTER EXTENSION spock UPDATE`
 once the binaries are swapped.  Earlier 5.0.x releases upgrade in the same
-single step, through 5.0.12.  The upgrade:
+single step, through 5.0.13.  The upgrade:
 
 * drops the legacy `spock.progress` table and recreates it as a view,
 * replaces the `spock.lag_tracker` view definition,
 * migrates `spock.resolutions.conflict_type` values,
 * adds the new functions, the `sub_id_generator` sequence and the
   `spock.reserved_object` catalog,
-* drops `spock.wait_for_apply_worker()`,
+* drops `spock.wait_for_apply_worker()` and
+  `spock.get_apply_worker_status()`,
 * adds the `node_info_broadcast_trigger` trigger on `spock.node`,
+* adds the monitoring views and functions, and grants the read side to
+  `pg_monitor`,
 * refreshes the parallel-safety attributes on `spock.md5_agg_sfunc` and
   `spock.spock_gen_slot_name`,
 * turns on the `failover` flag for existing logical slots by calling
@@ -919,6 +1290,30 @@ The apply worker now restarts and tries again after a temporary error such
 as a deadlock or lock timeout.  If the problem never clears, expect the
 worker to restart every `spock.restart_delay_default` (5 seconds by default)
 instead of a disabled subscription or a discarded transaction.
+
+## Spock 5.0.13
+
+### Upgrade Notes
+* There are no schema changes in 5.0.13.
+
+### Bug Fixes
+* A promoted standby of a subscriber could replay transactions the subscriber
+  had already applied. The subscription's replication origin was not written
+  to the WAL, so a standby resumed from the last checkpoint's position. The
+  apply and sync workers now log the origin's progress after each commit.
+
+* `spock.sub_wait_for_sync()` and `spock.table_wait_for_sync()` crashed
+  the backend if the subscription was dropped during the wait. They now report that the
+  subscription does not exist.
+
+* pg_dump and pg_restore failures during structure sync were reported with a
+  stale `errno` message such as `Invalid argument`. The error now gives the
+  child's exit code or signal.
+
+* Sync failed with `function does not exist` against an origin older than
+  5.0.7, which lacks `spock.pause_apply_workers()` and
+  `spock.resume_apply_workers()`. Sync now skips pausing and resuming in that
+  case.
 
 ## Spock 5.0.12
 

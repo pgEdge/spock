@@ -25,8 +25,8 @@ use SpockTest qw(create_cluster destroy_cluster get_test_config scalar_query
     };
     my $upgrade_sql = do {
         local $/;
-        open(my $fh, '<', "$spock_repo/sql/spock--5.0.12--6.0.0.sql")
-            or die "cannot open $spock_repo/sql/spock--5.0.12--6.0.0.sql: $!";
+        open(my $fh, '<', "$spock_repo/sql/spock--5.0.13--6.0.0.sql")
+            or die "cannot open $spock_repo/sql/spock--5.0.13--6.0.0.sql: $!";
         <$fh>;
     };
 
