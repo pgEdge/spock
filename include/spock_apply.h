@@ -31,7 +31,8 @@ typedef void (*spock_apply_mi_add_tuple_fn) (SpockRelation *rel,
 											 SpockTupleData *tup);
 typedef void (*spock_apply_mi_finish_fn) (SpockRelation *rel);
 
-/* my_exception_log_index belongs here, and not in the exception handler
+/*
+ * my_exception_log_index belongs here, and not in the exception handler
  * since it's specific to each apply worker.
  */
 extern int	my_exception_log_index;
