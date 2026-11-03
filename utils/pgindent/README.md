@@ -54,6 +54,11 @@ https://buildfarm.postgresql.org/cgi-bin/typedefs.pl?branch=REL_18_STABLE
 When Spock adds or drops support for a PG major version,
 update the `PG_BRANCHES` variable in `run-pgindent.sh`.
 
+If a download fails or returns fewer than 1000 typedefs, the script
+warns and uses the committed `typedefs.list` for the core typedefs
+instead, so a buildfarm outage does not fail the check.  Spock's own
+typedefs are still extracted from the source on every run.
+
 ### CI
 
 The GitHub Actions workflow `.github/workflows/pgindent.yml` runs

@@ -31,7 +31,7 @@ jobs:
 
       - name: Run pgindent --check
         run: |
-          docker run --rm spock-pgindent bash -c '
+          docker run --rm -e GITHUB_ACTIONS spock-pgindent bash -c '
             source ~/.bashrc
             make -C $PG_SRCDIR/src/tools/pg_bsd_indent > /dev/null
             export PATH="$PG_SRCDIR/src/tools/pgindent:$PG_SRCDIR/src/tools/pg_bsd_indent:$PATH"
