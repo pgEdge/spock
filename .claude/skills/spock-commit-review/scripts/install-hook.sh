@@ -207,3 +207,6 @@ if [ -n "$local_path" ]; then
 fi
 echo "skill installed: $SKILL_HOME"
 echo "hooks installed: $HOOKS_DIR (core.hooksPath set globally)"
+echo "per-commit review is opt-in and off by default; enable it with:"
+echo "    git config --global ${SKILL_NAME%-commit-review}.commitReview true"
+echo "or run it on demand with /$SKILL_NAME, or read REVIEW.md"
