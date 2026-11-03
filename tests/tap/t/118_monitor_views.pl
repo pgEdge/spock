@@ -204,8 +204,8 @@ is_true(2, "SELECT events_recorded >= 50 FROM spock.get_monitor_summary()",
 is_true(2, "SELECT min(event_id) > 1 AND max(event_id) - min(event_id) + 1 = 32 " .
            "FROM spock.events",
         'the oldest events were dropped and the rest are contiguous');
-is_true(2, "SELECT count(*) > 0 FROM spock.spock_info(5) AS line WHERE line LIKE '== % =='",
-        'spock_info() still produces its sections');
+is_true(2, "SELECT count(*) > 0 FROM spock.node_report(5) AS line WHERE line LIKE '== % =='",
+        'node_report() still produces its sections');
 
 # =============================================================================
 # A role without pg_monitor reads the WAL size
@@ -241,8 +241,8 @@ is(as_monitor("SELECT status FROM spock.subscription_status WHERE subscription_n
 # the report calls is.
 is(as_monitor("SELECT count(*) FILTER (WHERE line LIKE '== % ==') > 10 " .
               "AND count(*) FILTER (WHERE line LIKE '(error: permission denied for function%') = 0 " .
-              "FROM spock.spock_info(5) AS line"), 't',
-   'spock_info() runs every function it calls for pg_monitor');
+              "FROM spock.node_report(5) AS line"), 't',
+   'node_report() runs every function it calls for pg_monitor');
 like(as_monitor("SELECT spock.reset_events()"), qr/permission denied/,
      'pg_monitor cannot reset the events');
 

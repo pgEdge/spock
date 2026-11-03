@@ -404,7 +404,7 @@ SELECT count(*) AS pending_exceptions FROM spock.get_pending_exceptions();
 
 -- The report lists every section and never fails as a whole
 SELECT line
-  FROM spock.spock_info(5) AS line
+  FROM spock.node_report(5) AS line
  WHERE line LIKE '== % =='
  ORDER BY line;
                   line                   
@@ -465,7 +465,7 @@ SELECT line
 
 SELECT count(*) > 30 AS has_content,
        count(*) FILTER (WHERE line LIKE '(error:%') AS failed_sections
-  FROM spock.spock_info() AS line;
+  FROM spock.node_report() AS line;
  has_content | failed_sections 
 -------------+-----------------
  t           |               0
@@ -479,7 +479,7 @@ GRANT USAGE ON SCHEMA spock TO monitor_reader;
 SET ROLE monitor_reader;
 SELECT line LIKE 'Spock node report: database ' || current_database() ||
        ' on (unknown) at %' AS header_without_host
-  FROM spock.spock_info(0) AS line
+  FROM spock.node_report(0) AS line
  LIMIT 1;
  header_without_host 
 ---------------------
@@ -489,7 +489,7 @@ SELECT line LIKE 'Spock node report: database ' || current_database() ||
 SELECT count(*) FILTER (WHERE line LIKE '== % ==') > 0 AS has_sections,
        count(*) FILTER (WHERE line LIKE '(error: permission denied%') > 0
          AS has_denied_sections
-  FROM spock.spock_info(0) AS line;
+  FROM spock.node_report(0) AS line;
  has_sections | has_denied_sections 
 --------------+---------------------
  t            | t
@@ -620,7 +620,7 @@ SELECT DISTINCT event_type, severity, sqlstate, pid IS NOT NULL AS has_pid
 (2 rows)
 
 SELECT count(*) > 0 AS exception_reported
-  FROM spock.spock_info() AS line
+  FROM spock.node_report() AS line
  WHERE line LIKE '%monitor_errors_positive%';
  exception_reported 
 --------------------

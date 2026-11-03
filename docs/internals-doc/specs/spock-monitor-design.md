@@ -273,7 +273,7 @@ code checks the column count against its enum with an assertion.
 | `spock.get_system_info()` | One row: host name, operating system, CPU, memory, load averages, `statvfs()` of the data directory and of `pg_wal`, postmaster start, PostgreSQL and spock versions |
 | `spock.get_pending_exceptions()` | Exception log slots with a recorded error: the transactions being retried, with `failed_action_number`, the position of the failing change in its transaction |
 | `spock.report_section(title, query, expanded)` | The rows of a query as text, values in PostgreSQL text form |
-| `spock.spock_info(recent)` | The whole node as a text report, one section per view |
+| `spock.node_report(recent)` | The whole node as a text report, one section per view |
 | `spock.reset_events()` | Empties the ring; ids keep increasing |
 | `spock.reset_subscription_stats(subid)` | Resets activity and, on PG18, conflict counters of one or all subscriptions |
 | `spock.redact_dsn(text)` | Connection string with the password hidden, keyword and URI forms |
@@ -312,7 +312,7 @@ recovery.
 
 ### 7.3 The report
 
-`spock.spock_info()` is a plpgsql function that calls
+`spock.node_report()` is a plpgsql function that calls
 `spock.report_section()` once per view. The formatter runs the query twice:
 once through `row_to_json` to learn the column names in query order, then
 with every column cast to text so that values appear as PostgreSQL prints

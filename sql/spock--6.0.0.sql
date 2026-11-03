@@ -1900,7 +1900,7 @@ $$;
 -- The whole node as one text report: host and versions, installed
 -- extensions, settings, and every monitoring view one after another.
 -- "recent" bounds the events, exceptions and resolutions listed.
-CREATE FUNCTION spock.spock_info(recent integer DEFAULT 50)
+CREATE FUNCTION spock.node_report(recent integer DEFAULT 50)
 RETURNS SETOF text
 LANGUAGE plpgsql AS $$
 DECLARE
