@@ -2000,18 +2000,21 @@ wait_for_standby_confirmation(XLogRecPtr commit_lsn)
 	static List *missing_warned = NIL;
 	static List *missing_warned_for = NIL;
 
+#if PG_VERSION_NUM >= 170000
 	/* The list the "adds nothing" advisory below was last logged for. */
 	static List *advisory_for = NIL;
+#endif
 
 	if (skip_standby_slot_names(commit_lsn))
 		return;
 
 #if PG_VERSION_NUM >= 170000
+
 	/*
 	 * If this walsender serves a failover slot and synchronized_standby_slots
 	 * already names every slot named here, PostgreSQL applies that wait first
-	 * and waits for all of them, so this quorum adds nothing.  Say so once per
-	 * configuration.  A non-failover slot is not covered by the core
+	 * and waits for all of them, so this quorum adds nothing.  Say so once
+	 * per configuration.  A non-failover slot is not covered by the core
 	 * mechanism, so this hold-back is the only one and nothing is logged.
 	 * Checked here, in the hold-back path, rather than in the client-auth
 	 * hook, so it is not logged for a failed login, a reconnect, the native
@@ -2124,9 +2127,9 @@ wait_for_standby_confirmation(XLogRecPtr commit_lsn)
 		 * slot required this waits until wal_sender_timeout and starts over.
 		 * Say so, before the quorum check so that a quorum the other slots
 		 * satisfy does not hide it; a standby promoted with this setting
-		 * inherited from the old primary has none of its physical slots.
-		 * Warn once per slot and re-warn a slot that disappears again, so a
-		 * later drop is not masked by an earlier one.
+		 * inherited from the old primary has none of its physical slots. Warn
+		 * once per slot and re-warn a slot that disappears again, so a later
+		 * drop is not masked by an earlier one.
 		 */
 		if (missing_warned_for != pg_standby_slot_names)
 		{
@@ -2167,9 +2170,10 @@ wait_for_standby_confirmation(XLogRecPtr commit_lsn)
 					/*
 					 * The warning fires ahead of the quorum check, so it also
 					 * reaches the case where the slots that do exist already
-					 * meet spock.standby_slots_min_confirmed and nothing waits
-					 * for the missing one.  Only promise a wait when the
-					 * missing slots are actually needed to reach the quorum.
+					 * meet spock.standby_slots_min_confirmed and nothing
+					 * waits for the missing one.  Only promise a wait when
+					 * the missing slots are actually needed to reach the
+					 * quorum.
 					 */
 					int			required = standby_slots_min_confirmed == -1
 						? list_length(pg_standby_slot_names)
