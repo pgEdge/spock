@@ -3748,6 +3748,7 @@ SSLExtensionInfoContext
 StackElem
 StakindFlags
 standard_qp_extra
+StandbySlotState
 StartBufferIOResult
 StartDataPtrType
 StartLOPtrType

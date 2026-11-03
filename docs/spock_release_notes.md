@@ -55,14 +55,14 @@ will be removed at general availability.
   upgrades in one `ALTER EXTENSION spock UPDATE`, through 5.0.12.
 * On a server with PostgreSQL's fix for CVE-2026-6471, `spock_output` must be
   listed in `output_plugin_libraries`.  See *Upgrading* below.
-* On PostgreSQL 18, `spock.pg_standby_slot_names` did nothing on beta 1, so a
-  value set there, or one inherited by a promoted standby, had no effect.
-  Beta 2 honours it: with the default `spock.standby_slots_min_confirmed` of
-  `-1` a logical walsender waits for every named slot until
-  `wal_sender_timeout` and then starts over, so replication stalls while a
-  named slot is missing.  Check the value on each PostgreSQL 18 node before
-  installing beta 2, and either create the slots it names or clear the
-  setting.
+* On PostgreSQL 18 and later, `spock.pg_standby_slot_names` did nothing on
+  beta 1, so a value set there, or one inherited by a promoted standby, had
+  no effect.  Beta 2 honours it: with the default
+  `spock.standby_slots_min_confirmed` of `-1` a logical walsender waits for
+  every named slot until `wal_sender_timeout` and then starts over, so
+  replication stalls while a named slot is missing.  Check the value on each
+  PostgreSQL 18 or later node before installing beta 2, and either create the
+  slots it names or clear the setting.
 
 ### GUC changes
 

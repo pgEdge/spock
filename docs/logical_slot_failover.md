@@ -85,8 +85,8 @@ Core PostgreSQL copies the slots. Set these in addition to the base settings.
 | `hot_standby_feedback` | standby | `on` | Stops the primary from removing catalog rows the slots still need. |
 | `primary_slot_name` | standby | physical slot name | The physical slot the standby streams through. |
 | `primary_conninfo` | standby | connection string with `dbname` | How the standby reaches the primary. |
-| `synchronized_standby_slots` | primary | physical slot name | Holds logical walsenders back until every listed standby has the changes. With more than one standby, use the two Spock settings below instead when "any N of them" is wanted; use only one of the two mechanisms. |
-| `spock.pg_standby_slot_names` | primary | `''` | Physical slots that must confirm an LSN before logical replication advances. Optional. |
+| `synchronized_standby_slots` | primary | physical slot name | Holds logical walsenders back until every listed standby has the changes. With more than one standby, use the two Spock settings below instead when "any N of them" is wanted; usually set only one of the two. |
+| `spock.pg_standby_slot_names` | primary | `''` | Slots, usually the standbys' physical slots, that must confirm an LSN before logical replication advances. Optional. |
 | `spock.standby_slots_min_confirmed` | primary | `-1` | How many of those slots must confirm. `-1` means all; `1` keeps replicating while one standby of several is down. |
 | slot `failover = true` | primary | per slot | Only slots with this flag are synced. Spock 6.0.0 sets it at creation; older slots are handled during upgrade. |
 
@@ -118,7 +118,7 @@ addition to the base settings.
 | `spock.synchronize_slot_names` | standby | `name_like:%%` | Which slots to sync. All by default. |
 | `spock.drop_extra_slots` | standby | `on` | Drop standby slots that no longer exist on the primary. |
 | `spock.primary_dsn` | standby | `''` | Connection to the primary. Falls back to `primary_conninfo` when empty. |
-| `spock.pg_standby_slot_names` | primary | `''` | Physical slots that must confirm an LSN before logical replication advances. Optional. |
+| `spock.pg_standby_slot_names` | primary | `''` | Slots, usually the standbys' physical slots, that must confirm an LSN before logical replication advances. Optional. |
 | `spock.standby_slots_min_confirmed` | primary | `-1` | How many of those slots must confirm. `-1` means all. |
 | `spock.failover_slots_naptime` | standby | `1000` | Worker sleep between slot-sync passes, in ms (SIGHUP; range 1–3600000). |
 | `spock.failover_slots_feedback_naptime` | standby | `10000` | Shorter retry, in ms, while waiting for standby WAL feedback (SIGHUP; range 1–3600000). |
@@ -491,7 +491,7 @@ primary it idles.
 | `spock.synchronize_slot_names` | `name_like:%%` | Slot name patterns to sync (all by default) |
 | `spock.drop_extra_slots` | `on` | Drop standby slots not matching the pattern |
 | `spock.primary_dsn` | `''` | DSN to connect to primary (falls back to `primary_conninfo`) |
-| `spock.pg_standby_slot_names` | `''` | Physical slots that must confirm LSN before logical replication advances |
+| `spock.pg_standby_slot_names` | `''` | Slots, usually the standbys' physical slots, that must confirm LSN before logical replication advances |
 | `spock.standby_slots_min_confirmed` | `-1` | How many slots from `pg_standby_slot_names` must confirm (`-1` = all) |
 | `spock.failover_slots_naptime` | `1000` | Worker sleep between slot-sync passes, in ms (SIGHUP; range 1–3600000) |
 | `spock.failover_slots_feedback_naptime` | `10000` | Shorter retry, in ms, while waiting for standby WAL feedback (SIGHUP; range 1–3600000) |

@@ -116,11 +116,38 @@ typedef struct FailoverSlotFilter
 
 /* Used for physical-before-logical ordering */
 static char *standby_slot_names_raw;
-static char *standby_slot_names_string = NULL;
+static char *standby_slot_names_string = NULL;	/* split in place */
+static char *standby_slot_names_value = NULL;	/* as assigned */
 static List *pg_standby_slot_names = NIL;
 static int	standby_slots_min_confirmed;
 
-static XLogRecPtr standby_slot_names_oldest_flush_lsn = InvalidXLogRecPtr;
+/*
+ * One entry per name in pg_standby_slot_names, in list order, rebuilt by its
+ * assign hook: the slot's flush position at the last scan, whether the slot
+ * existed then, and whether its absence has already been reported.
+ */
+typedef struct StandbySlotState
+{
+	XLogRecPtr	flush;
+	bool		found;
+	bool		warned;
+} StandbySlotState;
+
+static StandbySlotState *standby_slot_state = NULL;
+
+/*
+ * Bumped by the assign hooks when either setting really changes.  A reload
+ * re-assigns every setting even when its value is the same, so the hooks
+ * compare against the old value first.
+ */
+static uint64 standby_slot_config_gen = 1;
+
+/*
+ * Highest LSN that enough named slots have flushed to meet the quorum, as of
+ * the last scan; any message at or below it can be sent without scanning.
+ * Reset whenever the configuration changes.
+ */
+static XLogRecPtr standby_slots_confirmed_lsn = InvalidXLogRecPtr;
 
 /* Slots to sync */
 static char *spock_failover_slots_dsn;
@@ -148,6 +175,8 @@ static int	spock_failover_slots_naptime = WORKER_NAP_TIME_DEFAULT;
 static int	spock_failover_slots_feedback_naptime = WORKER_WAIT_FEEDBACK_DEFAULT;
 
 void		spock_init_failover_slot(void);
+
+static bool list_member_str(List *l, const char *str);
 
 PGDLLEXPORT void spock_failover_slots_main(Datum main_arg);
 
@@ -266,23 +295,76 @@ static void
 assign_standby_slot_names(const char *newval, void *extra)
 {
 	MemoryContext old_ctx;
+	char	   *new_value;
+	char	   *new_string;
+	List	   *new_list = NIL;
+	StandbySlotState *new_state = NULL;
+	List	   *names = NIL;
+	ListCell   *lc;
 
+	/*
+	 * A reload passes the same value again; keep the state then.  Compared
+	 * with an unsplit copy, since SplitIdentifierString() rewrites its input.
+	 */
+	if (standby_slot_names_value &&
+		strcmp(newval, standby_slot_names_value) == 0)
+		return;
+
+	/*
+	 * Build everything before replacing anything, so that running out of
+	 * memory part way leaves the old state whole rather than a list with no
+	 * state array that the early return above would then keep.
+	 */
+	old_ctx = MemoryContextSwitchTo(TopMemoryContext);
+	new_value = pstrdup(newval);
+	new_string = pstrdup(newval);
+	(void) SplitIdentifierString(new_string, ',', &names);
+
+	/*
+	 * A name given twice is one slot, so it counts once toward "all" and the
+	 * quorum.
+	 */
+	foreach(lc, names)
+	{
+		if (!list_member_str(new_list, (const char *) lfirst(lc)))
+			new_list = lappend(new_list, lfirst(lc));
+	}
+	list_free(names);
+
+	if (new_list != NIL)
+		new_state = palloc0(sizeof(StandbySlotState) * list_length(new_list));
+	(void) MemoryContextSwitchTo(old_ctx);
+
+	if (standby_slot_names_value)
+		pfree(standby_slot_names_value);
 	if (standby_slot_names_string)
 		pfree(standby_slot_names_string);
 	if (pg_standby_slot_names)
 		list_free(pg_standby_slot_names);
+	if (standby_slot_state)
+		pfree(standby_slot_state);
+	standby_slot_names_value = new_value;
+	standby_slot_names_string = new_string;
+	pg_standby_slot_names = new_list;
+	standby_slot_state = new_state;
 
-	/*
-	 * We must invalidate our idea of the oldest lsn in all the named slots if
-	 * we might have changed the list.
-	 */
-	standby_slot_names_oldest_flush_lsn = InvalidXLogRecPtr;
+	standby_slots_confirmed_lsn = InvalidXLogRecPtr;
+	standby_slot_config_gen++;
+}
 
-	old_ctx = MemoryContextSwitchTo(TopMemoryContext);
-	standby_slot_names_string = pstrdup(newval);
-	(void) SplitIdentifierString(standby_slot_names_string, ',',
-								 &pg_standby_slot_names);
-	(void) MemoryContextSwitchTo(old_ctx);
+/*
+ * The cached confirmed LSN was reached by the old quorum; a larger quorum
+ * may not have reached it.
+ */
+static void
+assign_standby_slots_min_confirmed(int newval, void *extra)
+{
+	/* Still the old value here; a reload passes the same value again. */
+	if (newval == standby_slots_min_confirmed)
+		return;
+
+	standby_slots_confirmed_lsn = InvalidXLogRecPtr;
+	standby_slot_config_gen++;
 }
 
 /*
@@ -1943,159 +2025,243 @@ list_member_str(List *l, const char *str)
 static bool
 skip_standby_slot_names(XLogRecPtr commit_lsn)
 {
-	static List *cached_standby_slot_names = NIL;
+	static uint64 checked_gen = 0;
+	static bool my_slot_named = false;
 
-	if (pg_standby_slot_names != cached_standby_slot_names)
+	/*
+	 * Kept apart from standby_slots_min_confirmed, which a reload would
+	 * overwrite.
+	 */
+	if (checked_gen != standby_slot_config_gen)
 	{
-		if (MyReplicationSlot)
-		{
-			if (list_member_str(pg_standby_slot_names,
-								NameStr(MyReplicationSlot->data.name)))
-			{
-				standby_slots_min_confirmed = 0;
-				elog(
-					 DEBUG1,
-					 "found my slot in spock_failover_slots.pg_standby_slot_names, no need to wait for confirmations");
-			}
-		}
-
-		cached_standby_slot_names = pg_standby_slot_names;
+		my_slot_named = MyReplicationSlot != NULL &&
+			list_member_str(pg_standby_slot_names,
+							NameStr(MyReplicationSlot->data.name));
+		if (my_slot_named)
+			elog(DEBUG1,
+				 "found my slot in spock.pg_standby_slot_names, no need to wait for confirmations");
+		checked_gen = standby_slot_config_gen;
 	}
 
 	/*
-	 * If we already know all slots of interest satisfy the requirement we can
-	 * skip checks entirely. The assignment hook for
-	 * spock_failover_slots.pg_standby_slot_names invalidates the cache.
+	 * If we already know enough slots have flushed past this LSN we can skip
+	 * checks entirely.  The assign hooks invalidate the cache.
 	 */
-	if (standby_slot_names_oldest_flush_lsn >= commit_lsn ||
+	if (standby_slots_confirmed_lsn >= commit_lsn ||
+		my_slot_named ||
 		standby_slots_min_confirmed == 0 ||
-		list_length(pg_standby_slot_names) == 0)
+		pg_standby_slot_names == NIL)
 		return true;
 
 	return false;
 }
+
+/* Position of name in pg_standby_slot_names, or -1. */
+static int
+standby_slot_index(const char *name)
+{
+	ListCell   *lc;
+
+	foreach(lc, pg_standby_slot_names)
+	{
+		if (strcmp((const char *) lfirst(lc), name) == 0)
+			return foreach_current_index(lc);
+	}
+	return -1;
+}
+
+/*
+ * The highest LSN that at least "required" of the named slots found by the
+ * last scan have flushed, that is the required-th highest flush position.
+ * With every slot required this is the oldest one, but with fewer required a
+ * standby that is down does not hold it back, so the cache in
+ * skip_standby_slot_names() keeps moving and most messages skip the scan.
+ */
+static XLogRecPtr
+standby_slots_quorum_lsn(int required)
+{
+	int			n = list_length(pg_standby_slot_names);
+	XLogRecPtr	best = InvalidXLogRecPtr;
+
+	for (int i = 0; i < n; i++)
+	{
+		int			at_least = 0;
+
+		if (!standby_slot_state[i].found ||
+			standby_slot_state[i].flush <= best)
+			continue;
+
+		for (int j = 0; j < n; j++)
+		{
+			if (standby_slot_state[j].found &&
+				standby_slot_state[j].flush >= standby_slot_state[i].flush)
+				at_least++;
+		}
+		if (at_least >= required)
+			best = standby_slot_state[i].flush;
+	}
+	return best;
+}
+
+/*
+ * A named slot that does not exist can never confirm.  Say so once per slot,
+ * and again if it disappears after coming back.  Called before the quorum
+ * check, so a quorum the other slots meet does not hide it; a standby
+ * promoted with this setting inherited from the old primary has none of its
+ * physical slots.
+ */
+static void
+report_missing_standby_slots(int found, int required)
+{
+	int			n = list_length(pg_standby_slot_names);
+
+	for (int i = 0; i < n; i++)
+	{
+		StandbySlotState *st = &standby_slot_state[i];
+		const char *hint;
+
+		if (st->found)
+		{
+			st->warned = false;
+			continue;
+		}
+		if (st->warned)
+			continue;
+
+		/* Only promise a wait when the missing slots are needed. */
+		if (found >= required)
+			hint = "The slots that exist are enough for spock.standby_slots_min_confirmed, so replication is not held for it. Create the slot, or remove it from the setting.";
+		else if (wal_sender_timeout > 0)
+			hint = "Logical replication waits for it until wal_sender_timeout. Create the slot, or remove it from the setting.";
+		else
+			hint = "Logical replication waits for it indefinitely, since wal_sender_timeout is 0. Create the slot, or remove it from the setting.";
+
+		ereport(WARNING,
+				(errmsg("replication slot \"%s\" named in spock.pg_standby_slot_names does not exist",
+						(const char *) list_nth(pg_standby_slot_names, i)),
+				 errhint("%s", hint)));
+		st->warned = true;
+	}
+}
+
+#if PG_VERSION_NUM >= 170000
+/*
+ * If this walsender serves a failover slot and synchronized_standby_slots
+ * already names every slot named here, PostgreSQL applies that wait first
+ * and waits for all of them, so this quorum adds nothing.  Say so once per
+ * configuration.  A non-failover slot is not covered by the core mechanism,
+ * so this hold-back is the only one and nothing is logged.  Checked in the
+ * hold-back path rather than in the client-auth hook, so it is not logged for
+ * a failed login, the native slotsync worker or any other walsender whose
+ * slot this does not serve.
+ */
+static void
+log_redundant_standby_slots(void)
+{
+	static uint64 checked_gen = 0;
+	static char *checked_core = NULL;
+	const char *core = synchronized_standby_slots ? synchronized_standby_slots : "";
+	char	   *core_names;
+	List	   *core_list = NIL;
+	ListCell   *lc;
+	bool		covered = true;
+
+	/*
+	 * There is no assign hook to watch synchronized_standby_slots, so compare
+	 * its text with the last one checked.  This runs only when the cached
+	 * confirmed LSN did not cover the message.
+	 */
+	if (checked_gen == standby_slot_config_gen && checked_core != NULL &&
+		strcmp(checked_core, core) == 0)
+		return;
+	checked_gen = standby_slot_config_gen;
+	if (checked_core)
+		pfree(checked_core);
+	checked_core = MemoryContextStrdup(TopMemoryContext, core);
+
+	if (MyReplicationSlot == NULL || !MyReplicationSlot->data.failover ||
+		checked_core[0] == '\0')
+		return;
+
+	core_names = pstrdup(checked_core);
+	if (!SplitIdentifierString(core_names, ',', &core_list))
+		covered = false;
+	foreach(lc, pg_standby_slot_names)
+	{
+		if (!list_member_str(core_list, (const char *) lfirst(lc)))
+		{
+			covered = false;
+			break;
+		}
+	}
+	if (covered)
+		ereport(LOG,
+				(errmsg("spock.pg_standby_slot_names adds nothing while synchronized_standby_slots names the same slots"),
+				 errdetail("For this failover slot, synchronized_standby_slots waits for every slot it names before spock.standby_slots_min_confirmed is considered."),
+				 errhint("Usually set only one of them.")));
+	list_free(core_list);
+	pfree(core_names);
+}
+#endif
 
 /*
  * Wait until the nominated set of standbys, if any, have flushed past the
  * specified lsn. Standbys are identified by slot name, not application_name
  * like in synchronous_standby_names.
  *
- * confirmed_flush_lsn is used for physical slots, restart_lsn for logical
+ * restart_lsn is used for physical slots, confirmed_flush_lsn for logical
  * slots.
  *
  */
 static void
 wait_for_standby_confirmation(XLogRecPtr commit_lsn)
 {
-	XLogRecPtr	flush_pos = InvalidXLogRecPtr;
 	TimestampTz wait_start = GetCurrentTimestamp();
-
-	/*
-	 * Names of configured slots already reported missing, so each is warned
-	 * about once while it is missing and warned again if it disappears after
-	 * coming back, instead of one missing slot masking a later one.  The
-	 * assign hook rebuilds pg_standby_slot_names when the setting changes, so
-	 * a new list pointer resets the set.
-	 */
-	static List *missing_warned = NIL;
-	static List *missing_warned_for = NIL;
-
-#if PG_VERSION_NUM >= 170000
-	/* The list the "adds nothing" advisory below was last logged for. */
-	static List *advisory_for = NIL;
-#endif
 
 	if (skip_standby_slot_names(commit_lsn))
 		return;
 
 #if PG_VERSION_NUM >= 170000
-
-	/*
-	 * If this walsender serves a failover slot and synchronized_standby_slots
-	 * already names every slot named here, PostgreSQL applies that wait first
-	 * and waits for all of them, so this quorum adds nothing.  Say so once
-	 * per configuration.  A non-failover slot is not covered by the core
-	 * mechanism, so this hold-back is the only one and nothing is logged.
-	 * Checked here, in the hold-back path, rather than in the client-auth
-	 * hook, so it is not logged for a failed login, a reconnect, the native
-	 * slotsync worker or any other walsender whose slot this does not serve.
-	 */
-	if (advisory_for != pg_standby_slot_names)
-	{
-		advisory_for = pg_standby_slot_names;
-
-		if (MyReplicationSlot != NULL && MyReplicationSlot->data.failover &&
-			synchronized_standby_slots != NULL &&
-			synchronized_standby_slots[0] != '\0')
-		{
-			char	   *core_names = pstrdup(synchronized_standby_slots);
-			List	   *core_list = NIL;
-			ListCell   *lc;
-			bool		covered = true;
-
-			if (!SplitIdentifierString(core_names, ',', &core_list))
-				covered = false;
-			foreach(lc, pg_standby_slot_names)
-			{
-				if (!list_member_str(core_list, (const char *) lfirst(lc)))
-				{
-					covered = false;
-					break;
-				}
-			}
-			if (covered)
-				ereport(LOG,
-						(errmsg("spock.pg_standby_slot_names adds nothing while synchronized_standby_slots names the same slots"),
-						 errdetail("For this failover slot, synchronized_standby_slots waits for every slot it names before spock.standby_slots_min_confirmed is considered."),
-						 errhint("Use only one of them.")));
-			list_free(core_list);
-			pfree(core_names);
-		}
-	}
+	log_redundant_standby_slots();
 #endif
 
 	while (1)
 	{
 		int			i;
-		int			wait_slots_remaining;
-		int			slots_found = 0;
-		XLogRecPtr	oldest_flush_pos = InvalidXLogRecPtr;
+		int			nslots = list_length(pg_standby_slot_names);
+		int			required;
+		int			found = 0;
+		int			confirmed = 0;
 		int			rc;
 
+		/*
+		 * Default spock.standby_slots_min_confirmed (-1) is to wait for all
+		 * entries in spock.pg_standby_slot_names, and it cannot wait for more
+		 * slots than are named there.
+		 */
 		if (standby_slots_min_confirmed == -1)
-		{
-			/*
-			 * Default spock_failover_slots.standby_slots_min_confirmed (-1)
-			 * is to wait for all entries in
-			 * spock_failover_slots.pg_standby_slot_names.
-			 */
-			wait_slots_remaining = list_length(pg_standby_slot_names);
-		}
+			required = nslots;
 		else
-		{
-			/*
-			 * spock_failover_slots.standby_slots_min_confirmed cannot wait
-			 * for more slots than are named in the
-			 * spock_failover_slots.pg_standby_slot_names.
-			 */
-			wait_slots_remaining = Min(standby_slots_min_confirmed,
-									   list_length(pg_standby_slot_names));
-		}
+			required = Min(standby_slots_min_confirmed, nslots);
 
-		Assert(wait_slots_remaining > 0 &&
-			   wait_slots_remaining <= list_length(pg_standby_slot_names));
+		Assert(required > 0 && required <= nslots);
+
+		for (i = 0; i < nslots; i++)
+			standby_slot_state[i].found = false;
 
 		LWLockAcquire(ReplicationSlotControlLock, LW_SHARED);
 		for (i = 0; i < max_replication_slots; i++)
 		{
 			ReplicationSlot *s = &ReplicationSlotCtl->replication_slots[i];
+			XLogRecPtr	flush_pos;
+			int			idx;
 
 			if (!s->in_use)
 				continue;
 
-			if (!list_member_str(pg_standby_slot_names, NameStr(s->data.name)))
+			idx = standby_slot_index(NameStr(s->data.name));
+			if (idx < 0)
 				continue;
-			slots_found++;
 
 			SpinLockAcquire(&s->mutex);
 
@@ -2112,116 +2278,27 @@ wait_for_standby_confirmation(XLogRecPtr commit_lsn)
 
 			SpinLockRelease(&s->mutex);
 
-			/* We want to find out the min(flush pos) over all named slots */
-			if (oldest_flush_pos == InvalidXLogRecPtr ||
-				oldest_flush_pos > flush_pos)
-				oldest_flush_pos = flush_pos;
-
-			if (flush_pos >= commit_lsn && wait_slots_remaining > 0)
-				wait_slots_remaining--;
+			standby_slot_state[idx].flush = flush_pos;
+			standby_slot_state[idx].found = true;
+			found++;
+			if (flush_pos >= commit_lsn)
+				confirmed++;
 		}
 		LWLockRelease(ReplicationSlotControlLock);
 
-		/*
-		 * A named slot that does not exist can never confirm, so with every
-		 * slot required this waits until wal_sender_timeout and starts over.
-		 * Say so, before the quorum check so that a quorum the other slots
-		 * satisfy does not hide it; a standby promoted with this setting
-		 * inherited from the old primary has none of its physical slots. Warn
-		 * once per slot and re-warn a slot that disappears again, so a later
-		 * drop is not masked by an earlier one.
-		 */
-		if (missing_warned_for != pg_standby_slot_names)
-		{
-			list_free_deep(missing_warned);
-			missing_warned = NIL;
-			missing_warned_for = pg_standby_slot_names;
-		}
+		report_missing_standby_slots(found, required);
 
-		if (slots_found < list_length(pg_standby_slot_names))
-		{
-			ListCell   *lc;
-			List	   *still_missing = NIL;
-
-			foreach(lc, pg_standby_slot_names)
-			{
-				const char *name = (const char *) lfirst(lc);
-				bool		found = false;
-				MemoryContext old_ctx;
-
-				LWLockAcquire(ReplicationSlotControlLock, LW_SHARED);
-				for (i = 0; i < max_replication_slots; i++)
-				{
-					ReplicationSlot *s = &ReplicationSlotCtl->replication_slots[i];
-
-					if (s->in_use && strcmp(NameStr(s->data.name), name) == 0)
-					{
-						found = true;
-						break;
-					}
-				}
-				LWLockRelease(ReplicationSlotControlLock);
-
-				if (found)
-					continue;
-
-				if (!list_member_str(missing_warned, name))
-				{
-					/*
-					 * The warning fires ahead of the quorum check, so it also
-					 * reaches the case where the slots that do exist already
-					 * meet spock.standby_slots_min_confirmed and nothing
-					 * waits for the missing one.  Only promise a wait when
-					 * the missing slots are actually needed to reach the
-					 * quorum.
-					 */
-					int			required = standby_slots_min_confirmed == -1
-						? list_length(pg_standby_slot_names)
-						: Min(standby_slots_min_confirmed,
-							  list_length(pg_standby_slot_names));
-
-					if (slots_found >= required)
-						ereport(WARNING,
-								(errmsg("replication slot \"%s\" named in spock.pg_standby_slot_names does not exist",
-										name),
-								 errhint("The slots that exist already meet spock.standby_slots_min_confirmed, so replication is not held for it. Create the slot, or remove it from the setting.")));
-					else if (wal_sender_timeout > 0)
-						ereport(WARNING,
-								(errmsg("replication slot \"%s\" named in spock.pg_standby_slot_names does not exist",
-										name),
-								 errhint("Logical replication waits for it until wal_sender_timeout. Create the slot, or remove it from the setting.")));
-					else
-						ereport(WARNING,
-								(errmsg("replication slot \"%s\" named in spock.pg_standby_slot_names does not exist",
-										name),
-								 errhint("Logical replication waits for it indefinitely, since wal_sender_timeout is 0. Create the slot, or remove it from the setting.")));
-				}
-
-				/* Remember it in a context that outlives this call. */
-				old_ctx = MemoryContextSwitchTo(TopMemoryContext);
-				still_missing = lappend(still_missing, pstrdup(name));
-				MemoryContextSwitchTo(old_ctx);
-			}
-
-			list_free_deep(missing_warned);
-			missing_warned = still_missing;
-		}
-		else if (missing_warned != NIL)
-		{
-			/* Every named slot exists now; a later drop warns again. */
-			list_free_deep(missing_warned);
-			missing_warned = NIL;
-		}
-
-		if (wait_slots_remaining == 0)
+		if (confirmed >= required)
 		{
 			/*
-			 * If the oldest slot pos across all named slots advanced, update
-			 * the cache so we can skip future calls. It'll be invalidated if
-			 * the GUCs change.
+			 * Remember how far the quorum has got so we can skip future
+			 * calls. It'll be invalidated if the GUCs change.  Taken from
+			 * this scan alone, not raised from the old value, so a named slot
+			 * dropped, recreated or moved back since the last scan stops
+			 * counting; messages at or below the old value sent before this
+			 * scan still relied on it.
 			 */
-			if (standby_slot_names_oldest_flush_lsn < oldest_flush_pos)
-				standby_slot_names_oldest_flush_lsn = oldest_flush_pos;
+			standby_slots_confirmed_lsn = standby_slots_quorum_lsn(required);
 
 			return;
 		}
@@ -2255,7 +2332,7 @@ wait_for_standby_confirmation(XLogRecPtr commit_lsn)
 			ereport(
 					COMMERROR,
 					(errmsg(
-							"terminating walsender process due to spock_failover_slots.pg_standby_slot_names replication timeout")));
+							"terminating walsender process due to spock.pg_standby_slot_names replication timeout")));
 			proc_exit(0);
 		}
 
@@ -2527,9 +2604,9 @@ spock_init_failover_slot(void)
 	DefineCustomStringVariable(
 							   "spock.pg_standby_slot_names",
 							   "list of names of slot that must confirm changes before they're sent by the decoding plugin",
-							   "List of physical replication slots that must confirm durable "
-							   "flush of a given lsn before commits up to that lsn may be "
-							   "replicated to logical peers by the output plugin. "
+							   "List of replication slots, usually the physical slots of standbys, "
+							   "that must confirm durable flush of a given lsn before commits up "
+							   "to that lsn may be replicated to logical peers by the output plugin. "
 							   "Imposes ordering of physical replication before logical "
 							   "replication.",
 							   &standby_slot_names_raw, "", PGC_SIGHUP, GUC_LIST_INPUT,
@@ -2538,16 +2615,16 @@ spock_init_failover_slot(void)
 
 	DefineCustomIntVariable(
 							"spock.standby_slots_min_confirmed",
-							"Number of slots from spock_failover_slots.pg_standby_slot_names that must confirm lsn",
-							"Modifies behaviour of spock_failover_slots.pg_standby_slot_names so to allow "
+							"Number of slots from spock.pg_standby_slot_names that must confirm lsn",
+							"Modifies behaviour of spock.pg_standby_slot_names so to allow "
 							"logical replication of a transaction after at least "
-							"spock_failover_slots.standby_slots_min_confirmed physical peers have confirmed "
+							"spock.standby_slots_min_confirmed physical peers have confirmed "
 							"the transaction as durably flushed. "
-							"The value -1 (default) means all entries in spock_failover_slots.pg_standby_slot_names"
+							"The value -1 (default) means all entries in spock.pg_standby_slot_names "
 							"must confirm the write. The value 0 causes "
-							"spock_failover_slots.standby_slots_min_confirmedto be effectively ignored.",
-							&standby_slots_min_confirmed, -1, -1, 100, PGC_SIGHUP, 0, NULL, NULL,
-							NULL);
+							"spock.standby_slots_min_confirmed to be effectively ignored.",
+							&standby_slots_min_confirmed, -1, -1, 100, PGC_SIGHUP, 0, NULL,
+							assign_standby_slots_min_confirmed, NULL);
 
 	DefineCustomStringVariable(
 							   "spock.synchronize_slot_names",

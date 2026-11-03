@@ -455,10 +455,11 @@ spock.primary_dsn = ''
 
 ### `spock.pg_standby_slot_names`
 
-Comma-separated list of physical replication slot names that must confirm
-durable flush of a given LSN before the walsender is allowed to replicate
-logical changes beyond that LSN. This prevents a physical standby from
-falling behind a logical subscriber.
+Comma-separated list of replication slot names, usually the physical slots
+of standbys, that must confirm durable flush of a given LSN before the
+walsender is allowed to replicate logical changes beyond that LSN. A
+logical slot in the list counts by its confirmed flush position. This
+prevents a physical standby from falling behind a logical subscriber.
 
 ```ini
 spock.pg_standby_slot_names = 'physical_slot_1,physical_slot_2'
@@ -468,14 +469,14 @@ Used on every supported PostgreSQL version, with or without native slot
 sync. PostgreSQL's own `synchronized_standby_slots` has no equivalent of
 `spock.standby_slots_min_confirmed`: it waits for every slot it names, so
 with it one standby that is down stops logical replication to every
-subscriber. Use only one of them; setting both is redundant. For a failover slot
+subscriber. Usually set only one of them. For a failover slot
 `synchronized_standby_slots` is applied first and waits for all of its
 slots, so when it names every slot listed here this setting adds nothing,
 and the walsender logs that; a slot listed only here still counts. A
 listed slot that does not exist can never confirm: with the default `-1`
-the walsender waits until `wal_sender_timeout`, logs a warning naming the
-slot, and starts over, so after a promotion either create the slots on
-the new primary or clear the setting there.
+the walsender logs a warning naming the slot, waits until
+`wal_sender_timeout`, and starts over, so after a promotion either create
+the slots on the new primary or clear the setting there.
 
 ### `spock.standby_slots_min_confirmed`
 
