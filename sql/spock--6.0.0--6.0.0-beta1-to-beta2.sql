@@ -30,6 +30,15 @@ REVOKE ALL ON FUNCTION spock.slot_enable_failover() FROM PUBLIC;
 -- Beta 1's upgrade from 5.x did not set the failover flag on existing slots.
 SELECT spock.slot_enable_failover();
 
+-- Beta 1's upgrade from 5.x did not mark md5_agg parallel safe.
+CREATE OR REPLACE AGGREGATE spock.md5_agg (ORDER BY anyelement)
+(
+	STYPE = text,
+	SFUNC = spock.md5_agg_sfunc,
+	INITCOND = '',
+	PARALLEL = SAFE
+);
+
 CREATE TABLE IF NOT EXISTS spock.reserved_object (
     name              name    NOT NULL,
     kind              text    NOT NULL CHECK (kind IN ('schema', 'extension')),

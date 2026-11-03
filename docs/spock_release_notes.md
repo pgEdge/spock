@@ -10,7 +10,7 @@ will be removed at general availability.
 
 * Beta 1 and beta 2 both install extension version `6.0.0`, but the catalog
   differs between them, so a plain `ALTER EXTENSION spock UPDATE` does
-  nothing on a beta 1 node.  Update a beta 1 node in two steps instead:
+  nothing on a beta 1 node.  Update a beta 1 node this way instead:
 
   1. Pause DDL on the cluster.
   2. Install the beta 2 binaries and restart the node.
@@ -38,8 +38,9 @@ will be removed at general availability.
   functions and the trigger on `spock.node`, and the monitoring views and
   functions with their `pg_monitor` grants), removes
   `spock.wait_for_apply_worker()` and `spock.get_apply_worker_status()`,
-  and sets the `failover` flag on existing slots.  The second only sets the
-  version name back to `6.0.0`.
+  marks `spock.md5_agg` parallel safe on a node upgraded from 5.x, and sets
+  the `failover` flag on existing slots.  The second only sets the version
+  name back to `6.0.0`.
 
   The `failover` flag matters on PostgreSQL 17 and 18, where native slot sync
   copies only flagged slots to a standby.  Beta 1's upgrade from 5.x did not
@@ -262,8 +263,11 @@ above.
   duplicate key error.  Each `INSERT` into a table with a unique index now
   takes a speculative insertion; see `spock.non_conflicting_inserts` above.
 * With three or more nodes, a conflict between two changes with the same
-  commit timestamp is decided by the existing row's real origin, so every
-  node picks the same winner.  The `CONFLICT: ... wins over ... by
+  commit timestamp is decided by the existing row's real origin, so nodes
+  that agree on every node's `tiebreaker` pick the same winner.  When the
+  row's origin is unknown, the applying node is used, as before.  A row
+  copied by the initial table sync records a local origin ID, which can
+  still be taken for a different node.  The `CONFLICT: ... wins over ... by
   tiebreaker` log messages now name the existing row's origin and the
   incoming change's origin instead of the current and remote node.
 * Table sync no longer fails with `SET TRANSACTION SNAPSHOT must be called
@@ -1259,8 +1263,8 @@ single step, through 5.0.13.  The upgrade:
 * adds the `node_info_broadcast_trigger` trigger on `spock.node`,
 * adds the monitoring views and functions, and grants the read side to
   `pg_monitor`,
-* refreshes the parallel-safety attributes on `spock.md5_agg_sfunc` and
-  `spock.spock_gen_slot_name`,
+* refreshes the parallel-safety attributes on `spock.md5_agg_sfunc`,
+  `spock.md5_agg` and `spock.spock_gen_slot_name`,
 * turns on the `failover` flag for existing logical slots by calling
   `spock.slot_enable_failover()`, so PostgreSQL 17 and 18 slot synchronization
   picks them up. This is a no-op on PostgreSQL 16 and older and on a standby,
