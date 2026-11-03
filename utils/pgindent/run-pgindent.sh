@@ -61,15 +61,48 @@ echo "Formatting $NFILES tracked source files"
 # ------------------------------------------------------------------
 # 1. Fetch PostgreSQL core typedefs from buildfarm for each branch
 # ------------------------------------------------------------------
+# The buildfarm has answered with an empty list and a 200 status, which
+# curl -f accepts, so check the size too.  On any failure, take the core
+# typedefs from the committed typedefs.list instead.  It also holds the
+# Spock typedefs from its last run, which only adds names that may no
+# longer exist; the current ones are extracted again below.
+MIN_BRANCH_TYPEDEFS=1000
+
 echo "Fetching PostgreSQL core typedefs from buildfarm..."
 > "$TMPFILE"
+FETCH_OK=1
 for branch in $PG_BRANCHES; do
     echo "  $branch"
-    curl -sf "$BUILDFARM_URL?branch=$branch" >> "$TMPFILE" || {
-        echo "ERROR: failed to fetch typedefs for $branch from $BUILDFARM_URL" >&2
-        exit 1
-    }
+    if ! curl -sf "$BUILDFARM_URL?branch=$branch" > "$TMPFILE.branch"; then
+        echo "WARNING: failed to fetch typedefs for $branch from $BUILDFARM_URL" >&2
+        FETCH_OK=0
+        break
+    fi
+    BRANCH_COUNT=$(wc -l < "$TMPFILE.branch" | tr -d '[:space:]')
+    if [ "$BRANCH_COUNT" -lt "$MIN_BRANCH_TYPEDEFS" ]; then
+        echo "WARNING: buildfarm returned only $BRANCH_COUNT typedefs for $branch" >&2
+        FETCH_OK=0
+        break
+    fi
+    cat "$TMPFILE.branch" >> "$TMPFILE"
 done
+
+if [ "$FETCH_OK" -eq 0 ]; then
+    COMMITTED_COUNT=0
+    if [ -f "$TYPEDEFS" ]; then
+        COMMITTED_COUNT=$(wc -l < "$TYPEDEFS" | tr -d '[:space:]')
+    fi
+    if [ "$COMMITTED_COUNT" -lt "$MIN_BRANCH_TYPEDEFS" ]; then
+        echo "ERROR: no usable typedefs from the buildfarm or $TYPEDEFS" >&2
+        exit 1
+    fi
+    echo "WARNING: using the core typedefs in the committed typedefs.list" >&2
+    # Show the fallback in the pull request checks as well.
+    if [ -n "${GITHUB_ACTIONS:-}" ]; then
+        echo "::warning::buildfarm typedefs unavailable; used the committed typedefs.list"
+    fi
+    cp "$TYPEDEFS" "$TMPFILE"
+fi
 CORE_COUNT=$(wc -l < "$TMPFILE" | tr -d '[:space:]')
 
 # ------------------------------------------------------------------
