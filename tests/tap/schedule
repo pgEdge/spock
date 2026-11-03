@@ -54,3 +54,4 @@ test: 108_apply_unknown_column_exception
 test: 109_structure_sync_error_report
 test: 116_lww_frozen_local_row
 test: 117_call_rollback_extended_protocol
+test: 120_add_node_progress_snapshot
