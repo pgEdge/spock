@@ -36,6 +36,7 @@
 
 #include "parser/parse_coerce.h"
 
+#include "postmaster/interrupt.h"
 #include "replication/origin.h"
 #include "replication/reorderbuffer.h"
 
@@ -905,6 +906,9 @@ spock_supervisor_on_exit(int code, Datum arg)
 		elog(LOG, "spock supervisor: shutdown drain timed out, "
 			 "SHUTDOWN forensic snapshot may be incomplete");
 
+	/* The workers have reported their exit; write the history and counters. */
+	spock_monitor_flush(true);
+
 	spock_group_resource_dump();
 	spock_rmgr_log_resource_dump(SPOCK_DUMP_SHUTDOWN, NULL);
 }
@@ -917,6 +921,7 @@ spock_supervisor_main(Datum main_arg)
 {
 	/* Establish signal handlers. */
 	pqsignal(SIGTERM, handle_sigterm);
+	pqsignal(SIGHUP, SignalHandlerForConfigReload);
 	BackgroundWorkerUnblockSignals();
 
 	before_shmem_exit(spock_supervisor_on_exit, (Datum) 0);
@@ -950,6 +955,12 @@ spock_supervisor_main(Datum main_arg)
 
 		CHECK_FOR_INTERRUPTS();
 
+		if (ConfigReloadPending)
+		{
+			ConfigReloadPending = false;
+			ProcessConfigFile(PGC_SIGHUP);
+		}
+
 		if (SpockCtx->subscriptions_changed)
 		{
 			/*
@@ -963,9 +974,12 @@ spock_supervisor_main(Datum main_arg)
 			CommitTransactionCommand();
 		}
 
+		/* The on-disk copy of the event history and the counters. */
+		spock_monitor_flush(false);
+
 		rc = WaitLatch(&MyProc->procLatch,
 					   WL_LATCH_SET | WL_TIMEOUT | WL_POSTMASTER_DEATH,
-					   180000L);
+					   spock_monitor_flush_timeout(180000L));
 
 		ResetLatch(&MyProc->procLatch);
 

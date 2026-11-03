@@ -118,14 +118,13 @@ is_true(2, "SELECT count(*) >= 1 FROM spock.events " .
 # =============================================================================
 # The provider records the end of the stream when the subscriber goes away
 # =============================================================================
-# n1's history starts at its restart above: one stream_started so far, and
-# no stream_stopped, since nothing but a stream that ends records one.
-my $started = scalar_query(1, "SELECT count(*) FROM spock.events " .
-                              "WHERE event_type = 'stream_started'");
-is(scalar_query(1, "SELECT count(*) FROM spock.events WHERE event_type = 'stream_stopped'"),
-   '0', 'no stream has stopped since the provider came back');
+# n1's history reaches back over its restart above, so count from here:
+# nothing but a stream that ends records a stream_stopped.
+my $stopped = scalar_query(1, "SELECT count(*) FROM spock.events " .
+                              "WHERE event_type = 'stream_stopped' " .
+                              "AND detail = 'slot spk_regression_n1_sub_n2_n1'");
 psql_or_bail(2, "SELECT spock.sub_disable('sub_n2_n1')");
-ok(poll_query_until(1, "SELECT count(*) = $started FROM spock.events " .
+ok(poll_query_until(1, "SELECT count(*) = $stopped + 1 FROM spock.events " .
                        "WHERE event_type = 'stream_stopped' " .
                        "AND detail = 'slot spk_regression_n1_sub_n2_n1'", 't', 60),
    'stream_stopped is recorded on the provider when the subscriber stops');

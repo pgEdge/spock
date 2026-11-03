@@ -224,7 +224,16 @@ accumulate.
 view keeps in shared memory. Once the history is full the oldest event is
 dropped for each new one. The parameter accepts values from `16` to
 `1048576` (the default is `1024`) and can only be set when the postmaster
-starts.
+starts. The on-disk copy written under `spock.monitor_flush_interval` keeps
+more events than the ring; `spock.event_log()` reads them.
+
+### `spock.event_log_max_size`
+
+`spock.event_log_max_size` is the size at which the on-disk event log,
+`PGDATA/spock/events.log`, is rotated: it is renamed to `events.log.old`
+and a new log is started, so between one and two times this size is kept.
+The parameter accepts values from `1MB` upwards (the default is `64MB`)
+and takes effect on a configuration reload.
 
 ### `spock.exception_logging`
 
@@ -711,6 +720,18 @@ This setting takes effect on `pg_reload_conf()` (no restart required).
 ```ini
 spock.resolutions_retention_days = 100
 ```
+
+### `spock.monitor_flush_interval`
+
+`spock.monitor_flush_interval` is how often the supervisor writes the event
+history of `spock.events` and the counters of `spock.subscription_stats`
+and `spock.channel_table_stats` to files under `PGDATA/spock/`, from where
+they are read back when the server starts, so that a restart or a crash
+keeps them. Warnings and errors are written as soon as they are recorded.
+The parameter accepts values from `0` to `1h` (the default is `5s`) and
+takes effect on a configuration reload. `0` turns the on-disk copy off and
+nothing is read back at the next start. See [History across
+restarts](monitoring/node_monitoring.md#history-across-restarts).
 
 ### `spock.stats_max_entries`
 

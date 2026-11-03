@@ -18,8 +18,8 @@
  *
  * The event ring and the counters are not transactional: an event is
  * recorded when the reporting code runs, whether or not its transaction
- * later commits.  Both survive worker restarts but not a postmaster
- * restart.
+ * later commits.  Both survive worker restarts, and a postmaster restart
+ * or a crash through the on-disk copy kept by spock_monitor_persist.c.
  *
  * Copyright (c) 2022-2026, pgEdge, Inc.
  * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
@@ -96,18 +96,6 @@ PG_FUNCTION_INFO_V1(spock_wait_slot_confirm_lsn);
 
 #define SPOCK_MONITOR_TRANCHE_NAME	"spock_monitor"
 
-/* Shared memory header of the event history. */
-typedef struct SpockMonitorShmem
-{
-	LWLock	   *lock;			/* protects the ring below */
-	TimestampTz started_at;		/* when shared memory was initialized */
-	uint64		next_event_id;
-	int			event_capacity;
-	int			event_head;		/* index of the oldest event */
-	int			event_count;
-	SpockMonitorEvent events[FLEXIBLE_ARRAY_MEMBER];
-} SpockMonitorShmem;
-
 typedef enum SpockMonitorSeverity
 {
 	SPOCK_SEVERITY_INFO,
@@ -150,6 +138,7 @@ static const SpockMonitorEventInfo SpockMonitorEventInfos[SPOCK_EVENT_NUM_TYPES]
 	{"repair_mode_enabled", SPOCK_SEVERITY_WARNING},
 	{"repair_mode_disabled", SPOCK_SEVERITY_INFO},
 	{"extension_upgraded", SPOCK_SEVERITY_INFO},
+	{"node_started", SPOCK_SEVERITY_INFO},
 };
 
 static const char *const SpockMonitorSeverityNames[] = {
@@ -163,8 +152,8 @@ static const char *const SpockMonitorSeverityNames[] = {
 
 int			spock_event_history_size = 1024;
 
-static SpockMonitorShmem *SpockMonitorShm = NULL;
-static HTAB *SpockMonitorStatsHash = NULL;
+SpockMonitorShmem *SpockMonitorShm = NULL;
+HTAB	   *SpockMonitorStatsHash = NULL;
 static int	spock_monitor_max_stats = 0;
 
 /* Counters entry of the subscription served by this apply or sync worker. */
@@ -214,6 +203,8 @@ spock_monitor_init(void)
 							NULL,
 							NULL,
 							NULL);
+
+	spock_monitor_persist_init();
 }
 
 static Size
@@ -281,6 +272,20 @@ spock_monitor_shmem_startup(bool found)
 		SpockMonitorShm->event_capacity = spock_event_history_size;
 		SpockMonitorShm->event_head = 0;
 		SpockMonitorShm->event_count = 0;
+		SpockMonitorShm->ring_seq = 0;
+		SpockMonitorShm->flushed_seq = 0;
+		SpockMonitorShm->flush_generation = 0;
+		SpockMonitorShm->flush_requested = false;
+		SpockMonitorShm->last_flush_time = 0;
+		SpockMonitorShm->restored = false;
+		SpockMonitorShm->prior_shutdown_clean = false;
+		SpockMonitorShm->restored_events = 0;
+		SpockMonitorShm->restored_stats = 0;
+		SpockMonitorShm->restored_flush_time = 0;
+
+		/* The ring goes to disk as it is, padding included. */
+		memset(SpockMonitorShm->events, 0,
+			   mul_size(sizeof(SpockMonitorEvent), spock_event_history_size));
 	}
 
 	memset(&hctl, 0, sizeof(hctl));
@@ -292,6 +297,10 @@ spock_monitor_shmem_startup(bool found)
 										  &hctl,
 										  HASH_ELEM | HASH_BLOBS |
 										  HASH_FIXED_SIZE);
+
+	/* With the structures in place, read back what the last run wrote. */
+	if (!found)
+		spock_monitor_restore();
 }
 
 
@@ -311,21 +320,16 @@ spock_monitor_shmem_startup(bool found)
  * raised after this process has given up its PGPROC, as a walsender's
  * stream flag stays set on FATAL: there is nothing to wait with.
  */
-static void
-spock_monitor_append_event(SpockMonitorEventType type, Oid subid,
-						   XLogRecPtr lsn, int sqlerrcode,
-						   const char *detail)
+/*
+ * Put one entry into the ring, dropping the oldest one when full.  The
+ * caller holds the ring lock exclusively, or is alone with shared memory
+ * at startup.  A new event, whose id is 0, gets the next one; an event
+ * read back from disk keeps its own, and a reset marker keeps 0.
+ */
+void
+spock_monitor_ring_put(const SpockMonitorEvent *event)
 {
-	SpockMonitorEvent *event;
 	int			idx;
-
-	if (SpockMonitorShm == NULL || MyProc == NULL)
-		return;
-
-	if (LWLockHeldByMe(SpockMonitorShm->lock))
-		return;
-
-	LWLockAcquire(SpockMonitorShm->lock, LW_EXCLUSIVE);
 
 	if (SpockMonitorShm->event_count == SpockMonitorShm->event_capacity)
 	{
@@ -340,18 +344,67 @@ spock_monitor_append_event(SpockMonitorEventType type, Oid subid,
 		SpockMonitorShm->event_count++;
 	}
 
-	event = &SpockMonitorShm->events[idx];
-	event->event_id = SpockMonitorShm->next_event_id++;
-	event->event_time = GetCurrentTimestamp();
-	event->event_type = type;
-	event->dboid = MyDatabaseId;
-	event->subid = subid;
-	event->pid = MyProcPid;
-	event->sqlerrcode = sqlerrcode;
-	event->lsn = lsn;
-	strlcpy(event->detail, detail, SPOCK_MONITOR_MESSAGE_LEN);
+	SpockMonitorShm->events[idx] = *event;
+	if (event->event_type != SPOCK_EVENT_RESET_MARKER && event->event_id == 0)
+		SpockMonitorShm->events[idx].event_id = SpockMonitorShm->next_event_id++;
+	SpockMonitorShm->ring_seq++;
+}
 
+/*
+ * Ask the supervisor to write the ring and the counters to disk at its
+ * next wakeup instead of at the next interval.  SetLatch() is safe from
+ * inside error reporting.  Called with the ring lock held or not; the
+ * flag is a plain store either way.
+ */
+void
+spock_monitor_request_flush(void)
+{
+	if (SpockMonitorShm == NULL || spock_monitor_flush_interval == 0)
+		return;
+
+	SpockMonitorShm->flush_requested = true;
+	if (SpockCtx != NULL && SpockCtx->supervisor != NULL)
+		SetLatch(&SpockCtx->supervisor->procLatch);
+}
+
+static void
+spock_monitor_append_event(SpockMonitorEventType type, Oid subid,
+						   XLogRecPtr lsn, int sqlerrcode,
+						   const char *detail)
+{
+	SpockMonitorEvent event;
+	uint64		unflushed;
+
+	if (SpockMonitorShm == NULL || MyProc == NULL)
+		return;
+
+	if (LWLockHeldByMe(SpockMonitorShm->lock))
+		return;
+
+	memset(&event, 0, sizeof(event));
+	event.event_time = GetCurrentTimestamp();
+	event.event_type = type;
+	event.dboid = MyDatabaseId;
+	event.subid = subid;
+	event.pid = MyProcPid;
+	event.sqlerrcode = sqlerrcode;
+	event.lsn = lsn;
+	strlcpy(event.detail, detail, SPOCK_MONITOR_MESSAGE_LEN);
+
+	LWLockAcquire(SpockMonitorShm->lock, LW_EXCLUSIVE);
+	spock_monitor_ring_put(&event);
+	unflushed = SpockMonitorShm->ring_seq - SpockMonitorShm->flushed_seq;
 	LWLockRelease(SpockMonitorShm->lock);
+
+	/*
+	 * A warning or an error is what a history is read for after a crash, so
+	 * it goes to disk right away.  Plain events wait for the interval, unless
+	 * the ring is filling faster than that: a quarter of it unflushed asks
+	 * for a write before anything is overwritten.
+	 */
+	if (SpockMonitorEventInfos[type].severity != SPOCK_SEVERITY_INFO ||
+		unflushed >= (uint64) (SpockMonitorShm->event_capacity / 4))
+		spock_monitor_request_flush();
 }
 
 /*
@@ -1194,6 +1247,18 @@ spock_event_row(const SpockMonitorEvent *event, Datum *values, bool *nulls)
 		nulls[EV_DETAIL] = true;
 }
 
+/* One row of spock.get_events() into the result of a set-returning function. */
+void
+spock_monitor_event_row_put(const SpockMonitorEvent *event,
+							ReturnSetInfo *rsinfo)
+{
+	Datum		values[EV_NUM_COLUMNS] = {0};
+	bool		nulls[EV_NUM_COLUMNS] = {0};
+
+	spock_event_row(event, values, nulls);
+	tuplestore_putvalues(rsinfo->setResult, rsinfo->setDesc, values, nulls);
+}
+
 Datum
 spock_get_events(PG_FUNCTION_ARGS)
 {
@@ -1228,6 +1293,9 @@ spock_get_events(PG_FUNCTION_ARGS)
 		Datum		values[EV_NUM_COLUMNS] = {0};
 		bool		nulls[EV_NUM_COLUMNS] = {0};
 
+		if (events[i].event_type == SPOCK_EVENT_RESET_MARKER)
+			continue;
+
 		spock_event_row(&events[i], values, nulls);
 		tuplestore_putvalues(rsinfo->setResult, rsinfo->setDesc, values, nulls);
 	}
@@ -1247,6 +1315,8 @@ spock_reset_events(PG_FUNCTION_ARGS)
 {
 	SpockMonitorEvent *kept;
 	int			nkept = 0;
+	int			nkept_unflushed = 0;
+	uint64		oldest;
 	int			i;
 
 	check_monitor_shmem();
@@ -1262,6 +1332,7 @@ spock_reset_events(PG_FUNCTION_ARGS)
 	LWLockAcquire(SpockMonitorShm->lock, LW_EXCLUSIVE);
 	kept = palloc(sizeof(SpockMonitorEvent) *
 				  Max(SpockMonitorShm->event_count, 1));
+	oldest = SpockMonitorShm->ring_seq - SpockMonitorShm->event_count;
 	for (i = 0; i < SpockMonitorShm->event_count; i++)
 	{
 		int			idx = (SpockMonitorShm->event_head + i) %
@@ -1271,14 +1342,42 @@ spock_reset_events(PG_FUNCTION_ARGS)
 		if (event->dboid == MyDatabaseId || !OidIsValid(event->dboid))
 			continue;
 		kept[nkept++] = *event;
+		if (oldest + i >= SpockMonitorShm->flushed_seq)
+			nkept_unflushed++;
 	}
 	for (i = 0; i < nkept; i++)
 		SpockMonitorShm->events[i] = kept[i];
 	SpockMonitorShm->event_head = 0;
 	SpockMonitorShm->event_count = nkept;
+
+	/*
+	 * The flusher finds the entries not yet on disk at the end of the ring,
+	 * counting back from ring_seq.  Packing moved them, so the count of
+	 * unflushed entries is what has to stay right: those dropped are not
+	 * written at all, those kept are still the tail.
+	 */
+	SpockMonitorShm->flushed_seq = SpockMonitorShm->ring_seq - nkept_unflushed;
+
+	/*
+	 * The event log on disk still has the dropped events.  A marker in the
+	 * ring, written to the log in order with the events, tells the restore
+	 * and spock.event_log() to forget those before it.
+	 */
+	if (spock_monitor_flush_interval > 0)
+	{
+		SpockMonitorEvent marker;
+
+		memset(&marker, 0, sizeof(marker));
+		marker.event_time = GetCurrentTimestamp();
+		marker.event_type = SPOCK_EVENT_RESET_MARKER;
+		marker.dboid = MyDatabaseId;
+		marker.pid = MyProcPid;
+		spock_monitor_ring_put(&marker);
+	}
 	LWLockRelease(SpockMonitorShm->lock);
 
 	pfree(kept);
+	spock_monitor_request_flush();
 	PG_RETURN_VOID();
 }
 
@@ -1778,6 +1877,7 @@ spock_reset_subscription_stats(PG_FUNCTION_ARGS)
 	LWLockRelease(SpockMonitorShm->lock);
 
 	spock_monitor_reset_conflicts(subid);
+	spock_monitor_request_flush();
 
 	PG_RETURN_VOID();
 }
@@ -1858,6 +1958,9 @@ enum
 	MS_CHANNEL_STATS_CAPACITY,
 	MS_CHANNEL_STATS_USED,
 	MS_CHANNEL_STATS_FULL,
+	MS_EVENTS_RESTORED,
+	MS_PRIOR_SHUTDOWN_CLEAN,
+	MS_LAST_FLUSH_TIME,
 	MS_NUM_COLUMNS
 };
 
@@ -1892,17 +1995,47 @@ spock_monitor_summary_workers(Datum *values, bool *nulls)
 
 /* The event and subscription statistics columns, under the monitor lock. */
 static void
-spock_monitor_summary_events(Datum *values)
+spock_monitor_summary_events(Datum *values, bool *nulls)
 {
+	int			i;
+	int			markers = 0;
+
 	LWLockAcquire(SpockMonitorShm->lock, LW_SHARED);
 	values[MS_STARTED_AT] = TimestampTzGetDatum(SpockMonitorShm->started_at);
 	values[MS_EVENTS_CAPACITY] = Int32GetDatum(SpockMonitorShm->event_capacity);
-	values[MS_EVENTS_RETAINED] = Int32GetDatum(SpockMonitorShm->event_count);
+
+	/* Reset markers sit in the ring but are not events. */
+	for (i = 0; i < SpockMonitorShm->event_count; i++)
+	{
+		int			idx = (SpockMonitorShm->event_head + i) %
+			SpockMonitorShm->event_capacity;
+
+		if (SpockMonitorShm->events[idx].event_type == SPOCK_EVENT_RESET_MARKER)
+			markers++;
+	}
+	values[MS_EVENTS_RETAINED] =
+		Int32GetDatum(SpockMonitorShm->event_count - markers);
 	values[MS_EVENTS_RECORDED] =
 		Int64GetDatum((int64) (SpockMonitorShm->next_event_id - 1));
 	values[MS_SUBSCRIPTION_STATS_CAPACITY] = Int32GetDatum(spock_monitor_max_stats);
 	values[MS_SUBSCRIPTION_STATS_USED] =
 		Int32GetDatum((int32) hash_get_num_entries(SpockMonitorStatsHash));
+
+	if (SpockMonitorShm->restored)
+	{
+		values[MS_EVENTS_RESTORED] =
+			Int32GetDatum(SpockMonitorShm->restored_events);
+		values[MS_PRIOR_SHUTDOWN_CLEAN] =
+			BoolGetDatum(SpockMonitorShm->prior_shutdown_clean);
+	}
+	else
+	{
+		nulls[MS_EVENTS_RESTORED] = true;
+		nulls[MS_PRIOR_SHUTDOWN_CLEAN] = true;
+	}
+	values[MS_LAST_FLUSH_TIME] =
+		timestamptz_or_null(SpockMonitorShm->last_flush_time,
+							&nulls[MS_LAST_FLUSH_TIME]);
 	LWLockRelease(SpockMonitorShm->lock);
 }
 
@@ -1922,7 +2055,7 @@ spock_get_monitor_summary(PG_FUNCTION_ARGS)
 	Assert(tupdesc->natts == MS_NUM_COLUMNS);
 
 	spock_monitor_summary_workers(values, nulls);
-	spock_monitor_summary_events(values);
+	spock_monitor_summary_events(values, nulls);
 
 	tuple = heap_form_tuple(tupdesc, values, nulls);
 
@@ -2379,6 +2512,7 @@ reset_channel_stats(PG_FUNCTION_ARGS)
 	SpockCtx->stats_hash_full = false;
 
 	LWLockRelease(SpockCtx->lock);
+	spock_monitor_request_flush();
 	PG_RETURN_VOID();
 }
 
