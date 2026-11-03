@@ -20,7 +20,7 @@ how much WAL is a slot holding back, and what happened recently.
 | `spock.settings` | parameter | The spock parameters and the core parameters replication depends on. |
 | `spock.events` | event | Recent state changes: enable, disable, restarts, errors, upgrades. |
 
-`spock.spock_info()` runs all of them one after another and returns the
+`spock.node_report()` runs all of them one after another and returns the
 node as a single text report; see [The full report](#the-full-report).
 
 All views are scoped to the current database. `spock.lag_tracker`,
@@ -269,7 +269,7 @@ SELECT event_time, event_type, subscription_name, detail
 
 ## The full report
 
-`spock.spock_info()` returns the whole node as text, section by section:
+`spock.node_report()` returns the whole node as text, section by section:
 system status, installed extensions, settings, node status, peers,
 subscriptions, subscription statistics, workers, pending exceptions,
 replication slots, replication sets, tables in no replication set, table
@@ -280,8 +280,8 @@ lists as aligned tables. A section whose query fails, for example
 prints one error line and the report continues.
 
 ```sql
-SELECT * FROM spock.spock_info();
-SELECT * FROM spock.spock_info(200);   -- list up to 200 events, exceptions and resolutions
+SELECT * FROM spock.node_report();
+SELECT * FROM spock.node_report(200);   -- list up to 200 events, exceptions and resolutions
 ```
 
 In `psql`, `\pset format unaligned` and `\o report.txt` before the call
@@ -490,7 +490,7 @@ management functions. Grant it only to trusted roles, and treat every
 function that changes something as needing a superuser. Members of
 `pg_monitor` cannot reset counters or events: `spock.reset_events()` and
 `spock.reset_subscription_stats()` stay with the superuser. The
-`spock_info()` sections on `spock.tables`, `spock.lag_tracker`,
+`node_report()` sections on `spock.tables`, `spock.lag_tracker`,
 `spock.exception_log` and `spock.resolutions` need `SELECT` on those,
 which the grant does not include; without it each shows as one error line.
 

@@ -64,7 +64,7 @@ The following user functions are available via the Spock extension:
 | spock.reset_events | Clears the event history shown by `spock.events`. |
 | spock.reset_subscription_stats | Resets the activity and conflict counters of one subscription, or of all subscriptions. |
 | spock.report_section | Renders the rows of a query as an aligned text table or as one block per row. |
-| spock.spock_info | Returns the whole node as a text report: versions, settings and every monitoring view. |
+| spock.node_report | Returns the whole node as a text report: versions, settings and every monitoring view. |
 | spock_max_proto_version | The highest Spock native protocol supported by the current binary/build. Defined in the public schema so invoked without the `spock.` prefix. |
 | spock_min_proto_version | The lowest build for which this Spock binary is backward compatible. Defined in the public schema so invoked without the `spock.` prefix. |
 | spock.table_data_filtered | Scans the specified table and returns rows that match the row filter from the specified replication set(s).  Row filters are added to a replication set when adding a table with `repset_add_table`. |

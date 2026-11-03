@@ -381,7 +381,7 @@ replication state through a set of views in the `spock` schema:
 * `spock.system_status` for the health of the host and the instance: disk
   space of the data and WAL volumes, load, connections, long and idle
   transactions, wraparound age, archiving.
-* `spock.spock_info()` returns the whole node as one text report: host and
+* `spock.node_report()` returns the whole node as one text report: host and
   versions, installed extensions, settings and every view in turn.
 * Errors are kept with SQLSTATE, DETAIL, CONTEXT, time and pid, classified
   into deadlocks, lock timeouts, constraint violations and resource errors,

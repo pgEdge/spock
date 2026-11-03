@@ -246,7 +246,7 @@ SELECT count(*) AS pending_exceptions FROM spock.get_pending_exceptions();
 
 -- The report lists every section and never fails as a whole
 SELECT line
-  FROM spock.spock_info(5) AS line
+  FROM spock.node_report(5) AS line
  WHERE line LIKE '== % =='
  ORDER BY line;
 
@@ -263,7 +263,7 @@ SELECT line
 
 SELECT count(*) > 30 AS has_content,
        count(*) FILTER (WHERE line LIKE '(error:%') AS failed_sections
-  FROM spock.spock_info() AS line;
+  FROM spock.node_report() AS line;
 
 -- A role without EXECUTE on the revoked functions still gets the report:
 -- the header shows the host as unknown and each such section is one
@@ -273,12 +273,12 @@ GRANT USAGE ON SCHEMA spock TO monitor_reader;
 SET ROLE monitor_reader;
 SELECT line LIKE 'Spock node report: database ' || current_database() ||
        ' on (unknown) at %' AS header_without_host
-  FROM spock.spock_info(0) AS line
+  FROM spock.node_report(0) AS line
  LIMIT 1;
 SELECT count(*) FILTER (WHERE line LIKE '== % ==') > 0 AS has_sections,
        count(*) FILTER (WHERE line LIKE '(error: permission denied%') > 0
          AS has_denied_sections
-  FROM spock.spock_info(0) AS line;
+  FROM spock.node_report(0) AS line;
 -- pg_ls_waldir() is pg_monitor only; the wrapper lets this role read the
 -- total, which is all the views need
 SELECT spock.wal_size_bytes() > 0 AS wal_size_readable;
@@ -343,7 +343,7 @@ SELECT DISTINCT event_type, severity, sqlstate, pid IS NOT NULL AS has_pid
  ORDER BY event_type;
 
 SELECT count(*) > 0 AS exception_reported
-  FROM spock.spock_info() AS line
+  FROM spock.node_report() AS line
  WHERE line LIKE '%monitor_errors_positive%';
 
 TRUNCATE spock.exception_log;
