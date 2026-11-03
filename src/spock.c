@@ -55,6 +55,7 @@
 
 #include "spock_apply.h"
 #if PG_VERSION_NUM >= 180000
+#include "spock_channel_stat.h"
 #include "spock_conflict_stat.h"
 #endif
 #include "spock_executor.h"
@@ -961,6 +962,14 @@ spock_supervisor_main(Datum main_arg)
 			ProcessConfigFile(PGC_SIGHUP);
 		}
 
+		/*
+		 * The on-disk copy of the event history and the counters.  Before the
+		 * workers are started: the first flush of a run puts back what a
+		 * crash took out of the statistics system, which has to happen before
+		 * an apply worker counts into it.
+		 */
+		spock_monitor_flush(false);
+
 		if (SpockCtx->subscriptions_changed)
 		{
 			/*
@@ -973,9 +982,6 @@ spock_supervisor_main(Datum main_arg)
 			start_manager_workers();
 			CommitTransactionCommand();
 		}
-
-		/* The on-disk copy of the event history and the counters. */
-		spock_monitor_flush(false);
 
 		rc = WaitLatch(&MyProc->procLatch,
 					   WL_LATCH_SET | WL_TIMEOUT | WL_POSTMASTER_DEATH,
@@ -1573,7 +1579,8 @@ _PG_init(void)
 	emit_log_hook = log_message_filter;
 
 #if PG_VERSION_NUM >= 180000
-	/* Spock replication conflict statistics */
+	/* Spock replication conflict and per-table counters */
 	spock_stat_register_conflict_stat();
+	spock_stat_register_channel_stat();
 #endif
 }

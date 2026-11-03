@@ -87,9 +87,11 @@ identifier, the record size, a flags word with one bit,
 `CLEAN_SHUTDOWN`, the time of the last flush and the ring's next event
 id at that flush. Each record is one `SpockMonitorEvent` followed by a
 `pg_crc32c` of the event. The reader stops at the first short read or
-bad CRC, which is how a tail torn by a crash is cut off. Records are
-never rewritten, so a flush is one `write()` of the new records and one
-`fsync()`.
+bad CRC, which is how a tail torn by a crash is cut off. The first
+flush of a run truncates such a tail, a partial record as well as whole
+records that never made it to disk, so what this run appends follows a
+readable record. Records are never rewritten after that, so a flush is
+one `write()` of the new records and one `fsync()`.
 
 When `events.log` grows past `spock.event_log_max_size` the supervisor
 renames it to `events.log.old` with `durable_rename()` and starts a new
@@ -365,15 +367,25 @@ counters under `pgstat_lock_entry()`. That is the one place spock
 writes to a shared statistics entry directly; `spock_conflict_stat.c`
 does the same in its flush callback.
 
-### Order of work
+### What was built
 
-1. Event log and stats snapshot, all versions. This is what answers the
-   crash question and is independent of the rest.
-2. Channel counters to a new kind on 18. Largest gain, smallest
-   surface: one writer, one reader, one reset function.
-3. Subscription counters to a new kind on 18, with the split above.
-4. Documentation of restart and reset behaviour per version in
-   `docs/monitoring/node_monitoring.md`.
+1. Event log and stats snapshot, all versions (issue #700).
+2. Channel counters as kind 31 on 18 (issue #699), with one change to
+   the layout above: the counts are not pending entries flushed by
+   `pgstat_report_stat()`, because a walsender runs every output plugin
+   callback inside a transaction and never calls it. Both the apply
+   worker and the walsender tally the rows of a transaction in process
+   memory and add them to the shared entries when it commits, under
+   the entry lock. A discarded or rolled back transaction adds nothing,
+   which the shared memory hash could not tell. The snapshot file has
+   two more sections for the channel and conflict entries, and the
+   supervisor seeds them back before its first write after a start.
+3. The subscription counters stay in shared memory on every version.
+   With the on-disk copy they survive a crash, which the statistics
+   system cannot offer, and their `last_*` times and error text have no
+   place there; moving the numeric half would split one row over two
+   stores that behave differently after a crash. They can move later if
+   that trade-off changes.
 
 The rough sizes in the request hold: 200 to 300 lines for the channel
 counters and 150 to 250 for the subscription counters, plus the

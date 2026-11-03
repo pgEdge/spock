@@ -46,6 +46,7 @@
 #include "spock_proto_native.h"
 #include "spock_queue.h"
 #include "spock_repset.h"
+#include "spock_channel_stat.h"
 #include "spock_monitor.h"
 #include "spock_worker.h"
 #include "spock_shmem.h"
@@ -564,6 +565,11 @@ pg_decode_begin_txn(LogicalDecodingContext *ctx, ReorderBufferTXN *txn)
 	/* Reset repair mode */
 	set_repair_mode(false);
 
+#if PG_VERSION_NUM >= 180000
+	/* Row counts of a transaction that was not sent to the end are dropped. */
+	spock_stat_channel_discard();
+#endif
+
 	/*
 	 * Check if we are a member of a replication slot-group and if so, if
 	 * another member is already working on this transaction. If nobody does,
@@ -763,6 +769,11 @@ pg_decode_commit_txn(LogicalDecodingContext *ctx, ReorderBufferTXN *txn,
 	OutputPluginPrepareWrite(ctx, true);
 	data->api->write_commit(ctx->out, data, txn, commit_lsn);
 	OutputPluginWrite(ctx, true);
+
+#if PG_VERSION_NUM >= 180000
+	/* The transaction went out whole; count its rows. */
+	spock_stat_channel_flush();
+#endif
 
 	/*
 	 * Now is a good time to get rid of invalidated relation metadata entries

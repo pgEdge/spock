@@ -176,5 +176,62 @@ is(scalar_query(2, "SELECT count(*) FROM spock.events WHERE event_type = 'node_s
 psql_or_bail(2, "ALTER SYSTEM RESET spock.monitor_flush_interval");
 psql_or_bail(2, "ALTER SYSTEM RESET spock.event_history_size");
 
+# =============================================================================
+# The log rotates at spock.event_log_max_size and keeps the rotated half
+# =============================================================================
+clean_restart(2);    # the resets above take effect: the copy is on again
+ok(replicating(2, 'sub_n2_n1'), 'n2 replicates with the copy back on');
+psql_or_bail(2, "ALTER SYSTEM SET spock.event_log_max_size = '1MB'");
+psql_or_bail(2, "SELECT pg_reload_conf()");
+
+my $log_min = scalar_query(2, "SELECT min(event_id) FROM spock.event_log(0, 100000)");
+# A record is a little under 600 bytes: 3000 events pass 1MB once and stay
+# under 2MB, so events.log is renamed to events.log.old exactly once.  Each
+# round fits the ring and is written out before the next.
+for my $round (1 .. 5)
+{
+    psql_or_bail(2, "DO \$\$ BEGIN FOR i IN 1..300 LOOP " .
+                    "PERFORM spock.repair_mode(true); " .
+                    "PERFORM spock.repair_mode(false); " .
+                    "END LOOP; END \$\$");
+    is_true(2, "SELECT spock.monitor_flush()", "round $round of events is written");
+}
+ok(-f "$node_dirs->[1]/spock/events.log.old", 'events.log was rotated');
+is_true(2, "SELECT count(*) >= 3000 FROM spock.event_log(0, 100000)",
+        'event_log() reads the rotated log and the current one');
+is(scalar_query(2, "SELECT min(event_id) FROM spock.event_log(0, 100000)"), $log_min,
+   'the oldest event survived the rotation');
+
+# Both halves are read back after a crash
+crash_and_start(2);
+ok(replicating(2, 'sub_n2_n1'), 'n2 replicates after the crash with a rotated log');
+is_true(2, "SELECT count(*) >= 3000 FROM spock.event_log(0, 100000)",
+        'both halves of the log are back');
+is(scalar_query(2, "SELECT min(event_id) FROM spock.event_log(0, 100000)"), $log_min,
+   'the oldest event is still the oldest after the crash');
+psql_or_bail(2, "ALTER SYSTEM RESET spock.event_log_max_size");
+psql_or_bail(2, "SELECT pg_reload_conf()");
+
+# =============================================================================
+# A tail torn by a crash is cut off; what follows it is written readably
+# =============================================================================
+my $events_whole = scalar_query(2, "SELECT count(*) FROM spock.event_log(0, 100000)");
+my $max_whole    = scalar_query(2, "SELECT max(event_id) FROM spock.event_log(0, 100000)");
+system_or_bail("$pg_bin/pg_ctl", '-D', $node_dirs->[1], '-m', 'fast', '-w', 'stop');
+open(my $log, '>>', "$node_dirs->[1]/spock/events.log")
+    or BAIL_OUT("cannot open events.log: $!");
+binmode($log);
+print $log 'torn' x 300;    # two garbage records and a partial one
+close($log);
+system_or_bail("$pg_bin/pg_ctl", '-D', $node_dirs->[1], '-w', 'start');
+ok(wait_for_pg_ready($host, $node_ports->[1]), 'n2 starts with a torn event log');
+ok(replicating(2, 'sub_n2_n1'), 'n2 replicates with a torn event log');
+is_true(2, "SELECT count(*) >= $events_whole FROM spock.event_log(0, 100000) " .
+           "WHERE event_id <= $max_whole",
+        'the records before the tear were read');
+is_true(2, "SELECT spock.monitor_flush()", 'the log is written to again');
+is_true(2, "SELECT max(event_id) > $max_whole FROM spock.event_log(0, 100000)",
+        'events recorded after the tear are readable');
+
 destroy_cluster('Destroy test cluster');
 done_testing();

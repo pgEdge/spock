@@ -59,6 +59,10 @@
 #include "spock_monitor.h"
 #include "spock_worker.h"
 #include "spock.h"
+#if PG_VERSION_NUM >= 180000
+#include "spock_channel_stat.h"
+#include "spock_conflict_stat.h"
+#endif
 
 #include "spock_compat.h"
 
@@ -100,6 +104,10 @@ typedef struct SpockEventLogRecord
 	pg_crc32c	crc;			/* of the event */
 } SpockEventLogRecord;
 
+/*
+ * The counters.  The last two sections hold what the cumulative statistics
+ * system keeps on PostgreSQL 18 and later, and are empty before that.
+ */
 typedef struct SpockStatsFileHeader
 {
 	uint32		magic;
@@ -107,6 +115,8 @@ typedef struct SpockStatsFileHeader
 	uint64		system_identifier;
 	uint32		nsubscriptions; /* SpockStatsSubRecord entries */
 	uint32		nchannels;		/* SpockStatsChannelRecord entries */
+	uint32		nchannel_stats; /* SpockStatsChannelStatRecord entries */
+	uint32		nconflict_stats;	/* SpockStatsConflictStatRecord entries */
 	pg_crc32c	crc;			/* of everything after the header */
 } SpockStatsFileHeader;
 
@@ -129,6 +139,32 @@ typedef struct SpockStatsChannelRecord
 	int64		counter[SPOCK_STATS_NUM_COUNTERS];
 } SpockStatsChannelRecord;
 
+#if PG_VERSION_NUM >= 180000
+typedef struct SpockStatsChannelStatRecord
+{
+	Oid			dboid;
+	Oid			subid;
+	Oid			relid;
+	Spock_Stat_ChannelEntry stats;
+} SpockStatsChannelStatRecord;
+
+typedef struct SpockStatsConflictStatRecord
+{
+	Oid			dboid;
+	Oid			subid;
+	Spock_Stat_StatSubEntry stats;
+} SpockStatsConflictStatRecord;
+#endif
+
+/* A section of the counter file being built. */
+typedef struct SpockStatsSection
+{
+	char	   *data;
+	Size		record_size;
+	uint32		count;
+	uint32		room;
+} SpockStatsSection;
+
 int			spock_monitor_flush_interval = 5000;	/* ms */
 int			spock_event_log_max_size = 65536;	/* kB */
 
@@ -136,6 +172,8 @@ int			spock_event_log_max_size = 65536;	/* kB */
 static MemoryContext flush_context = NULL;
 static TimestampTz last_flush_at = 0;
 static bool clean_flag_cleared = false;
+static bool pgstat_reseeded = false;
+static bool log_tail_checked = false;
 static char *last_stats_image = NULL;
 static Size last_stats_len = 0;
 static int	flush_fd = -1;
@@ -156,6 +194,8 @@ static void spock_monitor_rotate_event_log(void);
 static void spock_monitor_flush_events(bool shutdown, TimestampTz now);
 static char *spock_monitor_stats_image(Size *len);
 static void spock_monitor_flush_stats(void);
+static char *spock_monitor_read_stats(Size *len);
+static void spock_monitor_reseed_pgstat(void);
 static bool spock_monitor_scan_file(const char *name,
 									SpockEventLogCallback cb, void *arg,
 									SpockEventLogHeader *header);
@@ -343,6 +383,16 @@ spock_monitor_flush(bool shutdown)
 	PG_TRY();
 	{
 		spock_monitor_flush_events(shutdown, now);
+
+		/*
+		 * Before the first snapshot of this run overwrites the file, put back
+		 * into the statistics system what a crash took out of it.
+		 */
+		if (!pgstat_reseeded)
+		{
+			spock_monitor_reseed_pgstat();
+			pgstat_reseeded = true;
+		}
 		spock_monitor_flush_stats();
 
 		LWLockAcquire(SpockMonitorShm->lock, LW_EXCLUSIVE);
@@ -419,9 +469,10 @@ spock_monitor_rotate_event_log(void)
 /*
  * Open the event log for appending and return its size.  A missing or
  * empty file gets a header.  A file of another server, version or record
- * layout is rotated away rather than appended to, and a tail that is not
- * a whole record, left by a write that was cut short, is truncated so
- * that the records written now follow a readable one.
+ * layout is rotated away rather than appended to, and a tail left by a
+ * write that was cut short, a partial record or whole records that never
+ * made it to disk, is truncated once per run, so that the records written
+ * now follow a readable one.
  */
 static int
 spock_monitor_open_event_log(off_t *size, uint64 next_event_id)
@@ -486,6 +537,62 @@ retry:
 					(errmsg("spock event log \"%s\" ended in a partial record, truncated",
 							path)));
 		}
+
+		/*
+		 * A crash can also leave whole-sized records that were never written,
+		 * as a file whose size grew before its data was out.  A scan stops at
+		 * the first record with a bad CRC, so anything appended after one
+		 * would never be read again.  Records written by this run are known
+		 * to be whole, so the check is done once, at the first flush of the
+		 * run.
+		 */
+		if (!log_tail_checked)
+		{
+			SpockEventLogRecord *batch;
+			off_t		offset = sizeof(SpockEventLogHeader);
+			bool		readable = true;
+
+			batch = palloc(SPOCK_EVENT_LOG_BATCH * sizeof(SpockEventLogRecord));
+			while (readable && offset < len)
+			{
+				int			n = (int) Min((len - offset) / sizeof(SpockEventLogRecord),
+										  SPOCK_EVENT_LOG_BATCH);
+				int			i;
+
+				spock_monitor_read_all(fd, batch,
+									   n * sizeof(SpockEventLogRecord),
+									   offset, path);
+				for (i = 0; i < n; i++)
+				{
+					pg_crc32c	crc;
+
+					INIT_CRC32C(crc);
+					COMP_CRC32C(crc, &batch[i].event,
+								sizeof(SpockMonitorEvent));
+					FIN_CRC32C(crc);
+					if (!EQ_CRC32C(crc, batch[i].crc))
+					{
+						readable = false;
+						break;
+					}
+					offset += sizeof(SpockEventLogRecord);
+				}
+			}
+			pfree(batch);
+
+			if (offset < len)
+			{
+				if (ftruncate(fd, offset) != 0)
+					ereport(ERROR,
+							(errcode_for_file_access(),
+							 errmsg("could not truncate file \"%s\": %m",
+									path)));
+				ereport(LOG,
+						(errmsg("spock event log \"%s\" ended in %lld unreadable bytes, truncated",
+								path, (long long) (len - offset))));
+				len = offset;
+			}
+		}
 	}
 	else
 	{
@@ -500,6 +607,7 @@ retry:
 		clean_flag_cleared = true;
 	}
 
+	log_tail_checked = true;
 	*size = len;
 	return fd;
 }
@@ -630,26 +738,87 @@ spock_monitor_flush_events(bool shutdown, TimestampTz now)
  * The counters as one block of bytes: header, subscription records,
  * channel records.
  */
+#if PG_VERSION_NUM >= 180000
+/*
+ * The next free record of a section, or NULL when it is full.  The
+ * sections are sized before the statistics hash is scanned, because the
+ * scan holds a partition lock of that hash and an allocation must not
+ * fail under it; an entry that does not fit waits for the next flush.
+ */
+static void *
+spock_monitor_section_add(SpockStatsSection *section)
+{
+	if (section->count == section->room)
+		return NULL;
+	return section->data + section->count++ * section->record_size;
+}
+
+static void
+spock_monitor_section_size(SpockStatsSection *section, Size record_size,
+						   long room)
+{
+	section->record_size = record_size;
+	section->room = room;
+	section->count = 0;
+	section->data = palloc0(room * record_size);
+}
+
+/* Collect one entry of the statistics system into its section. */
+static void
+spock_monitor_channel_stat_cb(const PgStat_HashKey *key, const void *data,
+							  void *arg)
+{
+	SpockStatsChannelStatRecord *rec = spock_monitor_section_add(arg);
+
+	if (rec == NULL)
+		return;
+	rec->dboid = key->dboid;
+	rec->subid = SPOCK_CHANNEL_SUBID(key->objid);
+	rec->relid = SPOCK_CHANNEL_RELID(key->objid);
+	memcpy(&rec->stats, data, sizeof(rec->stats));	/* nosemgrep */
+}
+
+static void
+spock_monitor_conflict_stat_cb(const PgStat_HashKey *key, const void *data,
+							   void *arg)
+{
+	SpockStatsConflictStatRecord *rec = spock_monitor_section_add(arg);
+
+	if (rec == NULL)
+		return;
+	rec->dboid = key->dboid;
+	rec->subid = (Oid) key->objid;
+	memcpy(&rec->stats, data, sizeof(rec->stats));	/* nosemgrep */
+}
+#endif
+
+/*
+ * The counters as one block of bytes: header, subscription records,
+ * channel records, and on PostgreSQL 18 and later the channel and
+ * conflict entries of the statistics system.
+ */
 static char *
 spock_monitor_stats_image(Size *len)
 {
 	SpockStatsFileHeader *hdr;
-	SpockStatsSubRecord *subs;
-	SpockStatsChannelRecord *chans;
+	SpockStatsSection subs = {NULL, sizeof(SpockStatsSubRecord), 0, 0};
+	SpockStatsSection chans = {NULL, sizeof(SpockStatsChannelRecord), 0, 0};
+	SpockStatsSection chan_stats = {NULL, 1, 0, 0};
+	SpockStatsSection confl_stats = {NULL, 1, 0, 0};
 	HASH_SEQ_STATUS seq;
 	SpockMonitorStatsEntry *sentry;
 	spockStatsEntry *centry;
 	long		nsubs_room;
 	long		nchans_room;
-	int			nsubs = 0;
-	int			nchans = 0;
 	char	   *image;
+	char	   *p;
 	Size		size;
 	pg_crc32c	crc;
 
 	/*
-	 * Size the buffers outside the locks, with room for entries added in
-	 * between; any beyond that wait for the next flush.
+	 * Size the shared memory sections outside the locks, with room for
+	 * entries added in between; any beyond that wait for the next flush. The
+	 * sections are not grown under a lock, since palloc may raise.
 	 */
 	LWLockAcquire(SpockMonitorShm->lock, LW_SHARED);
 	nsubs_room = hash_get_num_entries(SpockMonitorStatsHash) + 16;
@@ -658,74 +827,98 @@ spock_monitor_stats_image(Size *len)
 	nchans_room = hash_get_num_entries(SpockHash) + 64;
 	LWLockRelease(SpockCtx->lock);
 
-	size = sizeof(SpockStatsFileHeader) +
-		nsubs_room * sizeof(SpockStatsSubRecord) +
-		nchans_room * sizeof(SpockStatsChannelRecord);
-	image = palloc0(size);
-	hdr = (SpockStatsFileHeader *) image;
-	subs = (SpockStatsSubRecord *) (image + sizeof(SpockStatsFileHeader));
+	subs.room = nsubs_room;
+	subs.data = palloc0(subs.room * subs.record_size);
+	chans.room = nchans_room;
+	chans.data = palloc0(chans.room * chans.record_size);
 
 	LWLockAcquire(SpockMonitorShm->lock, LW_SHARED);
 	hash_seq_init(&seq, SpockMonitorStatsHash);
 	while ((sentry = hash_seq_search(&seq)) != NULL)
 	{
-		SpockStatsSubRecord *rec = &subs[nsubs];
+		SpockStatsSubRecord *rec;
 
 		if (sentry->dropped)
 			continue;
-		if (nsubs >= nsubs_room)
+		if (subs.count >= subs.room)
 		{
 			hash_seq_term(&seq);
 			break;
 		}
+		rec = (SpockStatsSubRecord *) subs.data + subs.count++;
 
 		rec->key = sentry->key;
 		SpinLockAcquire(&sentry->mutex);
-		memcpy(rec->counter, sentry->counter, sizeof(rec->counter));
-		memcpy(rec->counter_time, sentry->counter_time,
+		memcpy(rec->counter, sentry->counter, sizeof(rec->counter));	/* nosemgrep */
+		memcpy(rec->counter_time, sentry->counter_time, /* nosemgrep */
 			   sizeof(rec->counter_time));
 		rec->last_error_lsn = sentry->last_error_lsn;
 		rec->last_error_sqlerrcode = sentry->last_error_sqlerrcode;
 		rec->last_error_pid = sentry->last_error_pid;
 		rec->stats_reset = sentry->stats_reset;
-		memcpy(rec->last_error_message, sentry->last_error_message,
+		memcpy(rec->last_error_message, sentry->last_error_message, /* nosemgrep */
 			   sizeof(rec->last_error_message));
 		SpinLockRelease(&sentry->mutex);
-		nsubs++;
 	}
 	LWLockRelease(SpockMonitorShm->lock);
-
-	chans = (SpockStatsChannelRecord *) (subs + nsubs);
 
 	LWLockAcquire(SpockCtx->lock, LW_SHARED);
 	hash_seq_init(&seq, SpockHash);
 	while ((centry = hash_seq_search(&seq)) != NULL)
 	{
-		SpockStatsChannelRecord *rec = &chans[nchans];
+		SpockStatsChannelRecord *rec;
 
-		if (nchans >= nchans_room)
+		if (chans.count >= chans.room)
 		{
 			hash_seq_term(&seq);
 			break;
 		}
+		rec = (SpockStatsChannelRecord *) chans.data + chans.count++;
 
 		rec->key = centry->key;
 		SpinLockAcquire(&centry->mutex);
-		memcpy(rec->counter, centry->counter, sizeof(rec->counter));
+		memcpy(rec->counter, centry->counter, sizeof(rec->counter));	/* nosemgrep */
 		SpinLockRelease(&centry->mutex);
-		nchans++;
 	}
 	LWLockRelease(SpockCtx->lock);
 
+#if PG_VERSION_NUM >= 180000
+	spock_monitor_section_size(&chan_stats,
+							   sizeof(SpockStatsChannelStatRecord),
+							   spock_stat_channel_entries(InvalidOid) + 64);
+	spock_stat_channel_foreach(spock_monitor_channel_stat_cb, &chan_stats);
+	spock_monitor_section_size(&confl_stats,
+							   sizeof(SpockStatsConflictStatRecord),
+							   spock_stat_conflict_entries() + 16);
+	spock_stat_conflict_foreach(spock_monitor_conflict_stat_cb, &confl_stats);
+#endif
+
 	size = sizeof(SpockStatsFileHeader) +
-		nsubs * sizeof(SpockStatsSubRecord) +
-		nchans * sizeof(SpockStatsChannelRecord);
+		subs.count * subs.record_size +
+		chans.count * chans.record_size +
+		chan_stats.count * chan_stats.record_size +
+		confl_stats.count * confl_stats.record_size;
+	image = palloc0(size);
+	hdr = (SpockStatsFileHeader *) image;
+	p = image + sizeof(SpockStatsFileHeader);
+	memcpy(p, subs.data, subs.count * subs.record_size);	/* nosemgrep */
+	p += subs.count * subs.record_size;
+	memcpy(p, chans.data, chans.count * chans.record_size); /* nosemgrep */
+	p += chans.count * chans.record_size;
+	if (chan_stats.count > 0)
+		memcpy(p, chan_stats.data, chan_stats.count * chan_stats.record_size);	/* nosemgrep */
+	p += chan_stats.count * chan_stats.record_size;
+	if (confl_stats.count > 0)
+		memcpy(p, confl_stats.data, /* nosemgrep */
+			   confl_stats.count * confl_stats.record_size);
 
 	hdr->magic = SPOCK_STATS_MAGIC;
 	hdr->version = SPOCK_MONITOR_FILE_VERSION;
 	hdr->system_identifier = GetSystemIdentifier();
-	hdr->nsubscriptions = nsubs;
-	hdr->nchannels = nchans;
+	hdr->nsubscriptions = subs.count;
+	hdr->nchannels = chans.count;
+	hdr->nchannel_stats = chan_stats.count;
+	hdr->nconflict_stats = confl_stats.count;
 
 	INIT_CRC32C(crc);
 	COMP_CRC32C(crc, image + sizeof(SpockStatsFileHeader),
@@ -784,7 +977,7 @@ spock_monitor_flush_stats(void)
 	if (last_stats_image != NULL)
 		pfree(last_stats_image);
 	last_stats_image = MemoryContextAlloc(TopMemoryContext, len);
-	memcpy(last_stats_image, image, len);
+	memcpy(last_stats_image, image, len);	/* nosemgrep */
 	last_stats_len = len;
 }
 
@@ -924,6 +1117,11 @@ typedef struct SpockRestoreState
 	uint64		max_id;			/* highest event id seen */
 	int			nevents;		/* events put into the ring */
 	int			nskipped;		/* duplicates and events reset away */
+
+	/* the last reset marker applied, to skip one written twice */
+	TimestampTz last_marker_time;
+	Oid			last_marker_dboid;
+	int			last_marker_pid;
 } SpockRestoreState;
 
 /*
@@ -968,6 +1166,23 @@ spock_monitor_restore_cb(const SpockMonitorEvent *event, void *arg)
 	{
 		int			before = SpockMonitorShm->event_count;
 
+		/*
+		 * A flush that failed between writing and noting what it wrote is
+		 * retried whole, so a marker can be in the log twice.  Events are
+		 * skipped by their ids; the same marker applied again would wrongly
+		 * drop the events restored since.
+		 */
+		if (event->event_time == state->last_marker_time &&
+			event->dboid == state->last_marker_dboid &&
+			event->pid == state->last_marker_pid)
+		{
+			state->nskipped++;
+			return true;
+		}
+		state->last_marker_time = event->event_time;
+		state->last_marker_dboid = event->dboid;
+		state->last_marker_pid = event->pid;
+
 		spock_monitor_ring_forget(event->dboid);
 		state->nskipped += before - SpockMonitorShm->event_count;
 		state->nevents -= before - SpockMonitorShm->event_count;
@@ -994,20 +1209,20 @@ spock_monitor_restore_cb(const SpockMonitorEvent *event, void *arg)
  * Read stats.dat into the two hash tables.  Returns the number of entries
  * restored, or -1 when there is no file.
  */
-static int
-spock_monitor_restore_stats(void)
+/*
+ * Read and check stats.dat.  Returns the file in memory, or NULL when
+ * there is none or it is not usable, which is logged.
+ */
+static char *
+spock_monitor_read_stats(Size *len)
 {
 	char		path[MAXPGPATH];
 	int			fd;
-	off_t		len;
+	off_t		size;
 	char	   *image;
 	SpockStatsFileHeader *hdr;
-	SpockStatsSubRecord *subs;
-	SpockStatsChannelRecord *chans;
 	Size		expected;
 	pg_crc32c	crc;
-	int			restored = 0;
-	uint32		i;
 
 	spock_monitor_path(path, SPOCK_STATS_FILE);
 
@@ -1015,24 +1230,24 @@ spock_monitor_restore_stats(void)
 	if (fd < 0)
 	{
 		if (errno == ENOENT)
-			return -1;
+			return NULL;
 		ereport(ERROR,
 				(errcode_for_file_access(),
 				 errmsg("could not open file \"%s\": %m", path)));
 	}
 
-	len = lseek(fd, 0, SEEK_END);
-	if (len < (off_t) sizeof(SpockStatsFileHeader) || len > MaxAllocSize)
+	size = lseek(fd, 0, SEEK_END);
+	if (size < (off_t) sizeof(SpockStatsFileHeader) || size > MaxAllocSize)
 	{
 		CloseTransientFile(fd);
 		ereport(LOG,
 				(errmsg("spock counter file \"%s\" has an invalid size, ignored",
 						path)));
-		return -1;
+		return NULL;
 	}
 
-	image = palloc(len);
-	spock_monitor_read_all(fd, image, len, 0, path);
+	image = palloc(size);
+	spock_monitor_read_all(fd, image, size, 0, path);
 	CloseTransientFile(fd);
 
 	hdr = (SpockStatsFileHeader *) image;
@@ -1044,27 +1259,59 @@ spock_monitor_restore_stats(void)
 		ereport(LOG,
 				(errmsg("spock counter file \"%s\" belongs to another server or version, ignored",
 						path)));
-		return -1;
+		return NULL;
 	}
 
 	expected = sizeof(SpockStatsFileHeader) +
 		(Size) hdr->nsubscriptions * sizeof(SpockStatsSubRecord) +
 		(Size) hdr->nchannels * sizeof(SpockStatsChannelRecord);
+#if PG_VERSION_NUM >= 180000
+	expected += (Size) hdr->nchannel_stats * sizeof(SpockStatsChannelStatRecord) +
+		(Size) hdr->nconflict_stats * sizeof(SpockStatsConflictStatRecord);
+#else
+	/* Written by a server with the statistics system sections. */
+	if (hdr->nchannel_stats != 0 || hdr->nconflict_stats != 0)
+		expected = 0;
+#endif
 	INIT_CRC32C(crc);
-	if ((Size) len == expected)
+	if ((Size) size == expected)
 	{
 		COMP_CRC32C(crc, image + sizeof(SpockStatsFileHeader),
-					len - sizeof(SpockStatsFileHeader));
+					size - sizeof(SpockStatsFileHeader));
 	}
 	FIN_CRC32C(crc);
-	if ((Size) len != expected || !EQ_CRC32C(crc, hdr->crc))
+	if ((Size) size != expected || !EQ_CRC32C(crc, hdr->crc))
 	{
 		pfree(image);
 		ereport(LOG,
 				(errmsg("spock counter file \"%s\" is damaged, ignored", path)));
-		return -1;
+		return NULL;
 	}
 
+	*len = size;
+	return image;
+}
+
+/*
+ * Read stats.dat into the two hash tables.  Returns the number of entries
+ * restored, or -1 when there is no usable file.
+ */
+static int
+spock_monitor_restore_stats(void)
+{
+	char	   *image;
+	Size		len;
+	SpockStatsFileHeader *hdr;
+	SpockStatsSubRecord *subs;
+	SpockStatsChannelRecord *chans;
+	int			restored = 0;
+	uint32		i;
+
+	image = spock_monitor_read_stats(&len);
+	if (image == NULL)
+		return -1;
+
+	hdr = (SpockStatsFileHeader *) image;
 	subs = (SpockStatsSubRecord *) (image + sizeof(SpockStatsFileHeader));
 	chans = (SpockStatsChannelRecord *) (subs + hdr->nsubscriptions);
 
@@ -1087,13 +1334,13 @@ spock_monitor_restore_stats(void)
 			continue;
 
 		SpinLockInit(&entry->mutex);
-		memcpy(entry->counter, rec->counter, sizeof(entry->counter));
-		memcpy(entry->counter_time, rec->counter_time,
+		memcpy(entry->counter, rec->counter, sizeof(entry->counter));	/* nosemgrep */
+		memcpy(entry->counter_time, rec->counter_time,	/* nosemgrep */
 			   sizeof(entry->counter_time));
 		entry->last_error_lsn = rec->last_error_lsn;
 		entry->last_error_sqlerrcode = rec->last_error_sqlerrcode;
 		entry->last_error_pid = rec->last_error_pid;
-		memcpy(entry->last_error_message, rec->last_error_message,
+		memcpy(entry->last_error_message, rec->last_error_message,	/* nosemgrep */
 			   SPOCK_MONITOR_MESSAGE_LEN);
 		entry->last_error_message[SPOCK_MONITOR_MESSAGE_LEN - 1] = '\0';
 		entry->stats_reset = rec->stats_reset;
@@ -1122,12 +1369,74 @@ spock_monitor_restore_stats(void)
 			continue;
 
 		SpinLockInit(&entry->mutex);
-		memcpy(entry->counter, rec->counter, sizeof(entry->counter));
+		memcpy(entry->counter, rec->counter, sizeof(entry->counter));	/* nosemgrep */
 		restored++;
 	}
 
+	/*
+	 * The statistics system sections are counted as restored here, so that
+	 * the node_started event names them; the supervisor puts them back at its
+	 * first flush, once the statistics system is up.
+	 */
+	restored += hdr->nchannel_stats + hdr->nconflict_stats;
+
 	pfree(image);
 	return restored;
+}
+
+/*
+ * Put the statistics system entries of the previous run back when a
+ * crash emptied the statistics system.  Runs in the supervisor before
+ * the first snapshot of this run.  After a clean shutdown the entries
+ * were restored by PostgreSQL itself and are left alone.
+ */
+static void
+spock_monitor_reseed_pgstat(void)
+{
+#if PG_VERSION_NUM >= 180000
+	char	   *image;
+	Size		len;
+	SpockStatsFileHeader *hdr;
+	char	   *p;
+	int			seeded = 0;
+	uint32		i;
+
+	image = spock_monitor_read_stats(&len);
+	if (image == NULL)
+		return;
+
+	hdr = (SpockStatsFileHeader *) image;
+	p = image + sizeof(SpockStatsFileHeader) +
+		hdr->nsubscriptions * sizeof(SpockStatsSubRecord) +
+		hdr->nchannels * sizeof(SpockStatsChannelRecord);
+
+	for (i = 0; i < hdr->nchannel_stats; i++)
+	{
+		SpockStatsChannelStatRecord *rec = (SpockStatsChannelStatRecord *) p;
+
+		if (spock_stat_channel_seed(rec->dboid, rec->subid, rec->relid,
+									&rec->stats))
+			seeded++;
+		p += sizeof(SpockStatsChannelStatRecord);
+	}
+	for (i = 0; i < hdr->nconflict_stats; i++)
+	{
+		SpockStatsConflictStatRecord *rec = (SpockStatsConflictStatRecord *) p;
+
+		if (spock_stat_conflict_seed(rec->dboid, rec->subid, &rec->stats))
+			seeded++;
+		p += sizeof(SpockStatsConflictStatRecord);
+	}
+
+	elog(DEBUG1, "spock monitor: reseed read %u channel and %u conflict entries, created %d",
+		 hdr->nchannel_stats, hdr->nconflict_stats, seeded);
+	if (seeded > 0)
+		ereport(LOG,
+				(errmsg("spock monitor: put back %d statistics entries the previous run had not kept",
+						seeded)));
+
+	pfree(image);
+#endif
 }
 
 /*
@@ -1405,6 +1714,10 @@ spock_get_event_log(PG_FUNCTION_ARGS)
 	scan.max_rows = PG_ARGISNULL(1) ? 1000 : PG_GETARG_INT32(1);
 	scan.reset_pos = -1;
 	scan.rsinfo = rsinfo;
+
+	/* No id is below 1, so a negative start means everything. */
+	if (scan.since_id < 0)
+		scan.since_id = 0;
 
 	if (scan.max_rows <= 0)
 		PG_RETURN_VOID();

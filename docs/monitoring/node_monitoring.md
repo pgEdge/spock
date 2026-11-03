@@ -27,6 +27,25 @@ All views are scoped to the current database. `spock.lag_tracker`,
 `spock.progress` and the `spock.channel_*_stats` views remain available and
 feed the views above.
 
+### Where the counters live
+
+| Counters | PostgreSQL 15 to 17 | PostgreSQL 18 and later |
+|----------|---------------------|-------------------------|
+| `spock.subscription_stats` activity, error and `last_*` columns, `spock.events` | Spock shared memory | Spock shared memory |
+| `n_tup_*`, `n_conflict`, `n_dca` (`spock.channel_table_stats`) | Spock shared memory, at most `spock.stats_max_entries` tables | The cumulative statistics system, with no limit on the number of tables |
+| `confl_*` | Not collected | The cumulative statistics system |
+
+Everything in spock shared memory survives a clean restart and a crash
+through the on-disk copy described in [History across
+restarts](#history-across-restarts). The cumulative statistics system keeps
+its entries across a clean restart but discards them when the server starts
+with crash recovery; spock puts its own entries back from the on-disk copy,
+so the channel and conflict counters survive a crash as well, less what was
+counted after the last write. `pg_stat_reset()` resets the cumulative
+statistics entries of the current database and leaves shared memory alone;
+`spock.reset_subscription_stats()` and `spock.reset_channel_stats()` reset
+both.
+
 ## System status
 
 `spock.system_status` is one row about the host and the PostgreSQL
@@ -158,7 +177,7 @@ change.
 | `apply_errors`, `sync_errors` | Errors raised in apply and in sync workers. An apply error counts once per failed transaction. |
 | `deadlocks`, `lock_timeouts`, `constraint_violations`, `resource_errors` | The same errors classified by SQLSTATE: deadlock detected, lock not available, class 23 and class 53. |
 | `tables_synced` | Tables whose initial synchronization completed. |
-| `n_tup_ins`, `n_tup_upd`, `n_tup_del`, `n_conflict`, `n_dca` | Tuple counters, summed from `spock.channel_table_stats`. |
+| `n_tup_ins`, `n_tup_upd`, `n_tup_del`, `n_conflict`, `n_dca` | Tuple counters, summed from `spock.channel_table_stats`. On PostgreSQL 18 and later they count a transaction's rows when it commits; before that, every row as it is applied. |
 | `confl_*` | Conflict counters by type; NULL before PostgreSQL 18. |
 | `last_error_message`, `last_error_lsn`, `last_error_sqlstate`, `last_error_pid` | The most recent worker error with DETAIL and CONTEXT, the provider LSN it happened at, its SQLSTATE and the process that raised it. |
 | `stats_reset` | When the counters were last reset. |

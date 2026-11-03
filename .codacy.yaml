@@ -6,6 +6,7 @@ exclude_paths:
 engines:
   metric:
     exclude_paths:
+      - "src/spock_monitor_persist.c"
       - "src/spock_apply.c"
       - "src/spock_apply_heap.c"
       - "src/spock.c"
@@ -31,6 +32,7 @@ engines:
       - "src/spock_worker.c"
   lizard:
     exclude_paths:
+      - "src/spock_monitor_persist.c"
       - "src/spock_apply.c"
       - "src/spock_apply_heap.c"
       - "src/spock.c"

@@ -738,7 +738,9 @@ restarts](monitoring/node_monitoring.md#history-across-restarts).
 `spock.stats_max_entries` specifies the maximum number of entries that can
 be stored into the Spock channel statistic. This option can only be set when
 the postmaster starts.  The parameter accepts values from `-1` to `INT_MAX`
-(the default is `-1`).
+(the default is `-1`). On PostgreSQL 18 and later the channel counters are
+kept by the cumulative statistics system, which has no such limit, and the
+parameter has no effect.
 
 ### `spock.temp_directory`
 

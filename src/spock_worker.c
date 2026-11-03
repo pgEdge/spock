@@ -45,6 +45,7 @@
 #include "pgstat.h"
 
 #include "spock_sync.h"
+#include "spock_channel_stat.h"
 #include "spock_worker.h"
 #include "spock_conflict.h"
 #include "spock_relcache.h"
@@ -933,6 +934,13 @@ spock_worker_type_name(SpockWorkerType type)
 void
 handle_stats_counter(Relation relation, Oid subid, spockStatsType typ, int ntup)
 {
+#if PG_VERSION_NUM >= 180000
+	if (!spock_ch_stats)
+		return;
+
+	/* Counted per process and added to the statistics system at commit. */
+	spock_stat_channel_count(subid, RelationGetRelid(relation), typ, ntup);
+#else
 	bool		found = false;
 	spockStatsKey key;
 	spockStatsEntry *entry;
@@ -1007,4 +1015,5 @@ handle_stats_counter(Relation relation, Oid subid, spockStatsType typ, int ntup)
 	SpinLockRelease(&entry->mutex);
 
 	LWLockRelease(SpockCtx->lock);
+#endif
 }

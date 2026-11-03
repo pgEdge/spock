@@ -19,6 +19,7 @@
 #include "pgstat.h"
 
 #include "spock_conflict.h"
+#include "spock_pgstat.h"
 
 /* Shared memory stats entry for spock subscription conflicts */
 typedef struct Spock_Stat_StatSubEntry
@@ -41,6 +42,10 @@ extern void spock_stat_create_subscription(Oid subid);
 extern void spock_stat_drop_subscription(Oid subid);
 extern Spock_Stat_StatSubEntry *spock_stat_fetch_stat_subscription(Oid subid);
 extern void spock_stat_reset_subscription_conflicts(Oid subid);
+extern void spock_stat_conflict_foreach(SpockPgstatCallback cb, void *arg);
+extern long spock_stat_conflict_entries(void);
+extern bool spock_stat_conflict_seed(Oid dboid, Oid subid,
+									 const Spock_Stat_StatSubEntry *stats);
 
 #endif							/* PG_VERSION_NUM >= 180000 */
 

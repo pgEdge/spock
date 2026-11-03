@@ -66,6 +66,7 @@
 
 #include "spock_conflict.h"
 #if PG_VERSION_NUM >= 180000
+#include "spock_channel_stat.h"
 #include "spock_conflict_stat.h"
 #endif
 #include "spock_exception_handler.h"
@@ -1985,11 +1986,19 @@ spock_monitor_summary_workers(Datum *values, bool *nulls)
 	values[MS_WORKER_SLOTS_USED] = Int32GetDatum(slots_used);
 	values[MS_APPLY_PAUSED] =
 		BoolGetDatum(pg_atomic_read_u32(&SpockCtx->pause_apply) != 0);
+#if PG_VERSION_NUM >= 180000
+	/* The statistics system has no limit on the channel counters. */
+	nulls[MS_CHANNEL_STATS_CAPACITY] = true;
+	values[MS_CHANNEL_STATS_USED] =
+		Int64GetDatum(spock_stat_channel_entries(InvalidOid));
+	values[MS_CHANNEL_STATS_FULL] = BoolGetDatum(false);
+#else
 	values[MS_CHANNEL_STATS_CAPACITY] = Int32GetDatum(spock_stats_max_entries);
 	values[MS_CHANNEL_STATS_USED] =
 		Int64GetDatum(SpockHash ? hash_get_num_entries(SpockHash) : 0);
 	/* SpockCtx->lock is already held here, and LWLocks are not reentrant. */
 	values[MS_CHANNEL_STATS_FULL] = BoolGetDatum(SpockCtx->stats_hash_full);
+#endif
 	LWLockRelease(SpockCtx->lock);
 }
 
@@ -2427,19 +2436,85 @@ spock_get_pending_exceptions(PG_FUNCTION_ARGS)
  *
  * Per-table tuple counters of the current database.
  */
+#if PG_VERSION_NUM >= 180000
+/* One channel entry of this database, copied out of the statistics system. */
+typedef struct SpockChannelStatsRow
+{
+	Oid			subid;
+	Oid			relid;
+	Spock_Stat_ChannelEntry stats;
+} SpockChannelStatsRow;
+
+typedef struct SpockChannelStatsCollect
+{
+	SpockChannelStatsRow *rows;
+	long		count;
+	long		room;
+} SpockChannelStatsCollect;
+
+/*
+ * Collect one entry into the array sized beforehand.  The callback runs
+ * under a partition lock of the statistics hash, so it must not allocate;
+ * an entry beyond the room, added since the count, waits for the next
+ * call.  The rows are built after the scan.
+ */
+static void
+spock_channel_stats_collect_cb(const PgStat_HashKey *key, const void *data,
+							   void *arg)
+{
+	SpockChannelStatsCollect *collect = arg;
+	SpockChannelStatsRow *row;
+
+	if (key->dboid != MyDatabaseId || collect->count >= collect->room)
+		return;
+
+	row = &collect->rows[collect->count++];
+	row->subid = SPOCK_CHANNEL_SUBID(key->objid);
+	row->relid = SPOCK_CHANNEL_RELID(key->objid);
+	row->stats = *(const Spock_Stat_ChannelEntry *) data;
+}
+#endif
+
 Datum
 get_channel_stats(PG_FUNCTION_ARGS)
 {
 	ReturnSetInfo *rsinfo = (ReturnSetInfo *) fcinfo->resultinfo;
+#if PG_VERSION_NUM >= 180000
+	SpockChannelStatsCollect collect;
+	long		row;
+#else
 	HASH_SEQ_STATUS hash_seq;
 	spockStatsEntry *entry;
 	Datum	   *values;
 	bool	   *nulls;
+#endif
 
 	check_monitor_shmem();
-	Assert(SpockHash != NULL);
-
 	InitMaterializedSRF(fcinfo, 0);
+
+#if PG_VERSION_NUM >= 180000
+	collect.room = spock_stat_channel_entries(MyDatabaseId) + 64;
+	collect.count = 0;
+	collect.rows = palloc(collect.room * sizeof(SpockChannelStatsRow));
+	spock_stat_channel_foreach(spock_channel_stats_collect_cb, &collect);
+
+	for (row = 0; row < collect.count; row++)
+	{
+		Datum		values[SPOCK_STATS_NUM_COUNTERS + 2] = {0};
+		bool		nulls[SPOCK_STATS_NUM_COUNTERS + 2] = {0};
+		int			i = 0;
+		int			j;
+
+		values[i++] = ObjectIdGetDatum(collect.rows[row].subid);
+		values[i++] = ObjectIdGetDatum(collect.rows[row].relid);
+		for (j = 0; j < SPOCK_STATS_NUM_COUNTERS; j++)
+			values[i++] = Int64GetDatum(collect.rows[row].stats.counter[j]);
+
+		tuplestore_putvalues(rsinfo->setResult, rsinfo->setDesc, values, nulls);
+	}
+	pfree(collect.rows);
+#else
+	Assert(SpockHash != NULL);
 
 	values = palloc0(sizeof(Datum) * (SPOCK_STATS_NUM_COUNTERS + 2));
 	nulls = palloc0(sizeof(bool) * (SPOCK_STATS_NUM_COUNTERS + 2));
@@ -2478,6 +2553,7 @@ get_channel_stats(PG_FUNCTION_ARGS)
 	 * hide a full table from get_monitor_summary() between two polls and cost
 	 * every poll an exclusive lock while the table is full.
 	 */
+#endif
 
 	return (Datum) 0;
 }
@@ -2490,10 +2566,16 @@ get_channel_stats(PG_FUNCTION_ARGS)
 Datum
 reset_channel_stats(PG_FUNCTION_ARGS)
 {
+#if PG_VERSION_NUM < 180000
 	HASH_SEQ_STATUS hash_seq;
 	spockStatsEntry *entry;
+#endif
 
 	check_monitor_shmem();
+
+#if PG_VERSION_NUM >= 180000
+	spock_stat_channel_drop_all();
+#else
 	Assert(SpockHash != NULL);
 
 	LWLockAcquire(SpockCtx->lock, LW_EXCLUSIVE);
@@ -2512,6 +2594,7 @@ reset_channel_stats(PG_FUNCTION_ARGS)
 	SpockCtx->stats_hash_full = false;
 
 	LWLockRelease(SpockCtx->lock);
+#endif
 	spock_monitor_request_flush();
 	PG_RETURN_VOID();
 }
