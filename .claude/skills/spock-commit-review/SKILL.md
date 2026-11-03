@@ -1,6 +1,6 @@
 ---
 name: spock-commit-review
-description: Aggressive, critical pre-commit code review of a Spock (pgEdge logical replication PostgreSQL extension) change by Fable 5.1. Use this whenever a commit is being made in any spock checkout or worktree on this machine, whenever the user asks to review a spock diff, staged change, commit, or patch before it lands, and whenever the user says "review before commit", "check this commit", "is this safe to commit" about spock code, even if they do not name the skill. Also runs automatically from the git commit-msg hook installed by scripts/install-hook.sh.
+description: Aggressive, critical pre-commit code review of a Spock (pgEdge logical replication PostgreSQL extension) change by Fable 5.1. Use this whenever a commit is being made in any spock checkout or worktree on this machine, whenever the user asks to review a spock diff, staged change, commit, or patch before it lands, and whenever the user says "review before commit", "check this commit", "is this safe to commit" about spock code, even if they do not name the skill. Can also run from the git commit-msg hook installed by scripts/install-hook.sh, which is opt-in and off by default.
 ---
 
 # Spock commit review
@@ -50,10 +50,18 @@ with `git show :<path>`. Then apply the same checks and the same output.
 ## Where it lives
 
 `scripts/install-hook.sh` copies the skill to `~/.claude/skills/` and installs
-a global git hook dispatcher that, on every commit-msg, runs the
+a global git hook dispatcher that, on commit-msg, runs the
 `<name>-commit-review` skill matching the origin repository's name, so this
 one runs for spock and a sibling skill runs for ace or lolor. Other hook names
 and other repositories keep their own hooks.
+
+Per-commit review is opt-in and off by default, so an ordinary commit costs
+nothing once the hook is installed. Turn it on persistently with `git config
+--global <name>.commitReview true`, or for a single commit with
+`<NAME>_REVIEW=on`; `<NAME>_REVIEW=skip` bypasses one commit while it is on.
+Without it the checklist below is still used on demand, either as
+`/spock-commit-review` in a session or as the `REVIEW.md` at the repository
+root. `COMMIT_REVIEW_MODEL` overrides the model the hook runs.
 
 ## What to check, in this order
 
