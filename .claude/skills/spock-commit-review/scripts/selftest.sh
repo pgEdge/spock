@@ -81,6 +81,10 @@ echo "$out" | grep -q OLD-GLOBAL-PRE-COMMIT || fail "previous global pre-commit 
 echo "$out" | grep -q LOCAL-PRE-COMMIT || fail "local pre-commit did not run"
 pass "the previous global hooks directory is chained"
 
+# Per-commit review is opt-in; turn it on for the checks that follow.  The
+# default-off behaviour is checked at the end.
+git config --global "$NAME.commitReview" true
+
 # A hook file sitting in the hooks directory itself is moved aside and kept,
 # and a relative symlink there still resolves after the move.
 printf '#!/bin/sh\necho IN-PLACE-POST-COMMIT\n' > "$HOME/.config/git/hooks/post-commit.real"
@@ -293,5 +297,19 @@ git add o.txt
 git commit -q -m 'Other.' >/dev/null 2>&1 || fail "other repository commit refused"
 [ ! -e "$STUB_PROMPT" ] || fail "other repository was reviewed"
 pass "a repository with another name is not reviewed"
+
+# Opt-in default: with the review turned off, even a REJECT verdict does not
+# block the commit and the reviewer is not run.  A local setting of false
+# overrides the global true the rest of the test enabled.
+cd "$R"
+git config "$NAME.commitReview" false
+rm -f "$STUB_PROMPT"
+printf 'off\n' > a.txt
+git add a.txt
+out="$(STUB_VERDICT=REJECT git commit -q -m 'Off.' 2>&1)" || fail "commit blocked while review is off: $out"
+[ ! -e "$STUB_PROMPT" ] || fail "the reviewer ran while review is off"
+echo "$out" | grep -q 'per-commit review is off by default' || fail "no opt-in-off note printed: $out"
+git config --unset "$NAME.commitReview"
+pass "per-commit review is off by default and a REJECT does not block when off"
 
 echo "all passed"

@@ -10,9 +10,13 @@
 # being committed, and it has only the Read, Grep and Glob tools.  Renames
 # are shown as a removal and an addition, so nothing hides in a rename.
 #
-# Bypass for one commit with <NAME>_REVIEW=skip, which is recorded in the
-# review log so it is not silent; git commit --no-verify skips the hook and
-# leaves no record.  Merge commits are not reviewed, since the staged diff
+# Per-commit review is off by default, so the hook costs nothing until it is
+# turned on with "git config --global <name>.commitReview true" or
+# <NAME>_REVIEW=on for one commit.  Bypass one commit while it is on with
+# <NAME>_REVIEW=skip, which is recorded in the review log so it is not
+# silent; git commit --no-verify skips the hook and leaves no record.  The
+# model is claude-fable-5-1 unless COMMIT_REVIEW_MODEL overrides it.  Merge
+# commits are not reviewed, since the staged diff
 # of a merge is the whole merged branch; that is recorded too.  An amend is
 # reviewed as the staged difference from the commit being amended, so an
 # amend that only rewrites the message is not reviewed.  The message is
@@ -33,7 +37,7 @@ NAME="${SKILL_NAME%-commit-review}"
 # Every character outside A-Z and 0-9 becomes an underscore, so the name is
 # always a valid variable name; it is read with printenv, not eval.
 SKIP_VAR="$(printf '%s' "$NAME" | LC_ALL=C tr 'a-z' 'A-Z' | LC_ALL=C tr -c 'A-Z0-9' '_')_REVIEW"
-MODEL="claude-fable-5-1"
+MODEL="${COMMIT_REVIEW_MODEL:-claude-fable-5-1}"
 # The timeout and the diff budget can be overridden for testing; anything
 # but a positive number falls back to the default, since a timeout of zero
 # would disable the alarm.
@@ -52,6 +56,25 @@ case "$MAX_DIFF_BYTES" in ''|*[!0-9]*) MAX_DIFF_BYTES=250000 ;; esac
 
 msgfile="${1:-}"
 repo_root="$(git rev-parse --show-toplevel 2>/dev/null)" || exit 0
+
+# Per-commit review is opt-in, so an ordinary commit costs nothing.  Turn it
+# on persistently with
+#     git config --global "$NAME".commitReview true
+# or for one commit with <NAME>_REVIEW=on (COMMIT_REVIEW=on also works).
+# <NAME>_REVIEW=skip forces it off for one commit even when enabled, and is
+# recorded below.  The skill is also available on demand as
+# /<name>-commit-review.
+review_opt="$(printenv "$SKIP_VAR" 2>/dev/null || true)"
+cfg_on="$(git config --bool --get "$NAME.commitReview" 2>/dev/null || true)"
+enabled=0
+case "$review_opt" in on|1|yes|true) enabled=1 ;; esac
+case "${COMMIT_REVIEW:-}" in on|1|yes|true) enabled=1 ;; esac
+[ "$cfg_on" = true ] && enabled=1
+if [ "$review_opt" != skip ] && [ "$enabled" -eq 0 ]; then
+    echo "$SKILL_NAME: per-commit review is off by default; enable with 'git config --global $NAME.commitReview true', or $SKIP_VAR=on for one commit, or run /$SKILL_NAME on demand" >&2
+    exit 0
+fi
+
 common_dir="$(git rev-parse --git-common-dir)"
 case "$common_dir" in /*) ;; *) common_dir="$repo_root/$common_dir" ;; esac
 report_dir="$common_dir/$NAME-reviews"
