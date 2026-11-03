@@ -589,7 +589,8 @@ ALTER EXTENSION spock UPDATE TO '6.0.0';
 ```
 
 PostgreSQL walks the version chain (5.0.8 to 5.0.9 to 5.0.10 to 5.0.11 to
-5.0.12 to 6.0.0) and runs each step in order. The 5.0.12 to 6.0.0 step calls
+5.0.12 to 5.0.13 to 6.0.0) and runs each step in order. The 5.0.13 to 6.0.0
+step calls
 `spock.slot_enable_failover()` for you.
 
 `spock.slot_enable_failover()` behaves as follows:

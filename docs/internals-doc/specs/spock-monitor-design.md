@@ -64,7 +64,7 @@ join those rows with the catalogs and with core views such as
 | Shared memory | Event ring (`SpockMonitorShmem`), per-subscription counters (`SpockMonitorStatsHash`) | `spock_monitor.c`, allocated by `spock_shmem.c` |
 | Producers | Worker attach and detach, apply loop, sync worker, output plugin, node and subscription management functions, exception handler, extension manager, `emit_log_hook` | One call at each site |
 | SQL functions | `get_worker_status`, `get_events`, `get_apply_stats`, `get_slot_groups`, `get_monitor_summary`, `reset_events`, `reset_subscription_stats`, `get_channel_stats`, `reset_channel_stats`, `apply_group_progress`, `wait_slot_confirm_lsn` | `spock_monitor.c` |
-| Views | `system_status`, `node_status`, `subscription_status`, `subscription_stats`, `worker_status`, `slot_status`, `peer_status`, `replication_set_status`, `settings`, `table_sync_status`, `events` | `sql/spock--6.0.0.sql` and the 5.0.12 upgrade script |
+| Views | `system_status`, `node_status`, `subscription_status`, `subscription_stats`, `worker_status`, `slot_status`, `peer_status`, `replication_set_status`, `settings`, `table_sync_status`, `events` | `sql/spock--6.0.0.sql` and the 5.x upgrade script |
 
 Producers never format SQL or touch the catalog. They call one of a handful
 of functions declared in `spock_monitor.h`, which copy fixed size data into
@@ -329,7 +329,7 @@ the LSN alone is set for every transaction.
 ## 8. Compatibility and upgrade
 
 * The same SQL section is appended to `spock--6.0.0.sql` and to
-  `spock--5.0.12--6.0.0.sql`. Every catalog column the views reference
+  `spock--5.0.13--6.0.0.sql`. Every catalog column the views reference
   exists since 5.0.6, so an upgraded node ends with the same objects as a
   fresh install.
 * `spock.get_apply_worker_status()` is removed; nothing in the repository
