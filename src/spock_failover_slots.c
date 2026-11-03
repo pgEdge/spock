@@ -1995,13 +1995,74 @@ wait_for_standby_confirmation(XLogRecPtr commit_lsn)
 	XLogRecPtr flush_pos = InvalidXLogRecPtr;
 	TimestampTz wait_start = GetCurrentTimestamp();
 
+	/*
+	 * Names of configured slots already reported missing, so each is warned
+	 * about once while it is missing and warned again if it disappears after
+	 * coming back, instead of one missing slot masking a later one.  The
+	 * assign hook rebuilds pg_standby_slot_names when the setting changes, so
+	 * a new list pointer resets the set.
+	 */
+	static List *missing_warned = NIL;
+	static List *missing_warned_for = NIL;
+
+#if PG_VERSION_NUM >= 170000
+	/* The list the "adds nothing" advisory below was last logged for. */
+	static List *advisory_for = NIL;
+#endif
+
 	if (skip_standby_slot_names(commit_lsn))
 		return;
+
+#if PG_VERSION_NUM >= 170000
+	/*
+	 * If this walsender serves a failover slot and synchronized_standby_slots
+	 * already names every slot named here, PostgreSQL applies that wait first
+	 * and waits for all of them, so this quorum adds nothing.  Say so once per
+	 * configuration.  A non-failover slot is not covered by the core
+	 * mechanism, so this hold-back is the only one and nothing is logged.
+	 * Checked here, in the hold-back path, rather than in the client-auth
+	 * hook, so it is not logged for a failed login, a reconnect, the native
+	 * slotsync worker or any other walsender whose slot this does not serve.
+	 */
+	if (advisory_for != pg_standby_slot_names)
+	{
+		advisory_for = pg_standby_slot_names;
+
+		if (MyReplicationSlot != NULL && MyReplicationSlot->data.failover &&
+			synchronized_standby_slots != NULL &&
+			synchronized_standby_slots[0] != '\0')
+		{
+			char	   *core_names = pstrdup(synchronized_standby_slots);
+			List	   *core_list = NIL;
+			ListCell   *lc;
+			bool		covered = true;
+
+			if (!SplitIdentifierString(core_names, ',', &core_list))
+				covered = false;
+			foreach(lc, pg_standby_slot_names)
+			{
+				if (!list_member_str(core_list, (const char *) lfirst(lc)))
+				{
+					covered = false;
+					break;
+				}
+			}
+			if (covered)
+				ereport(LOG,
+						(errmsg("spock.pg_standby_slot_names adds nothing while synchronized_standby_slots names the same slots"),
+						 errdetail("For this failover slot, synchronized_standby_slots waits for every slot it names before spock.standby_slots_min_confirmed is considered."),
+						 errhint("Use only one of them.")));
+			list_free(core_list);
+			pfree(core_names);
+		}
+	}
+#endif
 
 	while (1)
 	{
 		int i;
 		int wait_slots_remaining;
+		int slots_found = 0;
 		XLogRecPtr oldest_flush_pos = InvalidXLogRecPtr;
 		int rc;
 
@@ -2037,6 +2098,7 @@ wait_for_standby_confirmation(XLogRecPtr commit_lsn)
 
 			if (!list_member_str(pg_standby_slot_names, NameStr(s->data.name)))
 				continue;
+			slots_found++;
 
 			SpinLockAcquire(&s->mutex);
 
@@ -2059,6 +2121,96 @@ wait_for_standby_confirmation(XLogRecPtr commit_lsn)
 				wait_slots_remaining--;
 		}
 		LWLockRelease(ReplicationSlotControlLock);
+
+		/*
+		 * A named slot that does not exist can never confirm, so with every
+		 * slot required this waits until wal_sender_timeout and starts over.
+		 * Say so, before the quorum check so that a quorum the other slots
+		 * satisfy does not hide it; a standby promoted with this setting
+		 * inherited from the old primary has none of its physical slots.
+		 * Warn once per slot and re-warn a slot that disappears again, so a
+		 * later drop is not masked by an earlier one.
+		 */
+		if (missing_warned_for != pg_standby_slot_names)
+		{
+			list_free_deep(missing_warned);
+			missing_warned = NIL;
+			missing_warned_for = pg_standby_slot_names;
+		}
+
+		if (slots_found < list_length(pg_standby_slot_names))
+		{
+			ListCell   *lc;
+			List	   *still_missing = NIL;
+
+			foreach(lc, pg_standby_slot_names)
+			{
+				const char *name = (const char *) lfirst(lc);
+				bool		found = false;
+				MemoryContext old_ctx;
+
+				LWLockAcquire(ReplicationSlotControlLock, LW_SHARED);
+				for (i = 0; i < max_replication_slots; i++)
+				{
+					ReplicationSlot *s = &ReplicationSlotCtl->replication_slots[i];
+
+					if (s->in_use && strcmp(NameStr(s->data.name), name) == 0)
+					{
+						found = true;
+						break;
+					}
+				}
+				LWLockRelease(ReplicationSlotControlLock);
+
+				if (found)
+					continue;
+
+				if (!list_member_str(missing_warned, name))
+				{
+					/*
+					 * The warning fires ahead of the quorum check, so it also
+					 * reaches the case where the slots that do exist already
+					 * meet spock.standby_slots_min_confirmed and nothing waits
+					 * for the missing one.  Only promise a wait when the
+					 * missing slots are actually needed to reach the quorum.
+					 */
+					int			required = standby_slots_min_confirmed == -1
+						? list_length(pg_standby_slot_names)
+						: Min(standby_slots_min_confirmed,
+							  list_length(pg_standby_slot_names));
+
+					if (slots_found >= required)
+						ereport(WARNING,
+								(errmsg("replication slot \"%s\" named in spock.pg_standby_slot_names does not exist",
+										name),
+								 errhint("The slots that exist already meet spock.standby_slots_min_confirmed, so replication is not held for it. Create the slot, or remove it from the setting.")));
+					else if (wal_sender_timeout > 0)
+						ereport(WARNING,
+								(errmsg("replication slot \"%s\" named in spock.pg_standby_slot_names does not exist",
+										name),
+								 errhint("Logical replication waits for it until wal_sender_timeout. Create the slot, or remove it from the setting.")));
+					else
+						ereport(WARNING,
+								(errmsg("replication slot \"%s\" named in spock.pg_standby_slot_names does not exist",
+										name),
+								 errhint("Logical replication waits for it indefinitely, since wal_sender_timeout is 0. Create the slot, or remove it from the setting.")));
+				}
+
+				/* Remember it in a context that outlives this call. */
+				old_ctx = MemoryContextSwitchTo(TopMemoryContext);
+				still_missing = lappend(still_missing, pstrdup(name));
+				MemoryContextSwitchTo(old_ctx);
+			}
+
+			list_free_deep(missing_warned);
+			missing_warned = still_missing;
+		}
+		else if (missing_warned != NIL)
+		{
+			/* Every named slot exists now; a later drop warns again. */
+			list_free_deep(missing_warned);
+			missing_warned = NIL;
+		}
 
 		if (wait_slots_remaining == 0)
 		{
