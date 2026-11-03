@@ -679,6 +679,21 @@ typedef enum CopySnapshotState
 #define UNDECODABLE_COPY_LEVEL LOG
 #endif
 
+/* On PG17, native slot sync gives every copy a consistent snapshot */
+#if PG_VERSION_NUM >= 170000
+#define UNDECODABLE_COPY_HINT \
+	"After a promotion, transactions that commit before decoding reaches " \
+	"a consistent point may not be sent.  Native slot sync avoids this and " \
+	"is the recommended setup on PostgreSQL 17.  Setting " \
+	"sync_replication_slots = on alone is not enough to switch to it; " \
+	"follow the switching steps in Spock's logical slot failover " \
+	"documentation."
+#else
+#define UNDECODABLE_COPY_HINT \
+	"After a promotion, transactions that commit before decoding reaches " \
+	"a consistent point may not be sent."
+#endif
+
 #if PG_VERSION_NUM >= 160000
 /* Has this standby saved a snapshot at lsn? */
 static bool
@@ -897,8 +912,7 @@ apply_remote_position(RemoteSlot *remote_slot)
 							"consistent snapshot on the standby",
 							remote_slot->name),
 					 errdetail("%s.", reason),
-					 errhint("After a promotion, transactions that commit before "
-							 "decoding reaches a consistent point may not be sent.")));
+					 errhint(UNDECODABLE_COPY_HINT)));
 	}
 #if PG_VERSION_NUM >= 160000
 	else

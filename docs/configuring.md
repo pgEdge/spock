@@ -374,7 +374,10 @@ those slots automatically.
 On **PostgreSQL 17**, Spock's worker only yields to native slotsync when you
 set `sync_replication_slots = on` (below). On **PostgreSQL 18+**, Spock's own
 failover worker is not registered, so the native mechanism is required.
-Either way, PostgreSQL's own slot synchronization must be configured.
+Either way, PostgreSQL's own slot synchronization must be configured. To
+switch a PostgreSQL 17 standby that Spock's worker has been syncing, follow
+[Switching a PostgreSQL 17 standby from the Spock worker](logical_slot_failover.md#switching-a-postgresql-17-standby-from-the-spock-worker);
+setting `sync_replication_slots = on` alone is not enough.
 
 First create the physical replication slot on the primary. The standby streams
 through it, and its `catalog_xmin` (fed back via `hot_standby_feedback`) is what
@@ -550,13 +553,22 @@ snapshot is consistent. While a transaction older than a copy's
 consistent snapshot; the copy is reported once and left as it is until
 the transaction ends, and the worker goes on with the other slots.
 
+The check is off by default. While the setting is empty, every copy is
+synchronized without it, as in earlier releases, and is reported once (a
+WARNING on PostgreSQL 16 and 17, a LOG entry on 15); after a promotion,
+such a copy can still skip transactions the old primary committed shortly
+before the failover.
+
 On PostgreSQL 16 this must be the database the synchronized slots belong
-to, normally the Spock database. Copies in another database, and every copy
-when the setting is empty, are synchronized without the check and reported
-once with a WARNING. The standby also needs `wal_level = logical`.
-PostgreSQL 15 cannot decode WAL on a standby, so there the check is not
-available and each copy is noted once in the log instead. Default: empty.
-Requires a restart.
+to, normally the Spock database. Copies in another database are
+synchronized without the check, reported once with a WARNING, and carry
+the same risk. The worker connects to one database only, so with Spock in
+several databases on PostgreSQL 16, name the most important one; the
+slots of the others are not protected. On PostgreSQL 17, any one database
+covers the slots of every database. The standby also needs
+`wal_level = logical`. PostgreSQL 15 cannot decode WAL on a standby, so
+there the check is not available and each copy is noted once in the log
+instead. Default: empty. Requires a restart.
 
 On PostgreSQL 16 and 17 the worker stays connected to this database on
 every node where the setting is present, including a primary, where it
@@ -567,12 +579,21 @@ worker frees the database only until it restarts 60 seconds later; use
 `DROP DATABASE ... WITH (FORCE)`, or clear the setting and restart the
 server. If connecting fails, for example because the database does not
 exist, the worker reports it, carries on without the check, and does not
-try again until the server is restarted.
+try again until the server is restarted. The same happens when the
+database is dropped on the primary: replaying the drop on the standby ends
+the worker, the restarted worker cannot connect to the database, and the
+worker after that keeps synchronizing slots without the check.
 
 The check is made on PostgreSQL 16 and 17 (when `sync_replication_slots` is
 not enabled). On PostgreSQL 17 with native slot sync active, the worker still
-connects but makes no check. On PostgreSQL 15 and 18+, this setting is
-ignored.
+connects but makes no check. On PostgreSQL 17, native slot sync is the
+recommended setup; it gives every copy a consistent snapshot without this
+setting. Turning on `sync_replication_slots` alone is not enough to switch:
+native slot sync has further requirements and will not take over the copies
+the Spock worker made, so until those are dropped most or all slots stop
+being synchronized. See
+[Switching a PostgreSQL 17 standby from the Spock worker](logical_slot_failover.md#switching-a-postgresql-17-standby-from-the-spock-worker).
+On PostgreSQL 15 and 18+, this setting is ignored.
 
 On PostgreSQL 17, once the worker has taken over from native slot sync, a
 copy that native slot sync made is synchronized like any other, but a
