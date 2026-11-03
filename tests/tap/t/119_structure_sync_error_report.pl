@@ -24,6 +24,10 @@ use SpockTest qw(create_cluster destroy_cluster get_test_config scalar_query
 # server log next to Spock's report; both are checked.
 # =============================================================================
 
+# The patterns below match English messages from the server, pg_dump and
+# pg_restore.  The servers and the tools they start inherit this locale.
+$ENV{LC_ALL} = 'C';
+
 create_cluster(2, 'Create 2-node cluster for structure sync error test');
 
 my $config      = get_test_config();

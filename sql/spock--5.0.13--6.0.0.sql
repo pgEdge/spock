@@ -22,6 +22,15 @@ CREATE OR REPLACE FUNCTION spock.md5_agg_sfunc(text, anyelement)
 AS $$ SELECT md5($1 || $2::text) $$
 LANGUAGE sql IMMUTABLE PARALLEL SAFE;
 
+-- Add PARALLEL = SAFE to md5_agg, also missing in earlier definitions
+CREATE OR REPLACE AGGREGATE spock.md5_agg (ORDER BY anyelement)
+(
+	STYPE = text,
+	SFUNC = spock.md5_agg_sfunc,
+	INITCOND = '',
+	PARALLEL = SAFE
+);
+
 -- Add named parameters to spock_gen_slot_name (originally created without names in 5.0.0)
 CREATE OR REPLACE FUNCTION spock.spock_gen_slot_name(
   dbname        name,
