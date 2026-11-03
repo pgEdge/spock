@@ -464,9 +464,18 @@ falling behind a logical subscriber.
 spock.pg_standby_slot_names = 'physical_slot_1,physical_slot_2'
 ```
 
-Used on PostgreSQL 15, 16, and 17 (when `sync_replication_slots` is not
-enabled). On PostgreSQL 17+ with native slotsync, or on PostgreSQL 18+, use
-`synchronized_standby_slots` instead.
+Used on every supported PostgreSQL version, with or without native slot
+sync. PostgreSQL's own `synchronized_standby_slots` has no equivalent of
+`spock.standby_slots_min_confirmed`: it waits for every slot it names, so
+with it one standby that is down stops logical replication to every
+subscriber. Use only one of them; setting both is redundant. For a failover slot
+`synchronized_standby_slots` is applied first and waits for all of its
+slots, so when it names every slot listed here this setting adds nothing,
+and the walsender logs that; a slot listed only here still counts. A
+listed slot that does not exist can never confirm: with the default `-1`
+the walsender waits until `wal_sender_timeout`, logs a warning naming the
+slot, and starts over, so after a promotion either create the slots on
+the new primary or clear the setting there.
 
 ### `spock.standby_slots_min_confirmed`
 

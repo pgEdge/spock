@@ -3,7 +3,7 @@
 ## Spock 6.0.0-beta.2
 
 This section lists what changed since 6.0.0-beta.1, for those testing the
-beta.  Each item is covered in full in the 6.0.0 notes below.  This section
+beta.  Most items are covered in full in the 6.0.0 notes below.  This section
 will be removed at general availability.
 
 ### Upgrading from beta 1
@@ -55,6 +55,14 @@ will be removed at general availability.
   upgrades in one `ALTER EXTENSION spock UPDATE`, through 5.0.12.
 * On a server with PostgreSQL's fix for CVE-2026-6471, `spock_output` must be
   listed in `output_plugin_libraries`.  See *Upgrading* below.
+* On PostgreSQL 18, `spock.pg_standby_slot_names` did nothing on beta 1, so a
+  value set there, or one inherited by a promoted standby, had no effect.
+  Beta 2 honours it: with the default `spock.standby_slots_min_confirmed` of
+  `-1` a logical walsender waits for every named slot until
+  `wal_sender_timeout` and then starts over, so replication stalls while a
+  named slot is missing.  Check the value on each PostgreSQL 18 node before
+  installing beta 2, and either create the slots it names or clear the
+  setting.
 
 ### GUC changes
 
@@ -103,6 +111,12 @@ will be removed at general availability.
   it waits for the primary's copy of a new slot to catch up.  The new copy
   stays a temporary slot until then and is dropped, not kept, if the
   standby is promoted first.
+* The walsender hold-back on `spock.pg_standby_slot_names` with
+  `spock.standby_slots_min_confirmed` is installed on PostgreSQL 18 and
+  later again.  It had been dropped there together with the failover slot
+  worker, but native slot sync only replaces the worker: PostgreSQL's
+  `synchronized_standby_slots` waits for every slot it names, so with two
+  standbys one that is down stopped replication to every subscriber.
 * Direct DDL against the `spock` and `snowflake` schemas is refused while
   DDL replication is on.
 * Large objects stored by lolor can be replicated, and Zodan `add_node`
