@@ -194,6 +194,16 @@ if [ "$entries" -ne "$lines" ]; then
     echo "$SKILL_NAME: a staged path contains a newline; commit refused" >&2
     exit 1
 fi
+# The paths being deleted.  The snapshot is written from the index, which no
+# longer holds a deleted file, so its pre-image is kept separately for the
+# reviewer where a deletion's diff cannot be included below.  --no-renames
+# means every name-status record is a status then a path; NUL is turned into
+# a newline, as above, since no staged path holds one (checked just now), and
+# BSD awk cannot split on NUL.
+removed="$work/removed"
+git diff --cached --no-renames --name-status -z \
+    | LC_ALL=C tr '\0' '\n' \
+    | awk 'NR%2==1{s=$0;next} s=="D"{print}' > "$work/deleted"
 LC_ALL=C tr '\0' '\n' < "$work/names" | while IFS= read -r f; do
     [ -n "$f" ] || continue
     # The reviewer needs a unified diff of the real content: not the output
@@ -205,27 +215,50 @@ LC_ALL=C tr '\0' '\n' < "$work/names" | while IFS= read -r f; do
     git --literal-pathspecs -c core.quotepath=off diff --cached --no-renames \
         --no-ext-diff --no-textconv --text -U20 --no-color -- "$f" > "$work/one.diff"
     n=$(wc -c < "$work/one.diff")
+    binary=0
+    [ "$(LC_ALL=C tr -d '\000' < "$work/one.diff" | wc -c)" -ne "$n" ] && binary=1
     if [ "$n" -eq 0 ]; then
         printf '%s\n' "$f" >> "$prompt_file.unsupplied"
-    elif [ "$(LC_ALL=C tr -d '\000' < "$work/one.diff" | wc -c)" -ne "$n" ]; then
-        printf '%s (binary)\n' "$f" >> "$prompt_file.omitted"
-    elif [ $((used + n)) -le "$MAX_DIFF_BYTES" ]; then
+        continue
+    fi
+    if [ "$binary" -eq 0 ] && [ $((used + n)) -le "$MAX_DIFF_BYTES" ]; then
         d="$(cat "$work/one.diff")"
         printf '```diff\n%s\n```\n\n' "$d" >> "$prompt_file"
         used=$((used + n))
+        continue
+    fi
+    # Diff left out: binary, or past the byte budget.  The snapshot holds the
+    # staged version of a file that still exists, so the reviewer can read it
+    # there; a deleted file is gone from the snapshot, so its pre-image is
+    # written under removed/ so what the commit drops can still be inspected,
+    # and a deletion whose pre-image cannot be written refuses the commit
+    # rather than passing it unreviewed.
+    if grep -Fxq "$f" "$work/deleted"; then
+        if ! mkdir -p "$removed/$(dirname "$f")" 2>/dev/null \
+                || ! git cat-file blob "HEAD:$f" > "$removed/$f" 2>/dev/null; then
+            printf '%s\n' "$f" >> "$prompt_file.unsupplied"
+            continue
+        fi
+        if [ "$binary" -eq 1 ]; then
+            printf '%s (deleted, binary; pre-image under removed/)\n' "$f" >> "$prompt_file.omitted"
+        else
+            printf '%s (deleted; removed content under removed/)\n' "$f" >> "$prompt_file.omitted"
+        fi
+    elif [ "$binary" -eq 1 ]; then
+        printf '%s (binary)\n' "$f" >> "$prompt_file.omitted"
     else
         printf '%s\n' "$f" >> "$prompt_file.omitted"
     fi
 done
 if [ -f "$prompt_file.unsupplied" ]; then
-    echo "$SKILL_NAME: no diff could be taken for a staged path (one with a newline in it?); commit refused" >&2
+    echo "$SKILL_NAME: a staged change could not be supplied to the reviewer (a path with a newline, or a deleted file whose pre-image could not be read); commit refused" >&2
     sed 's/^/  /' "$prompt_file.unsupplied" >&2
     exit 1
 fi
 if [ -f "$prompt_file.omitted" ]; then
     {
         printf '## Files whose diff is not included (too large or binary)\n\n'
-        printf 'Read each of these from the snapshot; one marked D in the staged files is deleted and has no copy there.\n\n```\n'
+        printf 'Read a file that still exists from the snapshot.  A line marked "under removed/" is a deletion: read its pre-image from the removed/ tree beside the snapshot (%s) to see what the commit drops.\n\n```\n' "$removed"
         cat "$prompt_file.omitted"
         printf '```\n'
     } >> "$prompt_file"
