@@ -90,6 +90,13 @@ Core PostgreSQL copies the slots. Set these in addition to the base settings.
 | `spock.standby_slots_min_confirmed` | primary | `-1` | How many of those slots must confirm. `-1` means all; `1` keeps replicating while one standby of several is down. |
 | slot `failover = true` | primary | per slot | Only slots with this flag are synced. Spock 6.0.0 sets it at creation; older slots are handled during upgrade. |
 
+With `spock.standby_slots_min_confirmed` lower than the number of listed
+slots, subscribers can receive changes that some standbys do not have yet.
+After a failure, promote the standby with the highest
+`pg_last_wal_receive_lsn()`: it has every change sent to a subscriber.
+Promoting a standby that is further behind leaves subscribers with rows the
+new primary never had.
+
 A standby inherits `spock.pg_standby_slot_names` from whichever file carries
 it, including a `postgresql.conf` or `postgresql.auto.conf` that
 `pg_basebackup` copies. After a promotion the new primary has none of the

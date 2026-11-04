@@ -12,7 +12,7 @@ use Test::More;
 use lib '.';
 use SpockTest qw(create_cluster cross_wire destroy_cluster get_test_config
                  system_or_bail psql_or_bail scalar_query poll_query_until
-                 log_offset wait_for_log);
+                 log_offset log_since wait_for_log);
 
 create_cluster(2, 'Create 2-node cluster');
 cross_wire(2, ['n1', 'n2'], 'Bidirectional mesh between n1 and n2');
@@ -129,10 +129,29 @@ psql_or_bail(1, "ALTER SYSTEM SET spock.pg_standby_slot_names = 'sb1,sb2,no_such
 psql_or_bail(1, "ALTER SYSTEM SET spock.standby_slots_min_confirmed = 2");
 psql_or_bail(1, "SELECT pg_reload_conf()");
 ok(arrived(insert_row(), 90), 'two of three named slots confirm, the third missing');
-ok(wait_for_log(1,
-        qr/replication slot "no_such_slot" named in spock\.pg_standby_slot_names does not exist/,
-        $log_off, 30),
+my $missing_re =
+    qr/replication slot "no_such_slot" named in spock\.pg_standby_slot_names does not exist/;
+ok(wait_for_log(1, $missing_re, $log_off, 30),
    'the missing slot is named in a warning');
+
+# A reload with the same value is not a change: the slot stays missing and
+# is not named again.  One walsender on n1 serves n2, so one warning.
+psql_or_bail(1, "SELECT pg_reload_conf()");
+ok(arrived(insert_row(), 60), 'a row replicates after a reload with no change');
+ok(arrived(insert_row(), 60), 'and another');
+my @warnings = (log_since(1, $log_off) =~ /$missing_re/g);
+is(scalar(@warnings), 1, 'the missing slot is warned about once');
+
+# =============================================================================
+# A name listed twice counts once
+# =============================================================================
+# With the default of -1, "sb1,sb1,sb2" needs sb1 and sb2.  Counted per
+# entry it would need three confirmations from two slots and never reach
+# them.
+psql_or_bail(1, "ALTER SYSTEM SET spock.pg_standby_slot_names = 'sb1,sb1,sb2'");
+psql_or_bail(1, "ALTER SYSTEM RESET spock.standby_slots_min_confirmed");
+psql_or_bail(1, "SELECT pg_reload_conf()");
+ok(arrived(insert_row(), 60), 'a repeated name does not hold replication');
 
 # =============================================================================
 # Cleanup
