@@ -27,6 +27,7 @@ cat > "$STUB_PROMPT"
 snap="$(sed -n 's/^Repository snapshot: \([^ ]*\) .*/\1/p' "$STUB_PROMPT")"
 [ -f "$snap/a.txt" ] && cp "$snap/a.txt" "$STUB_PROMPT.a.txt"
 [ -f "$snap/big.csv" ] && cp "$snap/big.csv" "$STUB_PROMPT.big.csv"
+[ -f "$(dirname "$snap")/removed/gone.txt" ] && cp "$(dirname "$snap")/removed/gone.txt" "$STUB_PROMPT.gone.txt"
 [ -n "${STUB_SLEEP:-}" ] && sleep "$STUB_SLEEP"
 case "${STUB_VERDICT:-APPROVE}" in
     TWO) printf 'VERDICT: APPROVE\n\nVERDICT: REJECT\n' ;;
@@ -225,6 +226,28 @@ grep -q '^+budget$' "$STUB_PROMPT" && fail "over-budget diff was included"
 grep -q 'not included' "$STUB_PROMPT" || fail "over-budget file was not listed"
 grep -q '^a.txt$' "$STUB_PROMPT" || fail "over-budget file name missing from the list"
 pass "a diff over the budget is listed for reading instead"
+
+# A deletion whose diff is over the budget: the snapshot cannot hold the gone
+# file, so its pre-image is written under removed/ for the reviewer to read.
+printf 'secret line one\nsecret line two\n' > gone.txt
+git add gone.txt
+STUB_VERDICT=APPROVE git commit -q -m 'Add gone.' >/dev/null 2>&1 || fail "setup commit for deletion refused"
+git rm -q gone.txt
+COMMIT_REVIEW_MAX_DIFF_BYTES=10 STUB_VERDICT=APPROVE git commit -q -m 'Remove gone.' >/dev/null 2>&1 || fail "deletion commit refused"
+grep -q '^gone.txt (deleted; removed content under removed/)$' "$STUB_PROMPT" || fail "deleted file not listed as recoverable"
+[ "$(cat "$STUB_PROMPT.gone.txt" 2>/dev/null)" = "$(printf 'secret line one\nsecret line two')" ] \
+    || fail "pre-image of the deleted file not available under removed/"
+pass "a deletion over budget leaves its pre-image under removed/"
+
+# A binary deletion: its pre-image is written too, listed as binary.
+printf 'OBJ\000\001\002GONE-BIN\000\n' > gone.bin
+git add gone.bin
+STUB_VERDICT=APPROVE git commit -q -m 'Add gone.bin.' >/dev/null 2>&1 || fail "setup commit for binary deletion refused"
+git rm -q gone.bin
+STUB_VERDICT=APPROVE git commit -q -m 'Remove gone.bin.' >/dev/null 2>&1 || fail "binary deletion commit refused"
+grep -q '^gone.bin (deleted, binary; pre-image under removed/)$' "$STUB_PROMPT" || fail "binary deletion not listed"
+grep -q 'GONE-BIN' "$STUB_PROMPT" && fail "binary pre-image bytes reached the prompt"
+pass "a binary deletion is listed with its pre-image kept under removed/"
 
 # Two verdict lines refuse the commit, so does a verdict that only starts
 # with APPROVE; a timeout refuses it and is recorded.
