@@ -63,6 +63,13 @@ flag. Spock's walsender hold-back (`spock.pg_standby_slot_names` with
 registered, since `synchronized_standby_slots` can only wait for all of its
 slots.
 
+With `spock.standby_slots_min_confirmed` lower than the number of listed
+slots, subscribers can receive changes that some standbys do not have yet.
+After a failure, promote the standby with the highest
+`pg_last_wal_receive_lsn()`: it has every change sent to a subscriber.
+Promoting a standby that is further behind leaves subscribers with rows the
+new primary never had.
+
 ## Setup: PostgreSQL 17 and 18+ (Native, requires `spock.use_native_failover_slots = on`)
 
 On PostgreSQL 17 the Spock worker only steps aside once `sync_replication_slots
