@@ -413,6 +413,12 @@ given LSN before logical replication is allowed to proceed. The default
 spock.standby_slots_min_confirmed = -1
 ```
 
+With a value lower than the number of listed slots, subscribers can receive
+changes that some standbys do not have yet. After a failure, promote the
+standby with the highest `pg_last_wal_receive_lsn()`: it has every change
+sent to a subscriber. Promoting a standby that is further behind leaves
+subscribers with rows the new primary never had.
+
 ### `spock.failover_slots_naptime`
 
 How long the `spock_failover_slots` worker sleeps between slot-synchronization
