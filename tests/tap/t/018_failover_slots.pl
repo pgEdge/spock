@@ -350,7 +350,22 @@ sub run_failover_scenario {
     my $poll_secs = 5;
     diag("Waiting up to ${wait_secs}s for slot '$slot_name' on standby...");
 
+    # A newly created copy reserves WAL at the standby's redo position, which
+    # starts out ahead of the primary's logical slot: right after setup the
+    # subscriber has only confirmed an earlier point, so the primary slot's
+    # restart_lsn is behind the standby redo.  The copy is correctly kept
+    # pending (a temporary slot) until the primary slot advances past that
+    # position, and nothing here advances it on its own.  Nudge it forward
+    # the way PostgreSQL's own slotsync tests do: a running-xacts record
+    # (pg_log_standby_snapshot, PG16+) lets the primary slot's restart_lsn
+    # move, and the subscriber confirming it carries the copy to a point the
+    # standby can retain, so the worker can persist it.
     my $slot_present = wait_until($wait_secs, $poll_secs, sub {
+        if ($pg_major >= 16)
+        {
+            psql_or_bail(1, "SELECT txid_current()");
+            psql_or_bail(1, "SELECT pg_log_standby_snapshot()");
+        }
         my $c = qport($pg_bin, $host, $standby_port, $dbname, $db_user,
             "SELECT count(*) FROM pg_replication_slots
              WHERE slot_name = '$slot_name' AND NOT temporary");
