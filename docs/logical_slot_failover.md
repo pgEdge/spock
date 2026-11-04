@@ -38,7 +38,10 @@ at creation time. This enables PostgreSQL's built-in slotsync worker to pick
 them up automatically.
 
 On **PostgreSQL 18+**, Spock's own failover worker is not registered at all.
-The native slotsync worker is the only mechanism.
+The native slotsync worker is the only mechanism that copies the slots.
+Spock's walsender hold-back (`spock.pg_standby_slot_names` with
+`spock.standby_slots_min_confirmed`) stays available on every version, since
+`synchronized_standby_slots` can only wait for all of its slots.
 
 ## Which settings you need
 
@@ -82,8 +85,19 @@ Core PostgreSQL copies the slots. Set these in addition to the base settings.
 | `hot_standby_feedback` | standby | `on` | Stops the primary from removing catalog rows the slots still need. |
 | `primary_slot_name` | standby | physical slot name | The physical slot the standby streams through. |
 | `primary_conninfo` | standby | connection string with `dbname` | How the standby reaches the primary. |
-| `synchronized_standby_slots` | primary | physical slot name | Holds logical walsenders back until the standby has the changes. |
+| `synchronized_standby_slots` | primary | physical slot name | Holds logical walsenders back until every listed standby has the changes. With more than one standby, use the two Spock settings below instead when "any N of them" is wanted; use only one of the two mechanisms. |
+| `spock.pg_standby_slot_names` | primary | `''` | Physical slots that must confirm an LSN before logical replication advances. Optional. |
+| `spock.standby_slots_min_confirmed` | primary | `-1` | How many of those slots must confirm. `-1` means all; `1` keeps replicating while one standby of several is down. |
 | slot `failover = true` | primary | per slot | Only slots with this flag are synced. Spock 6.0.0 sets it at creation; older slots are handled during upgrade. |
+
+A standby inherits `spock.pg_standby_slot_names` from whichever file carries
+it, including a `postgresql.conf` or `postgresql.auto.conf` that
+`pg_basebackup` copies. After a promotion the new primary has none of the
+physical slots it names, so with `-1` every logical walsender waits for them
+until `wal_sender_timeout` and warns; create the slots there or clear the
+setting, as for `synchronized_standby_slots` in the runbook below. A
+walsender that is waiting does not notice a server shutdown before that
+timeout either.
 
 The physical slot must exist on the primary before the standby connects:
 
@@ -170,8 +184,9 @@ After promoting the standby, subscribers only need to update their connection
 string to point to the new primary. Replication resumes from the last
 synchronized LSN with no data loss and no slot recreation required.
 
-**Important:** if the promoted node has `synchronized_standby_slots` set, you
-must adjust it before replication will resume. See
+**Important:** if the promoted node has `synchronized_standby_slots` or
+`spock.pg_standby_slot_names` set, you must adjust it before replication will
+resume: both name physical slots the new primary does not have. See
 [Runbook: clear `synchronized_standby_slots` after promotion](#runbook-clear-synchronized_standby_slots-after-promotion)
 below.
 
