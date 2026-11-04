@@ -86,3 +86,4 @@ test: 115_failover_slot_native_synced_copy
 test: 117_call_rollback_extended_protocol
 test: 118_monitor_views
 test: 119_structure_sync_error_report
+test: 120_standby_holdback_quorum
