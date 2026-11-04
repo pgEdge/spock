@@ -1,5 +1,25 @@
 # Spock Release Notes
 
+## Spock 6.1.0
+
+### Quorum layer
+
+Spock can now consult an external quorum system, selected with
+`spock.quorum_provider`: an etcd cluster, or the pgraft or pgBully extension
+running inside PostgreSQL. With the default of `none` nothing is consulted
+and behaviour is unchanged. Two new superuser functions report what the
+layer sees, `spock.quorum_status()` and `spock.quorum_members()`. Nothing in
+Spock acts on the answers yet. See
+[Consulting a Quorum System](managing/quorum_layer.md).
+
+New settings: `spock.quorum_provider`, `spock.quorum_timeout`,
+`spock.quorum_cluster_id`, `spock.quorum_etcd_endpoints`.
+
+### Upgrading
+
+`ALTER EXTENSION spock UPDATE TO '6.1.0'` adds the two functions. No catalog
+changes, no restart.
+
 ## Spock 6.0.0-beta.2
 
 This section lists what changed since 6.0.0-beta.1, for those testing the
