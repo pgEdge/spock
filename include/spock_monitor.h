@@ -147,7 +147,7 @@ extern void spock_monitor_shmem_startup(bool found);
 /* event history */
 extern void spock_monitor_record_event(SpockMonitorEventType type,
 									   Oid subid, XLogRecPtr lsn,
-									   const char *fmt, ...) pg_attribute_printf(4, 5);
+									   const char *fmt,...) pg_attribute_printf(4, 5);
 
 /* per-subscription counters, used by apply and sync workers */
 extern void spock_monitor_worker_attached(void);

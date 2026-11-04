@@ -359,7 +359,7 @@ spock_monitor_append_event(SpockMonitorEventType type, Oid subid,
  */
 void
 spock_monitor_record_event(SpockMonitorEventType type, Oid subid,
-						   XLogRecPtr lsn, const char *fmt, ...)
+						   XLogRecPtr lsn, const char *fmt,...)
 {
 	char		detail[SPOCK_MONITOR_MESSAGE_LEN];
 	va_list		args;

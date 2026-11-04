@@ -199,7 +199,7 @@ void		spock_ropost_parse_analyze(ParseState *pstate, Query *query, JumbleState *
  * need to stub it out if we aren't using valgrind.
  */
 pg_attribute_unused() pg_attribute_printf(1, 2) static inline void
-VALGRIND_PRINTF(const char *format, ...)
+VALGRIND_PRINTF(const char *format,...)
 {
 }
 
