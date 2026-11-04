@@ -3106,6 +3106,7 @@ _do_pg_upgrade() {
 	# pg_upgrade scatters its own log files into $PWD; keep that out of the
 	# source tree, and out of the caller's working directory.
 	mkdir -p "${LOG_DIR}/pg_upgrade-${node}"
+	local rc=0
 	(
 		cd "${LOG_DIR}/pg_upgrade-${node}"
 
@@ -3127,7 +3128,18 @@ _do_pg_upgrade() {
 			-p "${stage_old}" -P "${stage_port}" \
 			-U "${DBUSER}" \
 			-s "${SOCK_DIR}"
-	)
+	) || rc=$?
+
+	# pg_upgrade (PG15+) writes its per-step logs, including the
+	# pg_dump/pg_restore errors, to <new datadir>/pg_upgrade_output.d rather
+	# than $PWD.  Copy them next to the phase log so they survive as evidence;
+	# the directory is removed by pg_upgrade on success and is otherwise only
+	# reachable inside the runner.
+	if [ -d "${new_data}/pg_upgrade_output.d" ]; then
+		cp -R "${new_data}/pg_upgrade_output.d/." \
+			"${LOG_DIR}/pg_upgrade-${node}/" 2>/dev/null || true
+	fi
+	return "${rc}"
 }
 
 # Bring up the new-major data directory for a node.  Done fresh every time,
