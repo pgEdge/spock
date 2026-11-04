@@ -1,5 +1,102 @@
 # Spock Release Notes
 
+## Spock 5.0.14
+
+### Upgrade Notes
+* There are no schema changes in 5.0.14.
+
+* On PostgreSQL 16 and later, we recommend setting the new
+  `spock.failover_slots_database` setting on each standby to the Spock
+  database. It makes sure a subscriber is not missing transactions after the
+  standby is promoted in a failover. Without it, a few transactions that
+  committed on the primary shortly before the failover may never be sent to
+  subscribers. Slot copies are then synchronized as in 5.0.13, and each one
+  is reported once with a WARNING. The database has to be named because the
+  failover slot worker runs once per server, not in any one database. The
+  setting requires a restart. While it is set, the worker stays connected to
+  that database, so `DROP DATABASE` and `ALTER DATABASE ... RENAME` on it fail
+  unless you use `WITH (FORCE)` or clear the setting. See
+  [Configuring Spock](configuring.md).
+
+* AutoDDL no longer replicates CLUSTER without a table, CLUSTER on a
+  partitioned table, or, on PostgreSQL 19, REPACK with ANALYZE or
+  CONCURRENTLY. These commit on their own partway through and broke the apply
+  worker. They now run only on the node where they are issued, so run them on
+  each node yourself. During a rolling upgrade, a node still on 5.0.13 can
+  still send them, so avoid them or turn off AutoDDL until every node is on
+  5.0.14.
+
+### Bug Fixes
+* On a physical standby, the failover slot worker kept advancing a slot copy
+  that had been invalidated, so it looked current but could not serve a
+  subscriber after a promotion. The worker now reports such a copy, drops it
+  and recreates it from the primary. The new
+  `spock.failover_slots_recreate_invalidated` setting turns that off.
+
+* Creating a slot copy on the standby held up the sync of every other slot
+  until the primary's slot caught up, and a copy still waiting at promotion
+  was kept with positions it could not serve. A new copy is now a temporary
+  slot until the primary has caught up, and is dropped if the standby is
+  promoted first.
+
+* A slot copy carried the primary's positions but not its snapshot, so after
+  a promotion the transactions that committed before decoding was consistent
+  were never sent. With the new `spock.failover_slots_database` setting the
+  worker decodes each copy on the standby so that it has a consistent
+  snapshot.
+
+* On PostgreSQL 17 and later, a copy made by native slot sync whose slot the
+  primary later dropped made the worker fail and restart every minute. The
+  worker now leaves it and reports it once.
+
+* A physical slot named in `spock.pg_standby_slot_names` that does not exist
+  was never reported when the other named slots already satisfied
+  `spock.standby_slots_min_confirmed`, so the walsender could wait on it
+  silently. The missing slot is now named in a warning even when the quorum
+  is met, and the warning is issued again if the setting is reloaded to name
+  a different missing slot.
+
+* A slot listed twice in `spock.pg_standby_slot_names` was counted twice, so
+  with the default `spock.standby_slots_min_confirmed` of -1, `'sb1,sb1'`
+  needed two confirmations from one slot and held replication until
+  `wal_sender_timeout` on every attempt. Repeated names are now ignored.
+
+* An apply worker could fail with `unable to find an empty exception log
+  slot` while most entries were still free, for example when subscriptions
+  with the same name in different databases started at the same time. The
+  error also left a Spock shared memory lock held, so the manager workers,
+  `spock.sub_create()` and `spock.sub_show_status()` hung until the server
+  was restarted. The error is now raised only when the log is really full,
+  the lock is released first, and the worker restarts after
+  `spock.restart_delay_default`.
+
+* Under `last_update_wins`, an incoming UPDATE always won against a local row
+  that VACUUM had frozen, even when the local change was newer, so nodes could
+  end up with different values. Since PostgreSQL 16, VACUUM can freeze
+  recently written rows. Spock now finds the commit timestamp of a frozen row
+  from its original transaction ID.
+
+* A procedure that ran COMMIT or ROLLBACK, called over the extended query
+  protocol (psycopg, JDBC) with a bound parameter, could crash the backend
+  and restart the node. `spock.wait_for_sync_event()` runs ROLLBACK, so just
+  waiting for a sync event from such a client was enough. Spock read the
+  statement after the procedure had freed it. It now decides whether the
+  statement is DDL before running it.
+
+* A replicated CLUSTER without a table crashed the apply worker on the
+  subscriber, restarting the postmaster and replaying the statement on every
+  restart. CLUSTER on a partitioned table, and REPACK with ANALYZE or
+  CONCURRENTLY on PostgreSQL 19, had the same problem or hung the worker.
+  These forms are no longer replicated. See Upgrade Notes.
+
+* Spock failed to build against PostgreSQL 19 RC1, which changed the
+  signature of `RelationFindReplTupleByIndex()`.
+
+* The Debian packages for different PostgreSQL major versions could not have
+  their debug symbol packages installed together, because each one shipped
+  the same build-id file for `spockctrl`. `spockctrl` is no longer in the
+  `-dbgsym` package.
+
 ## Spock 5.0.13
 
 ### Upgrade Notes
@@ -24,34 +121,6 @@
   5.0.7, which lacks `spock.pause_apply_workers()` and
   `spock.resume_apply_workers()`. Sync now skips pausing and resuming in that
   case.
-
-* On a physical standby, the failover slot worker kept advancing a slot copy
-  that had been invalidated, so it looked current but could not serve a
-  subscriber after a promotion. The worker now reports such a copy, drops it
-  and recreates it from the primary. The new
-  `spock.failover_slots_recreate_invalidated` setting turns that off.
-
-* Creating a slot copy on the standby held up the sync of every other slot
-  until the primary's slot caught up, and a copy still waiting at promotion
-  was kept with positions it could not serve. A new copy is now a temporary
-  slot until the primary has caught up, and is dropped if the standby is
-  promoted first.
-
-* A slot copy carried the primary's positions but not its snapshot, so after
-  a promotion the transactions that committed before decoding was consistent
-  were never sent. With the new `spock.failover_slots_database` setting the
-  worker decodes each copy on the standby so that it has a consistent
-  snapshot.
-
-* On PostgreSQL 17 and later, a copy made by native slot sync whose slot the
-  primary later dropped made the worker fail and restart every minute. The
-  worker now leaves it and reports it once.
-* A physical slot named in `spock.pg_standby_slot_names` that does not exist
-  was never reported when the other named slots already satisfied
-  `spock.standby_slots_min_confirmed`, so the walsender could wait on it
-  silently. The missing slot is now named in a warning even when the quorum
-  is met, and the warning is issued again if the setting is reloaded to name
-  a different missing slot.
 
 ## Spock 5.0.12
 
