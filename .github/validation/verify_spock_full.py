@@ -20,10 +20,10 @@ accepted by capture, and each PG16-18 cell must appear exactly once as an invoca
 result leg, a leg job and a summary artifact of this run and attempt; each PG19 cell must be
 exactly one pg_not_supported gap. Anything absent is reported as missing, not as covered.
 
-The adapter is called through the branch reference @v1_STABLE. The reference and the commit it
-resolved to are checked separately: GitHub records the adapter as `...@v1_STABLE` (ref
-refs/heads/v1_STABLE) and each nested PEP workflow as `...@<commit>`; all must be STABLE_SHA, as
-must PEP's own provenance records and its checkouts.
+The adapter is called by the PEP candidate's full commit SHA (re-pinned from @v1_STABLE for the
+candidate regression; product expectations unchanged). GitHub records a SHA-pinned reusable
+workflow, and each workflow it calls, as `...@<sha>` with that sha and no ref; all must be PEP_SHA,
+as must PEP's own provenance records and its checkouts.
 
 What the run is: the packages are the already-published spock50 5.0.13-1 staging files,
 downloaded and checksum-verified, and the receipts are recorded in the run. Nothing is built or
@@ -44,8 +44,7 @@ from collections import Counter
 from pathlib import Path
 from urllib.parse import urlsplit
 
-STABLE_REF = "v1_STABLE"
-STABLE_SHA = "9b3c9e964487568a7b3f3a8f0a3c68000fe0d943"   # v1_STABLE after PEP #38 merged
+PEP_SHA = "17584fd4efab8ed82ae89cf58bc3cb0bee880278"   # PEP candidate (feature/pep-ace-support)
 PEP_WF = "pgEdge/pgedge-pep-test/.github/workflows/"
 NESTED = ("pep-capture.yml", "pep-certify.yml", "pep-integration.yml")
 HEAD_LINE = re.compile(r"HEAD is now at ([0-9a-f]{7,40}) ")
@@ -374,7 +373,7 @@ def verify(mode, evidence, source, env):
         check(seen == {cid: 1 for cid in cells}, "capture cells: %d listed, missing %s, extra or repeated %s"
               % (len(seen), sorted(set(cells) - set(seen))[:5], sorted(k for k, n in seen.items() if k not in cells or n > 1)[:5]))
         cp = cap.get("provenance") or {}
-        check((cp.get("pep_implementation_ref"), cp.get("pep_resolved_sha")) == (STABLE_SHA, STABLE_SHA),
+        check((cp.get("pep_implementation_ref"), cp.get("pep_resolved_sha")) == (PEP_SHA, PEP_SHA),
               "capture provenance %r" % ((cp.get("pep_implementation_ref"), cp.get("pep_resolved_sha")),))
         check((cp.get("run_id"), cp.get("run_attempt")) == (run_id, att),
               "capture is of run %r attempt %r, not this one" % (cp.get("run_id"), cp.get("run_attempt")))
@@ -460,7 +459,7 @@ def verify(mode, evidence, source, env):
             check((dec.get("axes") or {}).get(k) == OUTPUTS[k], "decision axis %s=%r" % (k, (dec.get("axes") or {}).get(k)))
         check(res.get("result_resolved") is True and not res.get("errors"), "result not resolved: %r" % res.get("errors"))
         rp = res.get("provenance") or {}
-        check((rp.get("pep_requested_ref"), rp.get("pep_resolved_sha")) == (STABLE_SHA, STABLE_SHA),
+        check((rp.get("pep_requested_ref"), rp.get("pep_resolved_sha")) == (PEP_SHA, PEP_SHA),
               "result provenance %r" % ((rp.get("pep_requested_ref"), rp.get("pep_resolved_sha")),))
         check((rp.get("run_id"), rp.get("run_attempt")) == (run_id, att), "result is of run %r attempt %r" % (rp.get("run_id"), rp.get("run_attempt")))
         check(sorted(res.get("coverage_gaps") or [], key=lambda g: str(g.get("cell_id"))) == expected_gaps(cells),
@@ -497,7 +496,7 @@ def verify(mode, evidence, source, env):
             ok &= check(leg.get("identity_evidence") == IDENTITY and leg.get("unproven_identity_rungs") == [],
                         tag + "identity %r" % leg.get("identity_evidence"))
             ok &= check(leg.get("counts") == COUNTS, tag + "counts %r, expected %r" % (leg.get("counts"), COUNTS))
-            ok &= check((prov.get("pep_requested_ref"), prov.get("pep_resolved_sha")) == (STABLE_SHA, STABLE_SHA),
+            ok &= check((prov.get("pep_requested_ref"), prov.get("pep_resolved_sha")) == (PEP_SHA, PEP_SHA),
                         tag + "provenance %r" % ((prov.get("pep_requested_ref"), prov.get("pep_resolved_sha")),))
             ok &= check((prov.get("caller_run_id"), prov.get("caller_run_attempt")) == (run_id, att),
                         tag + "result from run %r attempt %r" % (prov.get("caller_run_id"), prov.get("caller_run_attempt")))
@@ -528,7 +527,7 @@ def verify(mode, evidence, source, env):
                                 % (c["family"], c["arch"], c["pg_major"], CHANNEL, c["alias"], s["invocation_id"])),
               tag + "artifact name does not match its leg")
         prov = s.get("provenance") or {}
-        check((prov.get("pep_requested_ref"), prov.get("pep_resolved_sha")) == (STABLE_SHA, STABLE_SHA),
+        check((prov.get("pep_requested_ref"), prov.get("pep_resolved_sha")) == (PEP_SHA, PEP_SHA),
               tag + "summary provenance %r" % ((prov.get("pep_requested_ref"), prov.get("pep_resolved_sha")),))
         check((prov.get("caller_run_id"), prov.get("caller_run_attempt")) == (run_id, att),
               tag + "summary from run %r attempt %r, not this run" % (prov.get("caller_run_id"), prov.get("caller_run_attempt")))
@@ -580,12 +579,10 @@ def verify(mode, evidence, source, env):
         refs = [(r.get("path"), r.get("ref"), r.get("sha")) for r in source.run().get("referenced_workflows") or []]
         adapter = [r for r in refs if (r[0] or "").split("@")[0] == PEP_WF + "pep-release-certify.yml"]
         nested = sorted((r for r in refs if r not in adapter), key=repr)
-        check([r[:2] for r in adapter] == [(PEP_WF + "pep-release-certify.yml@" + STABLE_REF, "refs/heads/" + STABLE_REF)],
-              "adapter not called through @%s: %r" % (STABLE_REF, adapter))
-        check([r[2] for r in adapter] == [STABLE_SHA],
-              "adapter resolved to %r, expected %s" % ([r[2] for r in adapter], STABLE_SHA))
-        check(nested == sorted(((PEP_WF + n + "@" + STABLE_SHA, "refs/heads/" + STABLE_REF, STABLE_SHA) for n in NESTED), key=repr),
-              "nested PEP workflows %r, expected %s at %s" % (nested, ", ".join(NESTED), STABLE_SHA))
+        check(adapter == [(PEP_WF + "pep-release-certify.yml@" + PEP_SHA, None, PEP_SHA)],
+              "adapter not called by its full SHA %s: %r" % (PEP_SHA, adapter))
+        check(nested == sorted(((PEP_WF + n + "@" + PEP_SHA, None, PEP_SHA) for n in NESTED), key=repr),
+              "nested PEP workflows %r, expected %s at %s" % (nested, ", ".join(NESTED), PEP_SHA))
     except (RuntimeError, OSError, ValueError) as e:
         problems.append("run metadata: %s" % e)
     try:
@@ -648,7 +645,7 @@ def verify(mode, evidence, source, env):
             ok &= check("Installed client certificate, pgEdge repositories enabled" in log, "%s: certificate not installed" % name)
             ev[cid]["cert"] = "ok" if ok else "PROBLEM"
             rows.append((name, "ok" if ok else "PROBLEM"))
-    check(heads and all(STABLE_SHA.startswith(h) for h in heads), "PEP checkouts at %r, expected %s" % (sorted(heads), STABLE_SHA[:7]))
+    check(heads and all(PEP_SHA.startswith(h) for h in heads), "PEP checkouts at %r, expected %s" % (sorted(heads), PEP_SHA[:7]))
     for cid, c in cells.items():
         if c["tested"]:
             check(by_name.get(c["leg_job"]) is not None and ev[cid].get("cert") == "ok",
@@ -698,7 +695,7 @@ def main(argv):
         except (OSError, ValueError, KeyError):
             cells = {}
         with open(summary, "a") as f:
-            f.write("## Spock v5 full check through PEP @%s = %s\n\n" % (STABLE_REF, STABLE_SHA[:7]))
+            f.write("## Spock v5 full check through PEP @%s (candidate)\n\n" % PEP_SHA[:7])
             f.write("Validation harness, not a release: nothing is built or published. The packages are the "
                     "already-published spock50 5.0.13-1 staging files, downloaded and sha256-checked against the "
                     "fixture table; the receipts bind them to this run's cells only (no build provenance). "
