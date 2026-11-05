@@ -27,9 +27,9 @@ PG_FUNCTION_INFO_V1(spock_get_subscription_stats);
 #include "spock_conflict_stat.h"
 
 /*
- * Kind ID reserved for statistics of spock replication conflicts.
- * TODO: see https://wiki.postgresql.org/wiki/CustomCumulativeStats to choose
- * specific value in production
+ * Kind id of the conflict counters, registered to spock on the PostgreSQL
+ * wiki page CustomCumulativeStats.  The per-table counters of
+ * spock_channel_stat.c have 31.
  */
 #define SPOCK_PGSTAT_KIND_LRCONFLICTS	29
 
@@ -273,6 +273,28 @@ spock_stat_subscription_reset_timestamp_cb(PgStatShared_Common *header,
 										   TimestampTz ts)
 {
 	((Spock_Stat_Subscription *) header)->stats.stat_reset_timestamp = ts;
+}
+
+/* Every conflict entry, for the on-disk copy of spock_monitor_persist.c. */
+void
+spock_stat_conflict_foreach(SpockPgstatCallback cb, void *arg)
+{
+	spock_pgstat_foreach(SPOCK_PGSTAT_KIND_LRCONFLICTS, cb, arg);
+}
+
+long
+spock_stat_conflict_entries(void)
+{
+	return spock_pgstat_count(SPOCK_PGSTAT_KIND_LRCONFLICTS, InvalidOid);
+}
+
+/* Put an entry back after a crash emptied the statistics system. */
+bool
+spock_stat_conflict_seed(Oid dboid, Oid subid,
+						 const Spock_Stat_StatSubEntry *stats)
+{
+	return spock_pgstat_seed(SPOCK_PGSTAT_KIND_LRCONFLICTS, dboid, subid,
+							 stats, sizeof(Spock_Stat_StatSubEntry));
 }
 
 #endif							/* PG_VERSION_NUM >= 180000 */

@@ -27,6 +27,25 @@ All views are scoped to the current database. `spock.lag_tracker`,
 `spock.progress` and the `spock.channel_*_stats` views remain available and
 feed the views above.
 
+### Where the counters live
+
+| Counters | PostgreSQL 15 to 17 | PostgreSQL 18 and later |
+|----------|---------------------|-------------------------|
+| `spock.subscription_stats` activity, error and `last_*` columns, `spock.events` | Spock shared memory | Spock shared memory |
+| `n_tup_*`, `n_conflict`, `n_dca` (`spock.channel_table_stats`) | Spock shared memory, at most `spock.stats_max_entries` tables | The cumulative statistics system, with no limit on the number of tables |
+| `confl_*` | Not collected | The cumulative statistics system |
+
+Everything in spock shared memory survives a clean restart and a crash
+through the on-disk copy described in [History across
+restarts](#history-across-restarts). The cumulative statistics system keeps
+its entries across a clean restart but discards them when the server starts
+with crash recovery; spock puts its own entries back from the on-disk copy,
+so the channel and conflict counters survive a crash as well, less what was
+counted after the last write. `pg_stat_reset()` resets the cumulative
+statistics entries of the current database and leaves shared memory alone;
+`spock.reset_subscription_stats()` and `spock.reset_channel_stats()` reset
+both.
+
 ## System status
 
 `spock.system_status` is one row about the host and the PostgreSQL
@@ -93,7 +112,9 @@ been created.
 | `max_replication_lag_bytes`, `max_replication_lag` | Largest lag over all subscriptions. |
 | `exceptions_logged` | Rows in `spock.exception_log`. |
 | `last_event_time`, `last_error_event_time` | Time of the newest event, and of the newest error event. |
-| `events_retained`, `events_recorded` | Events kept in the history and recorded since start. |
+| `events_retained`, `events_recorded` | Events kept in the history and recorded since the history started, including those restored from disk. |
+| `events_restored`, `prior_shutdown_clean` | What the start of this run found on disk: the number of events read back, and whether the previous run shut down cleanly. NULL when nothing was on disk or `spock.monitor_flush_interval` is `0`. |
+| `last_flush_time` | When the history and the counters were last written to disk. |
 
 ```sql
 SELECT node_name, extension_update_pending, subscriptions_replicating,
@@ -140,9 +161,11 @@ SELECT subscription_name, status, worker_status, replication_lag,
 
 `spock.subscription_stats` has one row for every subscription with the
 counters collected by its apply and sync workers. Counters survive worker
-restarts and are reset with `spock.reset_subscription_stats(subid)`, or for
-all subscriptions with no argument. Every counter has a matching `last_*`
-timestamp of its most recent change.
+restarts, and server restarts and crashes through the on-disk copy described
+in [History across restarts](#history-across-restarts). They are reset with
+`spock.reset_subscription_stats(subid)`, or for all subscriptions with no
+argument. Every counter has a matching `last_*` timestamp of its most recent
+change.
 
 | Column | Description |
 |--------|-------------|
@@ -154,7 +177,7 @@ timestamp of its most recent change.
 | `apply_errors`, `sync_errors` | Errors raised in apply and in sync workers. An apply error counts once per failed transaction. |
 | `deadlocks`, `lock_timeouts`, `constraint_violations`, `resource_errors` | The same errors classified by SQLSTATE: deadlock detected, lock not available, class 23 and class 53. |
 | `tables_synced` | Tables whose initial synchronization completed. |
-| `n_tup_ins`, `n_tup_upd`, `n_tup_del`, `n_conflict`, `n_dca` | Tuple counters, summed from `spock.channel_table_stats`. |
+| `n_tup_ins`, `n_tup_upd`, `n_tup_del`, `n_conflict`, `n_dca` | Tuple counters, summed from `spock.channel_table_stats`. On PostgreSQL 18 and later they count a transaction's rows when it commits; before that, every row as it is applied. |
 | `confl_*` | Conflict counters by type; NULL before PostgreSQL 18. |
 | `last_error_message`, `last_error_lsn`, `last_error_sqlstate`, `last_error_pid` | The most recent worker error with DETAIL and CONTEXT, the provider LSN it happened at, its SQLSTATE and the process that raised it. |
 | `stats_reset` | When the counters were last reset. |
@@ -225,12 +248,14 @@ pending. Connection strings in parameters have their password hidden.
 
 `spock.events` is a ring of recent state changes kept in shared memory,
 oldest first. The number of events kept is set by
-`spock.event_history_size`. The history is cleared by a postmaster restart,
-and `spock.reset_events()` clears the events of the current database.
+`spock.event_history_size`. The ring is written to disk and read back when
+the server starts, so a restart or a crash keeps the history; see [History
+across restarts](#history-across-restarts). `spock.reset_events()` clears
+the events of the current database.
 
 | Column | Description |
 |--------|-------------|
-| `event_id` | Increases by one per event and is never reused. |
+| `event_id` | Increases by one per event and is never reused. After a crash the sequence skips ahead by `spock.event_history_size`, so the ids of events lost with the crash are not given out again. |
 | `event_time`, `event_type`, `severity` | When, what, and `info`, `warning` or `error`. |
 | `sqlstate` | The SQLSTATE of a `worker_error` or `stream_error` event. |
 | `subscription_id`, `subscription_name`, `provider_node` | The subscription concerned, if any, and the node its changes come from. |
@@ -255,6 +280,7 @@ Event types:
 | `apply_paused`, `apply_resumed` | `spock.pause_apply_workers()` and `spock.resume_apply_workers()`. |
 | `repair_mode_enabled`, `repair_mode_disabled` | `spock.repair_mode()`. |
 | `extension_upgraded` | The manager updated the extension to the library version. |
+| `node_started` | The server started with the on-disk copy enabled. The detail says how many events and counter entries were read back and whether the previous run shut down cleanly; after a crash it names the time of the last write, after which nothing was saved. |
 
 Events are recorded when the reporting code runs, whether or not the
 surrounding transaction commits.
@@ -265,6 +291,56 @@ SELECT event_time, event_type, subscription_name, detail
  WHERE severity <> 'info'
  ORDER BY event_id DESC
  LIMIT 20;
+```
+
+### History across restarts
+
+The event ring and the counters of `spock.subscription_stats` and
+`spock.channel_table_stats` are kept in shared memory, which a restart
+empties. The supervisor therefore writes them to files under
+`PGDATA/spock/` every `spock.monitor_flush_interval` (5 seconds by default),
+and sooner when a `warning` or `error` event is recorded or the ring has
+filled a quarter of the way since the last write. When the server starts,
+the files are read back into shared memory before any worker runs, so the
+events and the counters continue where they were, with event ids that keep
+increasing.
+
+| File | Content |
+|------|---------|
+| `events.log` | Every event, appended in order. When it grows past `spock.event_log_max_size` (64 MB by default) it is renamed to `events.log.old` and a new one is started, so between one and two times that size is kept. |
+| `stats.dat` | A snapshot of the subscription and channel counters, rewritten when they changed. |
+
+A clean shutdown writes everything the workers recorded before the
+supervisor exits; the `stream_stopped` events of walsenders, which
+PostgreSQL stops after the background workers, are not saved. A crash
+loses what was recorded after the last write: with the defaults at most
+five seconds of `info` events and counter increments, since warnings and
+errors are written as soon as they are recorded. The `node_started` event that opens every run
+says what was found and, after a crash, the time of the last write. The
+`events_restored`, `prior_shutdown_clean` and `last_flush_time` columns of
+`spock.node_status` show the same.
+
+The files carry the system identifier of the cluster, so a copy of the data
+directory on another cluster is ignored. A standby has the same identifier
+and restores the history of the primary after a promotion.
+
+`spock.event_log(since_id, max_rows)` returns the events of the current
+database from the files, oldest first, which reach further back than the
+ring. It has the columns of `spock.get_events()`, takes an event id to start
+from and a row limit, 0 and 1000 by default, and leaves out the events
+before the last `spock.reset_events()` of this database, as the view does.
+`spock.monitor_flush()` writes the files now and returns once they are
+written, for example before a backup; it returns `false` when the on-disk
+copy is turned off.
+
+Setting `spock.monitor_flush_interval` to `0` turns the on-disk copy off:
+nothing is written, nothing is read back at the next start, and the history
+is lost at every restart as it was before.
+
+```sql
+SELECT event_id, event_time, event_type, detail
+  FROM spock.event_log(since_id => 0, max_rows => 100000)
+ WHERE event_type = 'node_started';
 ```
 
 ## The full report

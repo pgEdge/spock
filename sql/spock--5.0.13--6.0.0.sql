@@ -518,6 +518,30 @@ LANGUAGE c AS 'MODULE_PATHNAME', 'spock_get_events';
 CREATE FUNCTION spock.reset_events() RETURNS void
 LANGUAGE c AS 'MODULE_PATHNAME', 'spock_reset_events';
 
+-- The events of this database kept on disk, which reach further back than
+-- the ring behind spock.events.  Events before the last reset_events() of
+-- this database are left out.
+CREATE FUNCTION spock.event_log(
+    IN  since_id        bigint DEFAULT 0,
+    IN  max_rows        integer DEFAULT 1000,
+    OUT event_id        bigint,
+    OUT event_time      timestamptz,
+    OUT event_type      text,
+    OUT severity        text,
+    OUT sqlstate        text,
+    OUT database_id     oid,
+    OUT subscription_id oid,
+    OUT pid             integer,
+    OUT lsn             pg_lsn,
+    OUT detail          text)
+RETURNS SETOF record STABLE
+LANGUAGE c AS 'MODULE_PATHNAME', 'spock_get_event_log';
+
+-- Write the event history and the counters to disk now and wait for it.
+-- Returns false when spock.monitor_flush_interval is 0.
+CREATE FUNCTION spock.monitor_flush() RETURNS boolean
+LANGUAGE c AS 'MODULE_PATHNAME', 'spock_flush_monitor';
+
 CREATE FUNCTION spock.get_apply_stats(
     OUT database_id                 oid,
     OUT subscription_id             oid,
@@ -585,7 +609,10 @@ CREATE FUNCTION spock.get_monitor_summary(
     OUT subscription_stats_used     integer,
     OUT channel_stats_capacity      integer,
     OUT channel_stats_used          bigint,
-    OUT channel_stats_full          boolean)
+    OUT channel_stats_full          boolean,
+    OUT events_restored             integer,
+    OUT prior_shutdown_clean        boolean,
+    OUT last_flush_time             timestamptz)
 RETURNS record STABLE
 LANGUAGE c AS 'MODULE_PATHNAME', 'spock_get_monitor_summary';
 
@@ -1107,7 +1134,10 @@ CREATE VIEW spock.node_status AS
            ev.last_event_time,
            ev.last_error_event_time,
            m.events_retained,
-           m.events_recorded
+           m.events_recorded,
+           m.events_restored,
+           m.prior_shutdown_clean,
+           m.last_flush_time
       FROM spock.get_monitor_summary() AS m
       CROSS JOIN spock.get_system_info() AS si
       CROSS JOIN LATERAL (
@@ -1542,6 +1572,8 @@ REVOKE ALL ON FUNCTION spock.get_apply_stats() FROM PUBLIC;
 REVOKE ALL ON FUNCTION spock.get_pending_exceptions() FROM PUBLIC;
 REVOKE ALL ON FUNCTION spock.reset_events() FROM PUBLIC;
 REVOKE ALL ON FUNCTION spock.reset_subscription_stats(oid) FROM PUBLIC;
+REVOKE ALL ON FUNCTION spock.event_log(bigint, integer) FROM PUBLIC;
+REVOKE ALL ON FUNCTION spock.monitor_flush() FROM PUBLIC;
 
 -- The read side is granted to pg_monitor, as PostgreSQL does for its own
 -- monitoring views.  USAGE on the schema is not: it would also reach the
@@ -1549,6 +1581,7 @@ REVOKE ALL ON FUNCTION spock.reset_subscription_stats(oid) FROM PUBLIC;
 -- monitoring role is granted that separately.  The reset functions stay
 -- with the superuser.
 GRANT EXECUTE ON FUNCTION spock.get_system_info(), spock.get_events(),
+    spock.event_log(bigint, integer),
     spock.get_apply_stats(), spock.get_pending_exceptions(),
     spock.replication_origin_status() TO pg_monitor;
 GRANT SELECT ON spock.settings, spock.system_status, spock.worker_status,

@@ -87,6 +87,7 @@
 #include "spock_sync.h"
 #include "spock_worker.h"
 #include "spock_apply.h"
+#include "spock_channel_stat.h"
 #include "spock_apply_heap.h"
 #include "spock_exception_handler.h"
 #include "spock_common.h"
@@ -755,6 +756,11 @@ handle_begin(StringInfo s)
 	xact_had_exception = false;
 	errcallback_arg.action_name = "BEGIN";
 
+#if PG_VERSION_NUM >= 180000
+	/* Row counts of a transaction that never committed are dropped here. */
+	spock_stat_channel_discard();
+#endif
+
 	/* A replay repeats the same transaction; only a new one starts afresh. */
 	if (!MyApplyWorker->use_try_block)
 		xact_error_reported = false;
@@ -1185,6 +1191,14 @@ handle_commit(StringInfo s)
 
 		if (replorigin_session_origin_lsn == end_lsn)
 			log_origin_progress(end_lsn);
+
+#if PG_VERSION_NUM >= 180000
+		/* The rows are committed, or thrown away with the transaction. */
+		if (xact_discarded)
+			spock_stat_channel_discard();
+		else
+			spock_stat_channel_flush();
+#endif
 
 		/*
 		 * Count what this commit actually did.  stop_skipping_changes()

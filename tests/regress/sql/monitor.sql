@@ -675,6 +675,79 @@ SELECT worker_slots > 0 AS has_slots, worker_slots_used > 0 AS slots_in_use,
        subscription_stats_used >= 1 AS has_stats, channel_stats_full
   FROM spock.get_monitor_summary();
 
+-- The on-disk copy of the history.  Two fresh events to write, recorded by
+-- this session, so nothing here depends on a worker getting a word in.
+-- repair_mode() returns an LSN, which a DO block keeps off the output.
+DO $$
+BEGIN
+    PERFORM spock.repair_mode(true);
+    PERFORM spock.repair_mode(false);
+END;
+$$;
+SELECT max(event_id) AS flushed_through FROM spock.events
+\gset
+
+-- A requested write completes, stamps the time, and the log then has every
+-- event the ring had when it was asked for
+SELECT spock.monitor_flush();
+SELECT last_flush_time IS NOT NULL AS write_time_known
+  FROM spock.get_monitor_summary();
+SELECT last_flush_time IS NOT NULL AS write_time_in_node_status
+  FROM spock.node_status;
+SELECT count(*) AS ring_events_missing_from_log
+  FROM spock.events ev
+ WHERE ev.event_id <= :flushed_through
+   AND NOT EXISTS (SELECT 1 FROM spock.event_log(0, 100000) l
+                    WHERE l.event_id = ev.event_id);
+
+-- The log row says what the ring row says
+SELECT l.event_type = ev.event_type AS same_type,
+       l.severity = ev.severity AS same_severity,
+       l.detail IS NOT DISTINCT FROM ev.detail AS same_detail,
+       l.pid = ev.pid AS same_pid
+  FROM spock.event_log(:flushed_through, 1) AS l
+  JOIN spock.events AS ev USING (event_id);
+
+-- since_id is a lower bound, max_rows a cap, and a negative start means
+-- everything, like 0
+SELECT count(*) AS capped FROM spock.event_log(0, 2);
+SELECT count(*) = 1 AS only_the_one_asked_for
+  FROM spock.event_log(:flushed_through, 100000)
+ WHERE event_id <= :flushed_through;
+SELECT (SELECT count(*) FROM spock.event_log(-1, 100000)
+         WHERE event_id <= :flushed_through) =
+       (SELECT count(*) FROM spock.event_log(0, 100000)
+         WHERE event_id <= :flushed_through) AS negative_means_everything;
+
+-- Reading the log is granted with pg_monitor; writing the files is not
+CREATE ROLE monitor_log_reader;
+GRANT USAGE ON SCHEMA spock TO monitor_log_reader;
+GRANT pg_monitor TO monitor_log_reader;
+SET ROLE monitor_log_reader;
+SELECT count(*) > 0 AS can_read_log FROM spock.event_log(0, 1);
+SELECT spock.monitor_flush();
+RESET ROLE;
+
+-- Without pg_monitor the log stays closed
+CREATE ROLE monitor_log_outsider;
+GRANT USAGE ON SCHEMA spock TO monitor_log_outsider;
+SET ROLE monitor_log_outsider;
+SELECT count(*) FROM spock.event_log(0, 1);
+RESET ROLE;
+REVOKE USAGE ON SCHEMA spock FROM monitor_log_reader, monitor_log_outsider;
+DROP ROLE monitor_log_reader;
+DROP ROLE monitor_log_outsider;
+
+-- A reset is honoured by the log as it is by the ring
+SELECT max(event_id) AS reset_through FROM spock.events
+\gset
+SELECT spock.reset_events();
+SELECT spock.monitor_flush();
+SELECT count(*) AS logged_before_reset
+  FROM spock.event_log(0, 100000) WHERE event_id <= :reset_through;
+SELECT count(*) AS shown_before_reset
+  FROM spock.events WHERE event_id <= :reset_through;
+
 \c :provider_dsn
 SELECT spock.wait_slot_confirm_lsn(NULL, NULL);
 

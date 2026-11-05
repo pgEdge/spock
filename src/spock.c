@@ -36,6 +36,7 @@
 
 #include "parser/parse_coerce.h"
 
+#include "postmaster/interrupt.h"
 #include "replication/origin.h"
 #include "replication/reorderbuffer.h"
 
@@ -54,6 +55,7 @@
 
 #include "spock_apply.h"
 #if PG_VERSION_NUM >= 180000
+#include "spock_channel_stat.h"
 #include "spock_conflict_stat.h"
 #endif
 #include "spock_executor.h"
@@ -905,6 +907,9 @@ spock_supervisor_on_exit(int code, Datum arg)
 		elog(LOG, "spock supervisor: shutdown drain timed out, "
 			 "SHUTDOWN forensic snapshot may be incomplete");
 
+	/* The workers have reported their exit; write the history and counters. */
+	spock_monitor_flush(true);
+
 	spock_group_resource_dump();
 	spock_rmgr_log_resource_dump(SPOCK_DUMP_SHUTDOWN, NULL);
 }
@@ -917,6 +922,7 @@ spock_supervisor_main(Datum main_arg)
 {
 	/* Establish signal handlers. */
 	pqsignal(SIGTERM, handle_sigterm);
+	pqsignal(SIGHUP, SignalHandlerForConfigReload);
 	BackgroundWorkerUnblockSignals();
 
 	before_shmem_exit(spock_supervisor_on_exit, (Datum) 0);
@@ -950,6 +956,20 @@ spock_supervisor_main(Datum main_arg)
 
 		CHECK_FOR_INTERRUPTS();
 
+		if (ConfigReloadPending)
+		{
+			ConfigReloadPending = false;
+			ProcessConfigFile(PGC_SIGHUP);
+		}
+
+		/*
+		 * The on-disk copy of the event history and the counters.  Before the
+		 * workers are started: the first flush of a run puts back what a
+		 * crash took out of the statistics system, which has to happen before
+		 * an apply worker counts into it.
+		 */
+		spock_monitor_flush(false);
+
 		if (SpockCtx->subscriptions_changed)
 		{
 			/*
@@ -965,7 +985,7 @@ spock_supervisor_main(Datum main_arg)
 
 		rc = WaitLatch(&MyProc->procLatch,
 					   WL_LATCH_SET | WL_TIMEOUT | WL_POSTMASTER_DEATH,
-					   180000L);
+					   spock_monitor_flush_timeout(180000L));
 
 		ResetLatch(&MyProc->procLatch);
 
@@ -1559,7 +1579,8 @@ _PG_init(void)
 	emit_log_hook = log_message_filter;
 
 #if PG_VERSION_NUM >= 180000
-	/* Spock replication conflict statistics */
+	/* Spock replication conflict and per-table counters */
 	spock_stat_register_conflict_stat();
+	spock_stat_register_channel_stat();
 #endif
 }

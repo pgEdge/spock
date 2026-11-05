@@ -49,6 +49,8 @@ The following user functions are available via the Spock extension:
 | spock.get_channel_stats | Returns tuple traffic statistics. |
 | spock.get_apply_stats | Returns the activity counters of every subscription; the source of the `spock.subscription_stats` view. |
 | spock.get_events | Returns the recent events of the node; the source of the `spock.events` view. |
+| spock.event_log | Returns the events of the current database from the on-disk event log, which reaches further back than `spock.events`. |
+| spock.monitor_flush | Writes the event history and the counters to disk now and returns once they are written. |
 | spock.get_monitor_summary | Returns capacity and usage of the spock shared memory structures. |
 | spock.get_pending_exceptions | Returns the transactions apply workers are retrying under exception handling. |
 | spock.get_system_info | Returns host, operating system and version information of the node. |

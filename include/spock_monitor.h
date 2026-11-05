@@ -15,8 +15,10 @@
 
 #include "access/xlogdefs.h"
 #include "datatype/timestamp.h"
+#include "storage/lwlock.h"
 #include "storage/s_lock.h"
 #include "utils/elog.h"
+#include "utils/hsearch.h"
 
 /* Longest text kept for an event detail or an error message. */
 #define SPOCK_MONITOR_MESSAGE_LEN	512
@@ -56,9 +58,17 @@ typedef enum SpockMonitorEventType
 	SPOCK_EVENT_REPAIR_MODE_ENABLED,
 	SPOCK_EVENT_REPAIR_MODE_DISABLED,
 	SPOCK_EVENT_EXTENSION_UPGRADED,
+	SPOCK_EVENT_NODE_STARTED,
 
 	SPOCK_EVENT_NUM_TYPES
 } SpockMonitorEventType;
+
+/*
+ * A ring entry that is not an event: it marks where spock.reset_events()
+ * was called, for the database in dboid, so that the on-disk event log can
+ * forget the events before it.  Never shown, has no event id.
+ */
+#define SPOCK_EVENT_RESET_MARKER	((SpockMonitorEventType) -1)
 
 /*
  * Per-subscription activity counters.  Every counter also remembers the
@@ -136,7 +146,43 @@ typedef struct SpockMonitorStatsEntry
 	slock_t		mutex;
 } SpockMonitorStatsEntry;
 
+/* Shared memory header of the event history. */
+typedef struct SpockMonitorShmem
+{
+	LWLock	   *lock;			/* protects everything below */
+	TimestampTz started_at;		/* when shared memory was initialized */
+	uint64		next_event_id;
+	int			event_capacity;
+	int			event_head;		/* index of the oldest event */
+	int			event_count;
+
+	/*
+	 * The on-disk copy, written by the supervisor; see
+	 * spock_monitor_persist.c.  Ring entries are numbered from the start of
+	 * the instance: ring_seq is the number put into the ring so far, and
+	 * flushed_seq how many of them the event log has.
+	 */
+	uint64		ring_seq;
+	uint64		flushed_seq;
+	uint64		flush_generation;	/* completed flushes */
+	bool		flush_requested;	/* flush at the next wakeup */
+	TimestampTz last_flush_time;
+
+	/* What the restore at startup found, for spock.get_monitor_summary(). */
+	bool		restored;		/* files of a previous run were read */
+	bool		prior_shutdown_clean;
+	int			restored_events;
+	int			restored_stats;
+	TimestampTz restored_flush_time;	/* last flush of the previous run */
+
+	SpockMonitorEvent events[FLEXIBLE_ARRAY_MEMBER];
+} SpockMonitorShmem;
+
 extern int	spock_event_history_size;
+extern int	spock_monitor_flush_interval;
+extern int	spock_event_log_max_size;
+extern SpockMonitorShmem *SpockMonitorShm;
+extern HTAB *SpockMonitorStatsHash;
 extern SpockMonitorStatsEntry *MySpockMonitorStats;
 
 /* initialization */
@@ -167,5 +213,18 @@ extern void spock_monitor_stream_stopped(void);
 /* subscription lifecycle */
 extern void spock_monitor_create_subscription(Oid subid);
 extern void spock_monitor_drop_subscription(Oid subid);
+
+/* event ring, for the on-disk copy */
+struct ReturnSetInfo;
+extern void spock_monitor_ring_put(const SpockMonitorEvent *event);
+extern void spock_monitor_request_flush(void);
+extern void spock_monitor_event_row_put(const SpockMonitorEvent *event,
+										struct ReturnSetInfo *rsinfo);
+
+/* on-disk copy, spock_monitor_persist.c */
+extern void spock_monitor_persist_init(void);
+extern void spock_monitor_restore(void);
+extern void spock_monitor_flush(bool shutdown);
+extern long spock_monitor_flush_timeout(long timeout);
 
 #endif							/* SPOCK_MONITOR_H */
