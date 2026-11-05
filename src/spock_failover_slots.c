@@ -2007,9 +2007,9 @@ skip_standby_slot_names(XLogRecPtr commit_lsn)
 	static uint64 cached_gen = 0;
 
 	/*
-	 * Kept here rather than by setting standby_slots_min_confirmed to 0, since
-	 * a reload assigns that setting again from the file while the slot list,
-	 * and so this check, stays the same.
+	 * Kept here rather than by setting standby_slots_min_confirmed to 0,
+	 * since a reload assigns that setting again from the file while the slot
+	 * list, and so this check, stays the same.
 	 */
 	static bool my_slot_named = false;
 
