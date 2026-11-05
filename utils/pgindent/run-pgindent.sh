@@ -62,46 +62,52 @@ echo "Formatting $NFILES tracked source files"
 # 1. Fetch PostgreSQL core typedefs from buildfarm for each branch
 # ------------------------------------------------------------------
 # The buildfarm has answered with an empty list and a 200 status, which
-# curl -f accepts, so check the size too.  On any failure, take the core
-# typedefs from the committed typedefs.list instead.  It also holds the
-# Spock typedefs from its last run, which only adds names that may no
-# longer exist; the current ones are extracted again below.
+# curl -f accepts, and it answers the same way for a branch it does not
+# know yet, so check the size too.  A branch that fails is skipped and the
+# others still count; the committed typedefs.list is then added to stand
+# in for it.  That list also holds the Spock typedefs from its last run,
+# which only adds names that may no longer exist; the current ones are
+# extracted again below.
 MIN_BRANCH_TYPEDEFS=1000
 
 echo "Fetching PostgreSQL core typedefs from buildfarm..."
 > "$TMPFILE"
-FETCH_OK=1
+FAILED_BRANCHES=""
 for branch in $PG_BRANCHES; do
     echo "  $branch"
     if ! curl -sf "$BUILDFARM_URL?branch=$branch" > "$TMPFILE.branch"; then
         echo "WARNING: failed to fetch typedefs for $branch from $BUILDFARM_URL" >&2
-        FETCH_OK=0
-        break
+        FAILED_BRANCHES="$FAILED_BRANCHES $branch"
+        continue
     fi
     BRANCH_COUNT=$(wc -l < "$TMPFILE.branch" | tr -d '[:space:]')
     if [ "$BRANCH_COUNT" -lt "$MIN_BRANCH_TYPEDEFS" ]; then
         echo "WARNING: buildfarm returned only $BRANCH_COUNT typedefs for $branch" >&2
-        FETCH_OK=0
-        break
+        FAILED_BRANCHES="$FAILED_BRANCHES $branch"
+        continue
     fi
     cat "$TMPFILE.branch" >> "$TMPFILE"
 done
 
-if [ "$FETCH_OK" -eq 0 ]; then
+if [ -n "$FAILED_BRANCHES" ]; then
     COMMITTED_COUNT=0
     if [ -f "$TYPEDEFS" ]; then
         COMMITTED_COUNT=$(wc -l < "$TYPEDEFS" | tr -d '[:space:]')
     fi
-    if [ "$COMMITTED_COUNT" -lt "$MIN_BRANCH_TYPEDEFS" ]; then
+    if [ "$COMMITTED_COUNT" -ge "$MIN_BRANCH_TYPEDEFS" ]; then
+        MSG="buildfarm typedefs unavailable for$FAILED_BRANCHES; added the committed typedefs.list"
+        cat "$TYPEDEFS" >> "$TMPFILE"
+    elif [ -s "$TMPFILE" ]; then
+        MSG="buildfarm typedefs unavailable for$FAILED_BRANCHES and no usable $TYPEDEFS; using the branches that downloaded"
+    else
         echo "ERROR: no usable typedefs from the buildfarm or $TYPEDEFS" >&2
         exit 1
     fi
-    echo "WARNING: using the core typedefs in the committed typedefs.list" >&2
+    echo "WARNING: $MSG" >&2
     # Show the fallback in the pull request checks as well.
     if [ -n "${GITHUB_ACTIONS:-}" ]; then
-        echo "::warning::buildfarm typedefs unavailable; used the committed typedefs.list"
+        echo "::warning::$MSG"
     fi
-    cp "$TYPEDEFS" "$TMPFILE"
 fi
 CORE_COUNT=$(wc -l < "$TMPFILE" | tr -d '[:space:]')
 
