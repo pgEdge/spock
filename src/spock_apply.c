@@ -1052,23 +1052,12 @@ handle_begin(StringInfo s)
 			if (!slot_found)
 			{
 				/*
-				 * Raise only when we need a new entry.  When the search under
-				 * the lock finds our name, free_slot_index can still be -1
-				 * with entries to spare: entries are taken lowest index first
-				 * and never given back, so the loop stops at our entry before
-				 * it reaches a free one.  That happens whenever another
-				 * worker takes the name between the search above and the
-				 * lock -- entries are matched by name only, and subscriptions
-				 * in different databases of this instance can share a name.
-				 *
-				 * Release the lock before raising: we are outside any
-				 * transaction, so the error recovery in apply_work() does not
-				 * release it, and every process that needs SpockCtx->lock --
-				 * the managers, sub_create(), this worker's own exit callback
-				 * -- would wait for it forever.  As a class 53 error it takes
-				 * the transient path in apply_work(): the worker exits and is
-				 * restarted after restart_delay_default instead of replaying
-				 * with no entry assigned.
+				 * Only an error if we need a new entry: another worker may
+				 * have taken our name since the unlocked search, and the loop
+				 * stops there before seeing a free entry.  Release the lock
+				 * first, since we are outside a transaction and nothing else
+				 * will.  Class 53 makes apply_work() restart the worker
+				 * instead of replaying with no entry.
 				 */
 				if (free_slot_index == -1)
 				{
