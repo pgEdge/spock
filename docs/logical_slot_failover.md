@@ -55,9 +55,20 @@ with the `FAILOVER` flag at creation time. This enables PostgreSQL's built-in
 slotsync worker to pick them up automatically.
 
 On **PostgreSQL 18+**, when the GUC is `on`, Spock's own failover worker is
-not registered at all. The native slotsync worker is the only mechanism. If
-the GUC is left `off` (the default), Spock's worker is registered and runs
-as it did before, and no slot carries the `FAILOVER` flag.
+not registered at all. The native slotsync worker is the only mechanism that
+copies the slots. If the GUC is left `off` (the default), Spock's worker is
+registered and runs as it did before, and no slot carries the `FAILOVER`
+flag. Spock's walsender hold-back (`spock.pg_standby_slot_names` with
+`spock.standby_slots_min_confirmed`) stays available whenever the worker is
+registered, since `synchronized_standby_slots` can only wait for all of its
+slots.
+
+With `spock.standby_slots_min_confirmed` lower than the number of listed
+slots, subscribers can receive changes that some standbys do not have yet.
+After a failure, promote the standby with the highest
+`pg_last_wal_receive_lsn()`: it has every change sent to a subscriber.
+Promoting a standby that is further behind leaves subscribers with rows the
+new primary never had.
 
 ## Setup: PostgreSQL 17 and 18+ (Native, requires `spock.use_native_failover_slots = on`)
 
@@ -120,8 +131,10 @@ After promoting the standby, subscribers only need to update their connection
 string to point to the new primary. Replication resumes from the last
 synchronized LSN with no data loss and no slot recreation required.
 
-**Important:** if `synchronized_standby_slots` was configured (step 3 above),
-you must adjust it on the promoted node before replication will resume. See
+**Important:** if `synchronized_standby_slots` or `spock.pg_standby_slot_names`
+was configured (step 3 above), you must adjust it on the promoted node before
+replication will resume: both name physical slots the new primary does not
+have. See
 [Runbook: clear `synchronized_standby_slots` after promotion](#runbook-clear-synchronized_standby_slots-after-promotion)
 below.
 

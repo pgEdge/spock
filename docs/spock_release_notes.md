@@ -46,6 +46,12 @@
 * On PostgreSQL 17 and later, a copy made by native slot sync whose slot the
   primary later dropped made the worker fail and restart every minute. The
   worker now leaves it and reports it once.
+* A physical slot named in `spock.pg_standby_slot_names` that does not exist
+  was never reported when the other named slots already satisfied
+  `spock.standby_slots_min_confirmed`, so the walsender could wait on it
+  silently. The missing slot is now named in a warning even when the quorum
+  is met, and the warning is issued again if the setting is reloaded to name
+  a different missing slot.
 
 ## Spock 5.0.12
 
