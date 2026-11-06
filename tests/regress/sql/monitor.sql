@@ -68,11 +68,12 @@ SELECT worker_type, worker_status, subscription_name,
 -- The 5.x interface over the same list: the old column layout, and the
 -- running apply worker only
 SELECT pg_get_function_arguments('spock.get_apply_worker_status()'::regprocedure);
-SELECT a.worker_pid = w.pid AS same_pid,
+WITH a AS (SELECT * FROM spock.get_apply_worker_status())
+SELECT (SELECT count(*) FROM a) AS rows,
        a.worker_dboid = w.database_id::int AS same_db,
        a.worker_subid = s.sub_id AS same_sub,
        a.worker_status
-  FROM spock.get_apply_worker_status() AS a
+  FROM a
   JOIN spock.get_worker_status() AS w ON w.pid = a.worker_pid
   JOIN spock.subscription AS s ON s.sub_id = w.subscription_id;
 
