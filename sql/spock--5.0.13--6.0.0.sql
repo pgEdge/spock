@@ -8,14 +8,6 @@ DROP FUNCTION IF EXISTS spock.convert_column_to_int8(regclass, smallint);
 DROP FUNCTION IF EXISTS spock.convert_sequence_to_snowflake(regclass);
 DROP FUNCTION IF EXISTS spock.wait_for_apply_worker(bigint, int);
 
-/*
- * Its C symbol is gone in 6.0.0, replaced by spock.get_worker_status() and
- * the views over it.  The SQL binding created back in 5.0.0 would otherwise
- * survive the upgrade and fail at call time, when the symbol cannot be
- * resolved in the library.
- */
-DROP FUNCTION IF EXISTS spock.get_apply_worker_status();
-
 -- Add IMMUTABLE PARALLEL SAFE to md5_agg_sfunc (was missing in earlier definitions)
 CREATE OR REPLACE FUNCTION spock.md5_agg_sfunc(text, anyelement)
 	RETURNS text
@@ -500,6 +492,25 @@ CREATE FUNCTION spock.get_worker_status(
     OUT sync_table_name       name)
 RETURNS SETOF record STABLE
 LANGUAGE c AS 'MODULE_PATHNAME', 'spock_get_worker_status';
+
+-- The 5.x interface, kept for callers that still use it: running apply
+-- workers only, in the old column layout.  Up to 5.x this was a C function.
+CREATE OR REPLACE FUNCTION spock.get_apply_worker_status(
+    OUT worker_pid    bigint,
+    OUT worker_dboid  int,
+    OUT worker_subid  bigint,
+    OUT worker_status text)
+RETURNS SETOF record STABLE
+LANGUAGE sql AS $$
+    SELECT w.pid::bigint,
+           w.database_id::int,
+           w.subscription_id::bigint,
+           CASE w.worker_status WHEN 'starting' THEN 'none'
+                ELSE w.worker_status END
+      FROM spock.get_worker_status() AS w
+     WHERE w.worker_type = 'apply'
+       AND w.pid IS NOT NULL
+$$;
 
 CREATE FUNCTION spock.get_events(
     OUT event_id        bigint,

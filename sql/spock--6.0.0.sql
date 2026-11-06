@@ -1145,6 +1145,25 @@ CREATE FUNCTION spock.get_worker_status(
 RETURNS SETOF record STABLE
 LANGUAGE c AS 'MODULE_PATHNAME', 'spock_get_worker_status';
 
+-- The 5.x interface, kept for callers that still use it: running apply
+-- workers only, in the old column layout.  Up to 5.x this was a C function.
+CREATE FUNCTION spock.get_apply_worker_status(
+    OUT worker_pid    bigint,
+    OUT worker_dboid  int,
+    OUT worker_subid  bigint,
+    OUT worker_status text)
+RETURNS SETOF record STABLE
+LANGUAGE sql AS $$
+    SELECT w.pid::bigint,
+           w.database_id::int,
+           w.subscription_id::bigint,
+           CASE w.worker_status WHEN 'starting' THEN 'none'
+                ELSE w.worker_status END
+      FROM spock.get_worker_status() AS w
+     WHERE w.worker_type = 'apply'
+       AND w.pid IS NOT NULL
+$$;
+
 CREATE FUNCTION spock.get_events(
     OUT event_id        bigint,
     OUT event_time      timestamptz,

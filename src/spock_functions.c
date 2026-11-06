@@ -4622,19 +4622,19 @@ spock_get_lsn_from_commit_ts(PG_FUNCTION_ARGS)
 
 PG_FUNCTION_INFO_V1(get_apply_worker_status);
 /*
- * Stub for the removed spock.get_apply_worker_status().
+ * Symbol of the 5.x C function spock.get_apply_worker_status().
  *
- * pg_upgrade recreates the old cluster's extension member functions before
- * any extension update runs, and CREATE FUNCTION for a C function fails
- * unless the symbol exists in the loaded library.  The SQL function is
- * dropped by the extension update script; until then, calling it raises an
- * error.  Use spock.get_worker_status() instead.
+ * From 6.0.0 the function is SQL, over spock.get_worker_status().  But
+ * pg_upgrade from 5.x recreates the old C binding before any extension
+ * update runs, and CREATE FUNCTION for a C function fails unless the symbol
+ * exists in the library.  ALTER EXTENSION spock UPDATE replaces the binding
+ * with the SQL version; until then, calling it raises an error.
  */
 Datum
 get_apply_worker_status(PG_FUNCTION_ARGS)
 {
 	ereport(ERROR,
 			(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-			 errmsg("function spock.get_apply_worker_status() has been removed"),
-			 errhint("Run ALTER EXTENSION spock UPDATE, then use spock.get_worker_status().")));
+			 errmsg("spock.get_apply_worker_status() needs the extension update"),
+			 errhint("Run ALTER EXTENSION spock UPDATE.")));
 }

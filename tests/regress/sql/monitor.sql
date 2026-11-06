@@ -65,6 +65,17 @@ SELECT worker_type, worker_status, subscription_name,
   FROM spock.worker_status
  WHERE worker_type = 'apply';
 
+-- The 5.x interface over the same list: the old column layout, and the
+-- running apply worker only
+SELECT pg_get_function_arguments('spock.get_apply_worker_status()'::regprocedure);
+SELECT a.worker_pid = w.pid AS same_pid,
+       a.worker_dboid = w.database_id::int AS same_db,
+       a.worker_subid = s.sub_id AS same_sub,
+       a.worker_status
+  FROM spock.get_apply_worker_status() AS a
+  JOIN spock.get_worker_status() AS w ON w.pid = a.worker_pid
+  JOIN spock.subscription AS s ON s.sub_id = w.subscription_id;
+
 -- Whole-subscription sync state
 SELECT subscription_name, schema_name, table_name, sync_kind, sync_status
   FROM spock.table_sync_status
