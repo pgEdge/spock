@@ -37,7 +37,8 @@ will be removed at general availability.
   `spock.reserved_object` catalog and its functions, the node metadata
   functions and the trigger on `spock.node`, and the monitoring views and
   functions with their `pg_monitor` grants), removes
-  `spock.wait_for_apply_worker()` and `spock.get_apply_worker_status()`,
+  `spock.wait_for_apply_worker()`, reimplements
+  `spock.get_apply_worker_status()` over `spock.get_worker_status()`,
   marks `spock.md5_agg` parallel safe on a node upgraded from 5.x, and sets
   the `failover` flag on existing slots.  The second only sets the version
   name back to `6.0.0`.
@@ -124,13 +125,12 @@ schema is not, so a monitoring role needs that granted as well.
   `get_apply_stats()` and `get_pending_exceptions()` are executable by
   `pg_monitor` only, and `reset_events()` by superusers only.
 
-**Removed**
-
-* `spock.get_apply_worker_status()`, replaced by
-  `spock.get_worker_status()` and the `spock.worker_status` view.
-
 **Changed**
 
+* `spock.get_apply_worker_status()` is now a SQL function over
+  `spock.get_worker_status()`, with the same columns and rows as before.
+  `spock.get_worker_status()` and the `spock.worker_status` view cover
+  every worker type and give more detail.
 * `spock.reset_subscription_stats()` also resets the new activity counters,
   on every supported PostgreSQL version, and EXECUTE on it is revoked from
   PUBLIC.
@@ -593,10 +593,11 @@ replication state through a set of views in the `spock` schema:
 
 The event history size is set by the new `spock.event_history_size` GUC.
 `spock.reset_subscription_stats()` now resets both the activity and the
-conflict counters. The internal `spock.get_apply_worker_status()` function
-is replaced by `spock.get_worker_status()` and the `spock.worker_status`
-view.  The GUC, views and functions are listed under *Node monitoring
-GUCs, views and functions* below.
+conflict counters. `spock.get_apply_worker_status()` is kept, now as a SQL
+function over the new `spock.get_worker_status()`, which with the
+`spock.worker_status` view covers every worker type.  The GUC, views and
+functions are listed under *Node monitoring GUCs, views and functions*
+below.
 
 ### Liveness and feedback refactoring
 
@@ -1169,12 +1170,8 @@ so a monitoring role needs that granted as well.
 * `spock.reset_subscription_stats(subid)` also resets the activity
   counters behind `spock.subscription_stats`, on every supported
   PostgreSQL version, and only superusers can run it.
-
-**Removed**
-
-* `spock.get_apply_worker_status()`: replaced by
-  `spock.get_worker_status()`, which covers every worker type, and the
-  `spock.worker_status` view.
+* `spock.get_apply_worker_status()` is now a SQL function over
+  `spock.get_worker_status()`, with the same columns and rows as before.
 
 ### Bug fixes carried forward from the 5.0.x line
 
@@ -1272,8 +1269,9 @@ single step, through 5.0.13.  The upgrade:
 * migrates `spock.resolutions.conflict_type` values,
 * adds the new functions, the `sub_id_generator` sequence and the
   `spock.reserved_object` catalog,
-* drops `spock.wait_for_apply_worker()` and
-  `spock.get_apply_worker_status()`,
+* drops `spock.wait_for_apply_worker()`,
+* replaces the C `spock.get_apply_worker_status()` with a SQL function over
+  `spock.get_worker_status()`,
 * adds the `node_info_broadcast_trigger` trigger on `spock.node`,
 * adds the monitoring views and functions, and grants the read side to
   `pg_monitor`,

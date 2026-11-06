@@ -332,8 +332,11 @@ the LSN alone is set for every transaction.
   `spock--5.0.13--6.0.0.sql`. Every catalog column the views reference
   exists since 5.0.6, so an upgraded node ends with the same objects as a
   fresh install.
-* `spock.get_apply_worker_status()` is removed; nothing in the repository
-  used it. `spock.get_worker_status()` and `spock.worker_status` replace it.
+* `spock.get_apply_worker_status()` is kept for existing callers, as a SQL
+  function over `spock.get_worker_status()` returning the 5.x columns and
+  rows.  Its C symbol stays as a stub that raises an error, because
+  pg_upgrade from 5.x recreates the old C binding before the extension
+  update replaces it.
 * `spock_monitoring.c` is removed. `spock.wait_slot_confirm_lsn()`,
   `spock.get_channel_stats()`, `spock.reset_channel_stats()` and
   `spock.apply_group_progress()` keep their SQL definitions and C symbols
