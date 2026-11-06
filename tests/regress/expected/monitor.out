@@ -97,16 +97,17 @@ SELECT pg_get_function_arguments('spock.get_apply_worker_status()'::regprocedure
  OUT worker_pid bigint, OUT worker_dboid integer, OUT worker_subid bigint, OUT worker_status text
 (1 row)
 
-SELECT a.worker_pid = w.pid AS same_pid,
+WITH a AS (SELECT * FROM spock.get_apply_worker_status())
+SELECT (SELECT count(*) FROM a) AS rows,
        a.worker_dboid = w.database_id::int AS same_db,
        a.worker_subid = s.sub_id AS same_sub,
        a.worker_status
-  FROM spock.get_apply_worker_status() AS a
+  FROM a
   JOIN spock.get_worker_status() AS w ON w.pid = a.worker_pid
   JOIN spock.subscription AS s ON s.sub_id = w.subscription_id;
- same_pid | same_db | same_sub | worker_status 
-----------+---------+----------+---------------
- t        | t       | t        | running
+ rows | same_db | same_sub | worker_status 
+------+---------+----------+---------------
+    1 | t       | t        | running
 (1 row)
 
 -- Whole-subscription sync state
