@@ -3,7 +3,7 @@
 #
 # Full PEP certification of all 56 Spock v5 detector cells through the release
 # adapter, with Spock's own repository client certificate: this workflow ->
-# pep-release-certify (PEP candidate 17584fd, every PEP call pinned to its full SHA)
+# pep-release-certify (PEP candidate 9c6e993 (combined next-group candidate), every PEP call pinned to its full SHA)
 # -> pep-certify -> pep-integration. One
 # push of its branch starts this one run, so its summaries cannot mix with
 # another certification's.
@@ -29,7 +29,7 @@ name: PEP Spock v5 full check (validation, no build or publication)
 
 on:
     push:
-        branches: [validate/pep-17584fd-spock-v5-full]
+        branches: [validate/pep-9c6e993-spock-v5-full]
 
 permissions:
     contents: read
@@ -193,7 +193,7 @@ jobs:
                   retention-days: 7
             # No continue-on-error here (release.yml has it): a receipt failure must be visible.
             - name: Generate pep-receipt/2 for the RPM cell
-              uses: pgEdge/pgedge-pep-test/.github/actions/pep-package-receipt@17584fd4efab8ed82ae89cf58bc3cb0bee880278
+              uses: pgEdge/pgedge-pep-test/.github/actions/pep-package-receipt@9c6e9937e93c1e92fa7bdcc672218e6a3c192a05
               with:
                   cell_id: ${{ matrix.cell_id }}
                   family: rpm
@@ -256,7 +256,7 @@ jobs:
                   retention-days: 7
             # No continue-on-error here (release.yml has it): a receipt failure must be visible.
             - name: Generate pep-receipt/2 for the DEB cell
-              uses: pgEdge/pgedge-pep-test/.github/actions/pep-package-receipt@17584fd4efab8ed82ae89cf58bc3cb0bee880278
+              uses: pgEdge/pgedge-pep-test/.github/actions/pep-package-receipt@9c6e9937e93c1e92fa7bdcc672218e6a3c192a05
               with:
                   cell_id: ${{ matrix.cell_id }}
                   family: deb
@@ -303,7 +303,7 @@ jobs:
         permissions:
             contents: read      # nested checkouts of the pinned PEP implementation
             actions: read       # PEP lists THIS run's jobs and downloads its artifacts by id
-        uses: pgEdge/pgedge-pep-test/.github/workflows/pep-release-certify.yml@17584fd4efab8ed82ae89cf58bc3cb0bee880278
+        uses: pgEdge/pgedge-pep-test/.github/workflows/pep-release-certify.yml@9c6e9937e93c1e92fa7bdcc672218e6a3c192a05
         with:
             rpm_matrix:      ${{ needs.detect-matrix.outputs.rpm_matrix }}
             deb_matrix:      ${{ needs.detect-matrix.outputs.deb_matrix }}
