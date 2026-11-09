@@ -132,13 +132,13 @@ Postgres](../../getting_started.md#install-pgedge-enterprise-postgres-recommende
 For PostgreSQL 18 on RHEL, Rocky Linux, or AlmaLinux:
 
 ```bash
-sudo dnf install -y pgedge-postgres18-server pgedge-postgres18-contrib pgedge-spock18
+sudo dnf install -y pgedge-postgres18-server pgedge-postgres18-contrib pgedge-spock50_18
 ```
 
 On Ubuntu or Debian:
 
 ```bash
-sudo apt install -y pgedge-postgres18-server pgedge-postgres18-contrib pgedge-spock18
+sudo apt install -y pgedge-postgresql-18 pgedge-postgresql-18-spock50
 ```
 
 In our example, the replacement node runs on its own port on the same
