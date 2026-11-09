@@ -1238,3 +1238,26 @@ GRANT SELECT ON spock.settings, spock.system_status, spock.worker_status,
     spock.subscription_status, spock.peer_status,
     spock.replication_set_status, spock.slot_status, spock.node_status
     TO pg_monitor;
+
+-- Added after beta 1: the in-core ZODAN procedures.  See spock--6.0.0.sql.
+CREATE OR REPLACE PROCEDURE spock.attach_node(
+	src_node_name		text,
+	src_dsn				text,
+	new_node_name		text,
+	new_node_dsn		text,
+	verb				boolean DEFAULT false,
+	new_node_location	text	DEFAULT 'NY',
+	new_node_country	text	DEFAULT 'USA',
+	new_node_info		jsonb	DEFAULT '{}'::jsonb,
+	timeout_sec			int		DEFAULT 180
+) LANGUAGE c AS 'MODULE_PATHNAME', 'spock_attach_node';
+
+CREATE OR REPLACE PROCEDURE spock.detach_node(
+	target_node_name	text,
+	target_node_dsn		text,
+	verbose_mode		boolean DEFAULT true
+) LANGUAGE c AS 'MODULE_PATHNAME', 'spock_detach_node';
+
+REVOKE ALL ON PROCEDURE spock.attach_node(text, text, text, text, boolean,
+										  text, text, jsonb, int) FROM PUBLIC;
+REVOKE ALL ON PROCEDURE spock.detach_node(text, text, boolean) FROM PUBLIC;

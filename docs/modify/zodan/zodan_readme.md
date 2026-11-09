@@ -1,64 +1,123 @@
-# Zodan: Zero-Downtime Node Addition for Spock
+# Using Zodan: Zero-Downtime Node Addition and Removal
 
-Zodan provides tools to add or remove a node with zero downtime. The
-scripts are located in the 
-[samples/Z0DAN](https://github.com/pgEdge/spock/tree/main/samples/Z0DAN)
-directory of the [Spock GitHub](https://github.com/pgEdge/spock)
-repository.
+Zodan adds or removes a node from a Spock cluster with zero downtime for the
+existing nodes. Spock ships two implementations of the same workflow: the
+in-core procedures `spock.attach_node` / `spock.detach_node`, and the SQL
+scripts that provide `spock.add_node` / `spock.remove_node`. Both are covered
+below.
 
-Zodan's workflows and scripts streamline the process of adding a node to
-or removing a node from a Spock cluster. Zodan features the following
-scripts and workflows:
+## In-core procedures: attach_node and detach_node
 
-- The [zodan.sql](#using-the-zodansql-sql-workflow) workflow is a complete
-  SQL-based workflow that uses `dblink` to perform the same add node
-  operations from within Postgres.
-- The [zodremove.sql](#the-zodremovesql-workflow) workflow is a complete
-  SQL-based workflow that uses `dblink` to perform the same removal
-  operations from within Postgres.
+The in-core implementation is built into the Spock extension. A single
+`CREATE EXTENSION spock` makes both procedures available. There is nothing to
+install beyond the extension itself: the `dblink` extension is not required,
+and there are no SQL scripts to load. All local work runs over SPI and all
+cross-node work runs over libpq.
 
-## Components
+- `spock.attach_node` must be run on the new node being added.
+- `spock.detach_node` must be run on the node being removed.
 
-The following scripts and workflows are available via Zodan.
+### Adding a node
 
-### Using the zodan.sql SQL Workflow
-
-The SQL-based implementation utilizes the Postgres `dblink` extension to
-handle node addition directly from within the database. This method is
-ideal for environments where you may not have access to a shell or Python.
-
-Within the workflow, SQL commands orchestrate the following operations:
-
-- `add_node` - The main procedure to orchestrate the full workflow.
-- `create_node` - Register the new node via `spock.node_create`.
-- `get_spock_nodes` - Fetch current node metadata from a remote node.
-- `create_sub` and `enable_sub` - Manage subscription creation and
-  activation.
-- `create_replication_slot` - Create and configure logical replication
-  slots.
-- `sync_event` and `wait_for_sync_event` - Coordinate data synchronization
-  events.
-- `get_commit_timestamp` and `advance_replication_slot` - Align
-  replication states.
-
-To use the workflow, execute the following command in your Postgres
-session.  In the following example, the `spock.add_node` procedure adds a 
-new node to the cluster:
+`spock.attach_node` orchestrates the full join: it validates prerequisites,
+creates the node, sets up replication slots and subscriptions in both
+directions, coordinates synchronization events, advances replication slots and
+origins to a consistent point, and enables replication. It supports both a two
+node cluster and the general multi node case.
 
 ```sql
-CALL spock.add_node(
-  'source_node_name',
-  'src_dsn',
-  'new_node_name',
-  'new_node_dsn',
-  true|false,               -- verbose? optional
-  'new_node_location',      -- optional
-  'new_node_country',       -- optional
-  '{}'::jsonb               -- optional info
+CALL spock.attach_node(
+  src_node_name     => 'source_node_name',
+  src_dsn           => 'src_dsn',
+  new_node_name     => 'new_node_name',
+  new_node_dsn      => 'new_node_dsn',
+  verb              => false,          -- verbose progress output, optional
+  new_node_location => 'NY',           -- optional
+  new_node_country  => 'USA',          -- optional
+  new_node_info     => '{}'::jsonb,    -- optional metadata
+  timeout_sec       => 180             -- bound on each wait, optional
 );
 ```
 
-In the following example, the command adds node `n4` to the cluster:
+In the following example, the command adds node `n4` to the cluster. Run it
+while connected to `n4`:
+
+```sql
+CALL spock.attach_node(
+  'n1',
+  'host=127.0.0.1 dbname=pgedge port=5431 user=pgedge password=<PASSWORD>',
+  'n4',
+  'host=127.0.0.1 dbname=pgedge port=5434 user=pgedge password=<PASSWORD>'
+);
+```
+
+The `timeout_sec` argument bounds every internal wait loop, so a join that
+cannot make progress fails quickly with a clear error rather than blocking for
+a long fixed period. It defaults to 180 seconds; pass a larger value if your
+environment needs more headroom.
+
+### Removing a node
+
+`spock.detach_node` removes a node in the correct order: it drops the inbound
+subscriptions on each surviving node, drops the subscriptions local to the
+node being removed, drops the node's replication sets, and finally drops the
+node from the catalog. Replication slot and origin cleanup is handled as part
+of dropping the subscriptions. A surviving node that cannot be reached during
+teardown is skipped with a warning rather than aborting the removal.
+
+```sql
+CALL spock.detach_node(
+  target_node_name => 'target_node_name',
+  target_node_dsn  => 'target_dsn',    -- DSN of the node being removed
+  verbose_mode     => true             -- verbose progress output, optional
+);
+```
+
+`detach_node` runs on the node being removed and does all of its work locally
+and against the surviving nodes it already knows about. `target_node_dsn` must
+be the DSN of that same node: `detach_node` connects to it and compares the
+system identifier and database name against the local ones, refusing to run if
+they differ. This is the mirror of the `new_node_dsn` check in `attach_node`,
+and it is what stops `detach_node` from tearing down the replication of
+whichever node it was accidentally run on.
+
+In the following example, the command removes node `n4` from the cluster. Run
+it while connected to `n4`:
+
+```sql
+CALL spock.detach_node(
+  'n4',
+  'host=127.0.0.1 dbname=pgedge port=5434 user=pgedge password=<PASSWORD>'
+);
+```
+
+## SQL scripts: add_node and remove_node
+
+The SQL-based implementation uses the Postgres `dblink` extension to run the
+same node add and remove operations from within the database. The scripts are
+located in the
+[samples/Z0DAN](https://github.com/pgEdge/spock/tree/main/samples/Z0DAN)
+directory of the [Spock GitHub](https://github.com/pgEdge/spock) repository.
+This method is useful where you prefer to keep the orchestration in a script
+you can read and modify. Load `zodan.sql` and `zodremove.sql` on the node you
+run the procedures from, and make sure `dblink` is installed there.
+
+### Adding a node with zodan.sql
+
+The `zodan.sql` workflow orchestrates the following operations:
+
+- `add_node` - the main procedure to orchestrate the full workflow.
+- `create_node` - register the new node via `spock.node_create`.
+- `get_spock_nodes` - fetch current node metadata from a remote node.
+- `create_sub` and `enable_sub` - manage subscription creation and activation.
+- `create_replication_slot` - create and configure logical replication slots.
+- `sync_event` and `wait_for_sync_event` - coordinate data synchronization
+  events.
+- `get_commit_timestamp` and `advance_replication_slot` - align replication
+  states.
+
+To use the workflow, load `zodan.sql` and call `spock.add_node`. In the
+following example, the command adds node `n4` to the cluster:
 
 ```sql
 CALL spock.add_node(
@@ -69,42 +128,22 @@ CALL spock.add_node(
 );
 ```
 
-### The zodremove.sql Workflow
+### Removing a node with zodremove.sql
 
-The SQL-based implementation utilizes the Postgres `dblink` extension to
-handle node removal directly from within the database. This method is
-ideal for environments where you may not have access to a shell or Python.
+The `zodremove.sql` workflow orchestrates the following operations:
 
-Within the workflow, SQL commands orchestrate the following operations:
-
-- `spock.remove_node` - Main procedure to orchestrate the full workflow.
-- `spock.remove_node_subscriptions` - Manages removing subscriptions. Also
-  removes the replication slot if there are no remaining subscriptions.
-- `spock.remove_node_replication_sets` - Removes published repsets on the
-  node being removed.
-- `spock.remove_node_from_cluster_registry` - Removes the node from the
+- `spock.remove_node` - the main procedure to orchestrate the full workflow.
+- `spock.remove_node_subscriptions` - removes subscriptions, and the
+  replication slot once no subscriptions remain.
+- `spock.remove_node_replication_sets` - removes published repsets on the node
+  being removed.
+- `spock.remove_node_from_cluster_registry` - removes the node from the
   cluster.
 
-The workflow is located in the 
-[samples/Z0DAN](https://github.com/pgEdge/spock/tree/main/samples/Z0DAN)
-directory of the [Spock GitHub](https://github.com/pgEdge/spock)
-repository.
-
-To use the workflow, call a command from your Postgres session. In the
-following example, the Z0DAN `spock.remove_node` procedure removes a node
-from the cluster. Note that `spock.remove_node` is a Z0DAN utility
-procedure provided by `zodremove.sql`; it is not a built-in function of
-the Spock extension.
-
-```sql
-CALL spock.remove_node(
-  'target_node_name',
-  'target_dsn',
-  true                      -- verbose_mode, optional boolean
-);
-```
-
-In the following example, the command removes node `n4` from the cluster:
+To use the workflow, load `zodremove.sql` and call `spock.remove_node`. Note
+that `spock.remove_node` is a Zodan utility procedure provided by
+`zodremove.sql`; it is not a built-in function of the Spock extension. In the
+following example, the command removes node `n4` from the cluster:
 
 ```sql
 CALL spock.remove_node(
