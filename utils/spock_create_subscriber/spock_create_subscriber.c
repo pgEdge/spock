@@ -257,7 +257,6 @@ static void wait_postmaster_shutdown(void);
 static char *validate_replication_set_input(char *replication_sets);
 
 static void remove_unwanted_data(PGconn *conn);
-static void initialize_replication_origin(PGconn *conn, char *origin_name, char *remote_lsn);
 static char *create_restore_point(PGconn *conn, char *restore_point_name);
 static char *create_logical_slot(PGconn *conn, const char *slot_name,
 								 bool drop_if_exists, const char *already_exists_hint);
@@ -273,7 +272,8 @@ static void spock_subscribe(PGconn *conn, char *subscriber_name,
 							char *provider_connstr,
 							char *replication_sets,
 							int apply_delay,
-							bool force_text_transfer);
+							bool force_text_transfer,
+							char *origin_name, char *remote_lsn);
 
 static RemoteInfo *get_remote_info(PGconn *conn);
 
@@ -3327,15 +3327,9 @@ restart_with_spock_and_activate(SubscriberCreateContext *ctx)
 			install_extension(subscriber_conn, "spock");
 
 			/*
-			 * Create the identifier which is setup with the position to which
-			 * we already caught up using physical replication.
-			 */
-			print_msg(VERBOSITY_VERBOSE,
-					  _("Creating replication origin for database %s...\n"), db);
-			initialize_replication_origin(subscriber_conn, ctx->slot_names[dbnum], ctx->remote_lsn);
-
-			/*
-			 * And finally add the node to the cluster.
+			 * Add the node to the cluster.  The subscription's replication
+			 * origin is positioned at the point we already caught up to using
+			 * physical replication.
 			 */
 			print_msg(VERBOSITY_NORMAL, _("Creating subscriber %s for database %s...\n"),
 					  ctx->subscriber_name, db);
@@ -3343,7 +3337,8 @@ restart_with_spock_and_activate(SubscriberCreateContext *ctx)
 
 			spock_subscribe(subscriber_conn, ctx->subscriber_name, ctx->sub_connstr,
 							ctx->prov_connstr, ctx->replication_sets, ctx->apply_delay,
-							ctx->force_text_transfer);
+							ctx->force_text_transfer, ctx->slot_names[dbnum],
+							ctx->remote_lsn);
 
 			PQfinish(subscriber_conn);
 			subscriber_conn = NULL;
@@ -3528,7 +3523,7 @@ maybe_test_pause_before(const char *step_name)
 		fclose(f);
 
 	while (!file_exists(resume_path))
-		pg_usleep(100000L);	/* 100ms */
+		pg_usleep(100000L);		/* 100ms */
 
 	unlink(marker_path);
 	unlink(resume_path);
@@ -6177,49 +6172,6 @@ verify_bidirectional_dataflow(BidirectionalState *state, PGconn *n3_conn,
 }
 
 /*
- * Initialize new remote identifier to specific position.
- */
-static void
-initialize_replication_origin(PGconn *conn, char *origin_name, char *remote_lsn)
-{
-	PGresult   *res;
-	PQExpBuffer query = createPQExpBuffer();
-
-	printfPQExpBuffer(query, "SELECT pg_replication_origin_create(%s)",
-					  PQescapeLiteral(conn, origin_name, strlen(origin_name)));
-
-	res = debug_exec(conn, query->data);
-
-	if (PQresultStatus(res) != PGRES_TUPLES_OK)
-	{
-		die(_("Could not create replication origin \"%s\": status %s: %s\n"),
-			origin_name,
-			PQresStatus(PQresultStatus(res)), PQresultErrorMessage(res));
-	}
-	PQclear(res);
-
-	if (remote_lsn)
-	{
-		printfPQExpBuffer(query, "SELECT pg_replication_origin_advance(%s, '%s')",
-						  PQescapeLiteral(conn, origin_name, strlen(origin_name)),
-						  remote_lsn);
-
-		res = debug_exec(conn, query->data);
-
-		if (PQresultStatus(res) != PGRES_TUPLES_OK)
-		{
-			die(_("Could not advance replication origin \"%s\": status %s: %s\n"),
-				origin_name,
-				PQresStatus(PQresultStatus(res)), PQresultErrorMessage(res));
-		}
-		PQclear(res);
-	}
-
-	destroyPQExpBuffer(query);
-}
-
-
-/*
  * Create remote restore point which will be used to get into synchronized
  * state through physical replay.
  */
@@ -6249,7 +6201,8 @@ create_restore_point(PGconn *conn, char *restore_point_name)
 static void
 spock_subscribe(PGconn *conn, char *subscriber_name, char *subscriber_dsn,
 				char *provider_dsn, char *replication_sets,
-				int apply_delay, bool force_text_transfer)
+				int apply_delay, bool force_text_transfer,
+				char *origin_name, char *remote_lsn)
 {
 	PQExpBufferData query;
 	PQExpBufferData repsets;
@@ -6280,7 +6233,8 @@ spock_subscribe(PGconn *conn, char *subscriber_name, char *subscriber_dsn,
 					  "apply_delay := '%d seconds'::interval, "
 					  "synchronize_structure := false, "
 					  "synchronize_data := false, "
-					  "force_text_transfer := '%s');",
+					  "force_text_transfer := '%s', "
+					  "enabled := false);",
 					  PQescapeLiteral(conn, subscriber_name, strlen(subscriber_name)),
 					  PQescapeLiteral(conn, provider_dsn, strlen(provider_dsn)),
 					  PQescapeLiteral(conn, repsets.data, repsets.len),
@@ -6294,14 +6248,40 @@ spock_subscribe(PGconn *conn, char *subscriber_name, char *subscriber_dsn,
 	}
 	PQclear(res);
 
-	res = debug_exec(conn, "UPDATE spock.local_sync_status SET sync_status = 'r'"
-					 " WHERE sync_status != 'r'");
-	if (PQresultStatus(res) != PGRES_COMMAND_OK)
+	/*
+	 * A disabled subscription starts with local sync status READY and a
+	 * replication origin named after its slot, so no sync worker can touch
+	 * the slot or the origin.  Position the origin at the physical backup's
+	 * restore point before the apply worker is allowed to start.
+	 */
+	if (remote_lsn)
 	{
-		die(_("Could not update subscription, status %s: %s\n"),
-			PQresStatus(PQresultStatus(res)), PQresultErrorMessage(res));
+		resetPQExpBuffer(&query);
+		printfPQExpBuffer(&query,
+						  "SELECT pg_replication_origin_advance(%s, %s)",
+						  PQescapeLiteral(conn, origin_name, strlen(origin_name)),
+						  PQescapeLiteral(conn, remote_lsn, strlen(remote_lsn)));
+		res = debug_exec(conn, query.data);
+		if (PQresultStatus(res) != PGRES_TUPLES_OK)
+		{
+			die(_("Could not advance replication origin \"%s\": status %s: %s\n"),
+				origin_name,
+				PQresStatus(PQresultStatus(res)), PQresultErrorMessage(res));
+		}
+		PQclear(res);
 	}
 
+	maybe_test_pause_before("subscribe_enable");
+
+	resetPQExpBuffer(&query);
+	printfPQExpBuffer(&query, "SELECT spock.sub_enable(%s);",
+					  PQescapeLiteral(conn, subscriber_name, strlen(subscriber_name)));
+	res = debug_exec(conn, query.data);
+	if (PQresultStatus(res) != PGRES_TUPLES_OK)
+	{
+		die(_("Could not enable subscription, status %s: %s\n"),
+			PQresStatus(PQresultStatus(res)), PQresultErrorMessage(res));
+	}
 	PQclear(res);
 
 	termPQExpBuffer(&repsets);
