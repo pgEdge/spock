@@ -2220,6 +2220,42 @@ cleanup_upstream_node_resources(BidirectionalState *state, const char *subscribe
 }
 
 /*
+ * Start the subscriber's postmaster from data_dir if node_dsn is not
+ * reachable, so the drops on n3 can run.  A failed join stops n3, and an
+ * earlier --cleanup stops it again after running.  No-op when there is no
+ * node_dsn, no initialized data_dir, or n3 already answers.
+ */
+static void
+ensure_subscriber_running_for_cleanup(BidirectionalState *state)
+{
+	PGconn	   *conn;
+	char		version_file[MAXPGPATH];
+
+	if (!state->node_dsn || !state->node_dsn[0] ||
+		data_dir == NULL || !data_dir[0])
+		return;
+
+	conn = PQconnectdb(state->node_dsn);
+	if (PQstatus(conn) == CONNECTION_OK)
+	{
+		PQfinish(conn);
+		return;
+	}
+	PQfinish(conn);
+
+	snprintf(version_file, MAXPGPATH, "%s/PG_VERSION", data_dir);
+	if (!file_exists(version_file))
+		return;
+
+	print_msg(VERBOSITY_NORMAL,
+			  _("  starting postgres in %s to clean up the subscriber ...\n"),
+			  data_dir);
+	if (run_pg_ctl("start -l \"spock_create_subscriber_postgres.log\"") != 0)
+		print_msg(VERBOSITY_NORMAL,
+				  _("warning: could not start postgres in %s\n"), data_dir);
+}
+
+/*
  * Idempotently remove bidirectional join state from all reachable nodes:
  * n3 itself, the source, and each peer, via
  * cleanup_verified_subscriber_node() and cleanup_upstream_node_resources().
@@ -2239,6 +2275,8 @@ cleanup_partial_state(BidirectionalState *state, const char *subscriber_name,
 
 	print_msg(VERBOSITY_NORMAL,
 			  _("Cleaning up partial bidirectional join state ...\n"));
+
+	ensure_subscriber_running_for_cleanup(state);
 
 	if (!cleanup_verified_subscriber_node(state, subscriber_name))
 		fully_cleaned = false;
@@ -2263,9 +2301,14 @@ cleanup_partial_state(BidirectionalState *state, const char *subscriber_name,
 
 	/*
 	 * The data directory a partial run may have created via basebackup. Never
-	 * touch it without --force.
+	 * touch it without --force, and never while remote cleanup is incomplete:
+	 * the manifest that drives the retry lives inside it.
 	 */
-	if (!remove_data_dir_if_forced(force_rm_datadir))
+	if (!fully_cleaned && force_rm_datadir)
+		print_msg(VERBOSITY_NORMAL,
+				  _("  data directory %s was left in place because cleanup "
+					"is incomplete.\n"), data_dir);
+	else if (!remove_data_dir_if_forced(force_rm_datadir))
 		fully_cleaned = false;
 
 	if (!fully_cleaned)

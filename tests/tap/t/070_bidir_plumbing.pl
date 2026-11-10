@@ -60,6 +60,7 @@
 #   1  reverse subscription sub_n1_n3 is replicating on n1
 #   1  n3's post-join write reached the source via sub_n1_n3
 #   1  n3's post-join write reached the peer via sub_n2_n3
+#   4  --cleanup --force with the source unreachable keeps the manifest and data directory
 #   1  --cleanup --force exits 0
 #   1  source slot removed from n1 after cleanup
 #   1  n3 data directory removed after cleanup --force
@@ -91,12 +92,12 @@
 #   6  an unwritable sidecar location is rejected before the source slot is created
 #   1  destroy_cluster
 #  ---
-#  91  total
+#  95  total
 # =============================================================================
 
 use strict;
 use warnings;
-use Test::More tests => 91;
+use Test::More tests => 95;
 use File::Path qw(remove_tree);
 use lib '.';
 use SpockTest qw(create_cluster cross_wire destroy_cluster system_or_bail
@@ -486,6 +487,28 @@ for (1 .. 30) {
     sleep(1);
 }
 is($row_on_n2_from_n3, '1', "n3's post-join write reached the peer via sub_n2_n3");
+
+# =============================================================================
+# TEST: --cleanup --force with the source unreachable must not delete the
+# manifest (it lives in the data directory and is the only drop list).
+# =============================================================================
+{
+    my $n1_dd = $config->{node_datadirs}->[0];
+    system_or_bail "$pg_bin/pg_ctl", 'stop', '-D', $n1_dd, '-m', 'fast';
+
+    ok(!system_maybe($SCS_BIN, '--bidirectional', '--cleanup', '--force',
+                     '--pgdata', $n3_datadir),
+       '--cleanup --force exits non-zero when the source is unreachable');
+    ok(-d $n3_datadir,
+       'data directory kept after an incomplete --cleanup --force');
+    ok(-f $manifest,
+       'manifest kept after an incomplete --cleanup --force');
+
+    system_or_bail "$pg_bin/pg_ctl", 'start', '-D', $n1_dd,
+        '-l', "$config->{log_dir}/n1_force_restart.log";
+    ok(wait_for_pg_ready($host, $node_ports->[0], $pg_bin, 30),
+       'n1 postgres is running again');
+}
 
 # =============================================================================
 # TEST: --cleanup --force removes source slot, data directory, and manifest
