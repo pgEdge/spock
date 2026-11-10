@@ -127,9 +127,13 @@ typedef struct BidirectionalState
 											 * on a node that also has other,
 											 * unrelated, legitimate
 											 * subscriptions */
+	bool		join_complete;	/* manifest status "complete": the join
+								 * finished and the node is a live cluster
+								 * member */
 	bool		cleanup_mode;
 	bool		force_cleanup;	/* --force: also remove the data directory on
-								 * --cleanup, not just remote state */
+								 * --cleanup, not just remote state; required
+								 * for a completed join */
 	char	   *manifest_path;
 } BidirectionalState;
 
@@ -1340,6 +1344,11 @@ check_no_native_subscriptions(PGconn *conn)
  * manifest_* parser callbacks below, so a typo in one becomes a
  * compile error instead of a silent read/write mismatch.
  */
+#define MF_VERSION						"version"
+#define MF_STATUS						"status"
+#define MF_STATUS_IN_PROGRESS			"in_progress"
+#define MF_STATUS_COMPLETE				"complete"
+#define MF_VERSION_CURRENT				2
 #define MF_SUBSCRIBER_NAME				"subscriber_name"
 #define MF_DBNAME						"dbname"
 #define MF_SOURCE_DSN					"source_dsn"
@@ -1396,7 +1405,10 @@ serialize_manifest(BidirectionalState *state, const char *subscriber_name,
 	int			i;
 
 	appendPQExpBufferStr(buf, "{\n");
-	appendPQExpBufferStr(buf, "    \"version\": 1,\n");
+	appendPQExpBuffer(buf, "    \"" MF_VERSION "\": %d,\n", MF_VERSION_CURRENT);
+	append_json_str_field(buf, "    ", MF_STATUS,
+						  state->join_complete ? MF_STATUS_COMPLETE : MF_STATUS_IN_PROGRESS,
+						  true);
 
 	append_json_str_field(buf, "    ", MF_SUBSCRIBER_NAME, subscriber_name, true);
 	append_json_str_field(buf, "    ", MF_DBNAME, dbname, true);
@@ -1536,6 +1548,9 @@ typedef struct ManifestParseState
 	char	  **dbname_out;
 	char	  **source_dsn_out;
 	BidirectionalState *bidir;
+	int			version;		/* "version", 0 if absent */
+	bool		have_status;	/* "status" was present */
+	bool		bad_status;		/* "status" had an unknown value */
 
 	/* parser context */
 	int			depth;			/* object/array nesting depth */
@@ -1661,6 +1676,10 @@ manifest_scalar(void *st, char *token, JsonTokenType tokentype)
 	{
 		bool		value = (tokentype == JSON_TOKEN_TRUE);
 
+		if (tokentype == JSON_TOKEN_NUMBER &&
+			strcmp(s->cur_field, MF_VERSION) == 0)
+			s->version = atoi(token);
+
 		if (strcmp(s->cur_field, MF_SOURCE_REVERSE_SUB_CREATED) == 0)
 			s->bidir->source_reverse_sub_created = value;
 		pg_free(token);
@@ -1688,6 +1707,15 @@ manifest_scalar(void *st, char *token, JsonTokenType tokentype)
 			s->bidir->node_dsn = token;
 		else if (strcmp(s->cur_field, MF_NODE_SYSID) == 0)
 			s->bidir->node_sysid = token;
+		else if (strcmp(s->cur_field, MF_STATUS) == 0)
+		{
+			s->have_status = true;
+			s->bidir->join_complete = (strcmp(token, MF_STATUS_COMPLETE) == 0);
+			if (!s->bidir->join_complete &&
+				strcmp(token, MF_STATUS_IN_PROGRESS) != 0)
+				s->bad_status = true;
+			pg_free(token);
+		}
 		else
 			pg_free(token);
 	}
@@ -1803,6 +1831,11 @@ read_manifest(const char *manifest_path, BidirectionalState *state,
 
 	if (!*subscriber_name_out || !*dbname_out || !*source_dsn_out)
 		die(_("manifest file \"%s\" is malformed or missing required fields"),
+			manifest_path);
+
+	if (pstate.version < 1 || pstate.version > MF_VERSION_CURRENT ||
+		pstate.bad_status || (pstate.version >= 2 && !pstate.have_status))
+		die(_("manifest file \"%s\" has an unsupported version or status"),
 			manifest_path);
 
 	return true;
@@ -2602,8 +2635,20 @@ run_cleanup_mode_if_requested(SubscriberCreateContext *ctx)
 		return;
 
 	if (read_manifest(ctx->bidir.manifest_path, &ctx->bidir, &sub_name, &db, &src_dsn))
+	{
+		if (ctx->bidir.join_complete && !ctx->bidir.force_cleanup)
+		{
+			fprintf(stderr,
+					_("Manifest %s records a completed join: node \"%s\" is a live "
+					  "cluster member.\n--cleanup would drop its subscriptions, "
+					  "the reverse subscriptions and slots on the other nodes, "
+					  "and stop its postmaster.\nPass --force to proceed.\n"),
+					ctx->bidir.manifest_path, sub_name);
+			exit(1);
+		}
 		exit(cleanup_partial_state(&ctx->bidir, sub_name, db, src_dsn,
 								   ctx->bidir.force_cleanup) ? 0 : 1);
+	}
 
 	/*
 	 * No full manifest -- basebackup may never have completed.  Fall back to
@@ -3341,6 +3386,9 @@ restart_with_spock_and_activate(SubscriberCreateContext *ctx)
 
 			print_msg(VERBOSITY_NORMAL, _("Lifting read-only mode...\n"));
 			set_spock_readonly(subscriber_conn, "off");
+
+			ctx->bidir.join_complete = true;
+			write_manifest(&ctx->bidir, ctx->subscriber_name, db, ctx->base_prov_connstr);
 		}
 
 		PQfinish(subscriber_conn);
@@ -3478,7 +3526,8 @@ usage(void)
 	printf(_("                          startup\n"));
 	printf(_("  --cleanup               idempotently remove partial join state and exit;\n"));
 	printf(_("                          stops postgres if it is running in --pgdata\n"));
-	printf(_("  --force                 with --cleanup, also remove the data directory\n"));
+	printf(_("  --force                 with --cleanup, also remove the data directory;\n"));
+	printf(_("                          required when the manifest records a completed join\n"));
 	printf(_("\nDuring the join, this node must be network-quarantined (private address /\n"));
 	printf(_("restrictive pg_hba.conf) by the operator -- via --hba-conf/--postgresql-conf --\n"));
 	printf(_("until the join completes; the tool does not manage this for you.\n"));

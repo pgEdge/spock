@@ -60,6 +60,9 @@
 #   1  reverse subscription sub_n1_n3 is replicating on n1
 #   1  n3's post-join write reached the source via sub_n1_n3
 #   1  n3's post-join write reached the peer via sub_n2_n3
+#   1  manifest has version 2 and status complete after the join
+#   3  --cleanup without --force refuses a completed join and changes nothing
+#   1  pending-cleanup sidecar has status in_progress
 #   4  --cleanup --force with the source unreachable keeps the manifest and data directory
 #   1  --cleanup --force exits 0
 #   1  source slot removed from n1 after cleanup
@@ -92,12 +95,12 @@
 #   6  an unwritable sidecar location is rejected before the source slot is created
 #   1  destroy_cluster
 #  ---
-#  95  total
+#  100  total
 # =============================================================================
 
 use strict;
 use warnings;
-use Test::More tests => 95;
+use Test::More tests => 100;
 use File::Path qw(remove_tree);
 use lib '.';
 use SpockTest qw(create_cluster cross_wire destroy_cluster system_or_bail
@@ -386,6 +389,17 @@ ok($manifest_content =~ /"source_restore_lsn":\s*"[0-9A-Fa-f]+\/[0-9A-Fa-f]+"/,
    'manifest: source_restore_lsn populated');
 ok($manifest_content =~ /"node_dsn":\s*"[^"]+"/,
    'manifest: node_dsn populated');
+ok($manifest_content =~ /"version":\s*2\b/ &&
+   $manifest_content =~ /"status":\s*"complete"/,
+   'manifest: version 2, status complete after the join');
+
+# A completed join is a live cluster member: --cleanup alone must refuse.
+ok(!system_maybe($SCS_BIN, '--bidirectional', '--cleanup',
+                 '--pgdata', $n3_datadir),
+   '--cleanup without --force refuses a completed join');
+ok(-f $manifest, 'manifest kept after the refused --cleanup');
+is(`$pg_bin/psql -X -p $n3_port -d $dbname -t -A -c "SELECT count(*) > 0 FROM spock.subscription"`,
+   "t\n", 'subscriptions on the joined node survive the refused --cleanup');
 
 my $source_slot_exists = scalar_query(1,
     "SELECT COUNT(*) FROM pg_replication_slots WHERE slot_name LIKE 'spk_%n3%'");
@@ -711,6 +725,14 @@ ok(!system_maybe($SCS_BIN,
    'a broken --extra-basebackup-args makes the base backup fail');
 
 ok(-f $pending_sidecar, 'pending-cleanup sidecar written before the failed backup');
+{
+    open my $sfh, '<', $pending_sidecar or die "Cannot read sidecar: $!";
+    local $/;
+    my $sidecar_content = <$sfh>;
+    close $sfh;
+    ok($sidecar_content =~ /"status":\s*"in_progress"/,
+       'pending-cleanup sidecar has status in_progress');
+}
 
 my $sidecar_mode = (stat($pending_sidecar))[2] & 07777;
 is(sprintf('%04o', $sidecar_mode), '0600',
