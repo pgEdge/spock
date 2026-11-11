@@ -47,7 +47,7 @@ node addition:
   enabling subscriptions to ensure they reach replicating status.
 
 - When adding to a single-node cluster, Zodan handles the process
-  differently; no disabled subscriptions are needed.
+  differently — no disabled subscriptions are needed.
 
 - Zodan shows final status of all nodes and subscriptions across the
   entire cluster, not just the new node.
