@@ -4792,9 +4792,10 @@ spock_execute_sql_command(char *cmdstr, char *role, bool isTopLevel)
 
 			/*
 			 * By the time SQL is in the queue it has already been filtered on
-			 * origin, so we can just add it to the replication set here.
+			 * origin, so we can just add it to the replication set here. The
+			 * statement ran as the current user.
 			 */
-			add_ddl_to_repset(pstmt->utilityStmt);
+			add_ddl_to_repset(pstmt->utilityStmt, GetUserId());
 		}
 
 		PortalDrop(portal, false);
