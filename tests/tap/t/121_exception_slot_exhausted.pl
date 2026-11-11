@@ -10,7 +10,7 @@ use SpockTest qw(
 );
 
 # =============================================================================
-# Test: 119_exception_slot_exhausted.pl
+# Test: 121_exception_slot_exhausted.pl
 # =============================================================================
 # An apply worker that finds the exception log full must fail on its own and
 # leave SpockCtx->lock free for everybody else.
@@ -114,6 +114,8 @@ for (1 .. 60) {
     sleep(1);
 }
 ok($found, 'the next new name finds the exception log full');
+ok(log_since(2, $log_start) =~ /increase max_worker_processes/,
+    'the error says how to get out of it');
 
 # A manager takes SpockCtx->lock at least every spock.restart_delay_default
 # (5 s by default), so a lock left held soon shows up as processes stuck on
