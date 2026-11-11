@@ -1,6 +1,7 @@
 #!/bin/sh
 # Review the commit being made with Fable 5.1 against the SKILL.md next to
-# this script, and refuse it on a REJECT verdict.  The same script serves
+# this script and the repository's REVIEW.md, and refuse it on a REJECT
+# verdict.  The same script serves
 # every <name>-commit-review skill; the name decides the report directory
 # (<git common dir>/<name>-reviews) and the bypass variable (<NAME>_REVIEW).
 #
@@ -174,8 +175,22 @@ if ! git -c filter.lfs.process= -c filter.lfs.smudge= -c filter.lfs.required=fal
     echo "$SKILL_NAME: writing the index snapshot failed; commit refused" >&2
     exit 1
 fi
+# The checklist is REVIEW.md at the repository root, kept with the code
+# rather than in the skill so one text serves the hook, a session and a
+# review by hand.  The committed copy is used, so a change to REVIEW.md is
+# reviewed under the rules in force before it; the index copy serves only
+# the first commit of a repository.  A repository without one gets the
+# SKILL.md text alone.
+if git rev-parse -q --verify HEAD >/dev/null 2>&1; then
+    guide="$(git show HEAD:REVIEW.md 2>/dev/null)"
+else
+    guide="$(git show :REVIEW.md 2>/dev/null)"
+fi
 {
     cat "$SKILL_FILE"
+    if [ -n "$guide" ]; then
+        printf '\n\n%s\n' "$guide"
+    fi
     printf '\n\n# The commit under review\n\n'
     printf 'Repository snapshot: %s (the index as it will be committed; refer to files by their path relative to it)\nBranch: %s\nBase: %s\n' "$snapshot" "$branch" "${base:-unknown}"
     printf 'You may Read, Grep and Glob anywhere under the snapshot to check the code around each hunk.\n'
