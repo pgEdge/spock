@@ -238,6 +238,23 @@ static VerbosityLevelEnum verbosity = VERBOSITY_NORMAL;
 static PGconn *subscriber_conn = NULL;
 static PGconn *provider_conn = NULL;
 
+/*
+ * Provider slots created by the plain (non-bidirectional) path that no
+ * subscription uses yet.  die() drops them; a bidirectional join records its
+ * slots in the manifest instead.
+ */
+typedef struct PendingSlot
+{
+	char	   *dsn;
+	char	   *name;
+	struct PendingSlot *next;
+} PendingSlot;
+
+static PendingSlot *pending_slots = NULL;
+
+static void register_pending_slot(const char *dsn, const char *name);
+static void release_pending_slot(const char *name);
+static void drop_pending_slots(void);
 static void signal_handler(int sig);
 static void usage(void);
 static void die(const char *fmt,...)
@@ -261,6 +278,7 @@ static void wait_postmaster_shutdown(void);
 static char *validate_replication_set_input(char *replication_sets);
 
 static void remove_unwanted_data(PGconn *conn);
+static void check_no_spock_dependents(PGconn *conn);
 static char *create_restore_point(PGconn *conn, char *restore_point_name);
 static char *create_logical_slot(PGconn *conn, const char *slot_name,
 								 bool drop_if_exists, const char *already_exists_hint);
@@ -268,6 +286,7 @@ static char *initialize_replication_slot(PGconn *conn, char *dbname,
 										 char *provider_node_name, char *subscription_name,
 										 bool drop_slot_if_exists);
 static char *create_peer_slot(PGconn *peer_conn, const char *peer_slot_name);
+static bool replication_slot_exists(PGconn *conn, const char *slot_name);
 static char *sub_name_for(const char *local_node_name, const char *provider_node_name);
 static char *get_origin_name_for_node(PGconn *conn, const char *upstream_node_name,
 									  const char *conn_label, char **sub_name_out);
@@ -2022,6 +2041,51 @@ drop_reverse_sub(PGconn *conn, const char *node_name, const char *subscriber_nam
 }
 
 /*
+ * True if sub_name is n3's subscription from a peer whose slot this run did
+ * not record as created, yet a slot of that name exists on the peer.  Such a
+ * slot belongs to something else; spock.sub_drop() would drop it along with
+ * the subscription.  Returns false when that cannot be established, e.g. the
+ * peer is unreachable.
+ */
+static bool
+peer_slot_not_ours(BidirectionalState *state, const char *sub_name)
+{
+	int			i;
+
+	for (i = 0; i < state->num_peers; i++)
+	{
+		PeerNodeInfo *peer = &state->peers[i];
+		PQExpBuffer query;
+		PGconn	   *conn;
+		PGresult   *res;
+		bool		exists = false;
+
+		if (!peer->sub_name || strcmp(peer->sub_name, sub_name) != 0)
+			continue;
+		if (peer->slot_creation_lsn && peer->slot_creation_lsn[0])
+			return false;
+		if (!peer->dsn || !peer->dsn[0] || !peer->slot_name || !peer->slot_name[0])
+			return false;
+
+		conn = PQconnectdb(peer->dsn);
+		if (PQstatus(conn) == CONNECTION_OK)
+		{
+			query = createPQExpBuffer();
+			printfPQExpBuffer(query,
+							  "SELECT 1 FROM pg_catalog.pg_replication_slots WHERE slot_name = %s",
+							  PQescapeLiteral(conn, peer->slot_name, strlen(peer->slot_name)));
+			res = PQexec(conn, query->data);
+			exists = PQresultStatus(res) == PGRES_TUPLES_OK && PQntuples(res) > 0;
+			PQclear(res);
+			destroyPQExpBuffer(query);
+		}
+		PQfinish(conn);
+		return exists;
+	}
+	return false;
+}
+
+/*
  * Drop every subscription this run may have created on n3 itself: the
  * catchup subscription to the source and any disabled peer subscriptions.
  * A freshly-provisioned n3 has no other legitimate spock.subscription
@@ -2079,6 +2143,14 @@ cleanup_verified_subscriber_node(BidirectionalState *state, const char *subscrib
 		{
 			char	   *sub_name = PQgetvalue(res, i, 0);
 			PGresult   *drop_res;
+
+			if (peer_slot_not_ours(state, sub_name))
+			{
+				print_msg(VERBOSITY_NORMAL,
+						  _("  left subscriber subscription %s in place: its slot on "
+							"the peer was not created by this run\n"), sub_name);
+				continue;
+			}
 
 			printfPQExpBuffer(query, "SELECT spock.sub_drop(%s, true)",
 							  PQescapeLiteral(n3_conn, sub_name, strlen(sub_name)));
@@ -2926,6 +2998,7 @@ create_replication_slots(SubscriberCreateContext *ctx)
 															 ctx->remote_info->node_name,
 															 ctx->subscriber_name,
 															 ctx->drop_slot_if_exists);
+		register_pending_slot(ctx->prov_connstr, ctx->slot_names[dbnum]);
 		PQfinish(provider_conn);
 		provider_conn = NULL;
 	}
@@ -3430,6 +3503,7 @@ restart_with_spock_and_activate(SubscriberCreateContext *ctx)
 							ctx->prov_connstr, ctx->replication_sets, ctx->apply_delay,
 							ctx->force_text_transfer, ctx->slot_names[dbnum],
 							ctx->remote_lsn);
+			release_pending_slot(ctx->slot_names[dbnum]);
 
 			PQfinish(subscriber_conn);
 			subscriber_conn = NULL;
@@ -3534,6 +3608,80 @@ usage(void)
 }
 
 /*
+ * Remember a provider slot created by this run until a subscription owns it.
+ */
+static void
+register_pending_slot(const char *dsn, const char *name)
+{
+	PendingSlot *ps = pg_malloc(sizeof(PendingSlot));
+
+	ps->dsn = pg_strdup(dsn);
+	ps->name = pg_strdup(name);
+	ps->next = pending_slots;
+	pending_slots = ps;
+}
+
+/*
+ * Forget a slot registered by register_pending_slot(); a subscription now
+ * owns it.
+ */
+static void
+release_pending_slot(const char *name)
+{
+	PendingSlot **pp;
+
+	for (pp = &pending_slots; *pp != NULL; pp = &(*pp)->next)
+	{
+		if (strcmp((*pp)->name, name) == 0)
+		{
+			PendingSlot *ps = *pp;
+
+			*pp = ps->next;
+			pg_free(ps->dsn);
+			pg_free(ps->name);
+			pg_free(ps);
+			return;
+		}
+	}
+}
+
+/*
+ * Drop the slots still registered, so a failed run does not leave them
+ * pinning WAL on the provider.  Failures are reported, not fatal: this runs
+ * from die().
+ */
+static void
+drop_pending_slots(void)
+{
+	PendingSlot *ps = pending_slots;
+
+	pending_slots = NULL;		/* die() may be re-entered */
+
+	for (; ps != NULL; ps = ps->next)
+	{
+		PGconn	   *conn = PQconnectdb(ps->dsn);
+		PQExpBuffer query = createPQExpBuffer();
+		PGresult   *res;
+
+		if (PQstatus(conn) == CONNECTION_OK)
+		{
+			printfPQExpBuffer(query, "SELECT pg_drop_replication_slot(%s)",
+							  PQescapeLiteral(conn, ps->name, strlen(ps->name)));
+			res = PQexec(conn, query->data);
+			if (PQresultStatus(res) != PGRES_TUPLES_OK)
+				fprintf(stderr, _("WARNING: could not drop replication slot \"%s\": %s"),
+						ps->name, PQerrorMessage(conn));
+			PQclear(res);
+		}
+		else
+			fprintf(stderr, _("WARNING: could not connect to drop replication slot \"%s\": %s"),
+					ps->name, PQerrorMessage(conn));
+		destroyPQExpBuffer(query);
+		PQfinish(conn);
+	}
+}
+
+/*
  * Print error and exit.
  */
 static void
@@ -3549,6 +3697,8 @@ die(const char *fmt,...)
 		PQfinish(subscriber_conn);
 	if (provider_conn)
 		PQfinish(provider_conn);
+
+	drop_pending_slots();
 
 	if (get_pgpid())
 	{
@@ -4117,6 +4267,32 @@ check_reused_data_dir_is_safe(const char *data_dir, RemoteInfo *remoteinfo)
 }
 
 /*
+ * Return true if a replication slot named slot_name exists on conn.
+ */
+static bool
+replication_slot_exists(PGconn *conn, const char *slot_name)
+{
+	PQExpBuffer query = createPQExpBuffer();
+	PGresult   *res;
+	bool		exists;
+
+	printfPQExpBuffer(query,
+					  "SELECT 1 FROM pg_catalog.pg_replication_slots WHERE slot_name = %s",
+					  PQescapeLiteral(conn, slot_name, strlen(slot_name)));
+	res = debug_exec(conn, query->data);
+	if (PQresultStatus(res) != PGRES_TUPLES_OK)
+	{
+		PQclear(res);
+		die(_("could not check for existing replication slot \"%s\": %s\n"),
+			slot_name, PQerrorMessage(conn));
+	}
+	exists = PQntuples(res) > 0;
+	PQclear(res);
+	destroyPQExpBuffer(query);
+	return exists;
+}
+
+/*
  * Create a logical replication slot named slot_name for the spock_output
  * plugin and return its creation LSN (caller must free).  If a slot of
  * that name already exists: drop and recreate it when drop_if_exists is
@@ -4130,21 +4306,8 @@ create_logical_slot(PGconn *conn, const char *slot_name, bool drop_if_exists,
 	PGresult   *res;
 	char	   *slot_lsn;
 
-	printfPQExpBuffer(query,
-					  "SELECT 1 FROM pg_catalog.pg_replication_slots WHERE slot_name = %s",
-					  PQescapeLiteral(conn, slot_name, strlen(slot_name)));
-	res = debug_exec(conn, query->data);
-	if (PQresultStatus(res) != PGRES_TUPLES_OK)
+	if (replication_slot_exists(conn, slot_name))
 	{
-		PQclear(res);
-		die(_("could not check for existing replication slot \"%s\": %s\n"),
-			slot_name, PQerrorMessage(conn));
-	}
-
-	if (PQntuples(res) > 0)
-	{
-		PQclear(res);
-
 		if (!drop_if_exists)
 			die(_("replication slot \"%s\" already exists; %s\n"),
 				slot_name, already_exists_hint);
@@ -4162,8 +4325,8 @@ create_logical_slot(PGconn *conn, const char *slot_name, bool drop_if_exists,
 			die(_("could not drop existing replication slot \"%s\": %s\n"),
 				slot_name, PQerrorMessage(conn));
 		}
+		PQclear(res);
 	}
-	PQclear(res);
 
 	printfPQExpBuffer(query,
 					  "SELECT slot_name, lsn::text"
@@ -4391,6 +4554,8 @@ remove_unwanted_data(PGconn *conn)
 {
 	PGresult   *res;
 
+	check_no_spock_dependents(conn);
+
 	/*
 	 * Remove replication identifiers (9.4 will get them removed by dropping
 	 * the extension later as we emulate them there).
@@ -4599,38 +4764,14 @@ capture_catalog_state(PGconn *conn, Oid source_nodeid, CatalogCapture *capture)
 }
 
 /*
- * Bidirectional-mode catalog strip: drop ALL replication origins (not
- * just ones with a status row, unlike remove_unwanted_data()), then
- * guard DROP EXTENSION ... CASCADE with a one-hop pg_depend inventory --
- * any non-spock object depending on a spock member would otherwise be
- * silently collaterally dropped.
+ * Die if any object outside the spock extension depends on a spock member:
+ * DROP EXTENSION ... CASCADE would silently drop it too.  Run before
+ * anything is changed.
  */
 static void
-remove_unwanted_data_bidir(PGconn *conn, CatalogCapture *capture)
+check_no_spock_dependents(PGconn *conn)
 {
 	PGresult   *res;
-
-	(void) capture;				/* must already be populated before this runs */
-
-	/*
-	 * Drop all replication origins copied by the basebackup.
-	 * pg_replication_origin is a cluster-wide (not per-database) catalog, so
-	 * this is scoped to spock's own "spk_..." naming convention
-	 * (gen_slot_name(), shared with slot names) rather than dropping every
-	 * row -- an unrelated database on the same instance with its own
-	 * (non-spock) logical replication would otherwise lose its origins too.
-	 */
-	res = debug_exec(conn,
-					 "SELECT pg_replication_origin_drop(roname)"
-					 " FROM pg_replication_origin"
-					 " WHERE roname LIKE 'spk\\_%' ESCAPE '\\'");
-	if (PQresultStatus(res) != PGRES_TUPLES_OK)
-	{
-		PQclear(res);
-		die(_("could not remove existing replication origins: %s\n"),
-			PQerrorMessage(conn));
-	}
-	PQclear(res);
 
 	/* Guard against CASCADE collaterally dropping user objects. */
 	res = debug_exec(conn,
@@ -4685,6 +4826,43 @@ remove_unwanted_data_bidir(PGconn *conn, CatalogCapture *capture)
 			list->data);
 	}
 	PQclear(res);
+}
+
+/*
+ * Bidirectional-mode catalog strip: drop ALL replication origins (not
+ * just ones with a status row, unlike remove_unwanted_data()), then
+ * guard DROP EXTENSION ... CASCADE with a one-hop pg_depend inventory --
+ * any non-spock object depending on a spock member would otherwise be
+ * silently collaterally dropped.
+ */
+static void
+remove_unwanted_data_bidir(PGconn *conn, CatalogCapture *capture)
+{
+	PGresult   *res;
+
+	(void) capture;				/* must already be populated before this runs */
+
+	/*
+	 * Drop all replication origins copied by the basebackup.
+	 * pg_replication_origin is a cluster-wide (not per-database) catalog, so
+	 * this is scoped to spock's own "spk_..." naming convention
+	 * (gen_slot_name(), shared with slot names) rather than dropping every
+	 * row -- an unrelated database on the same instance with its own
+	 * (non-spock) logical replication would otherwise lose its origins too.
+	 */
+	res = debug_exec(conn,
+					 "SELECT pg_replication_origin_drop(roname)"
+					 " FROM pg_replication_origin"
+					 " WHERE roname LIKE 'spk\\_%' ESCAPE '\\'");
+	if (PQresultStatus(res) != PGRES_TUPLES_OK)
+	{
+		PQclear(res);
+		die(_("could not remove existing replication origins: %s\n"),
+			PQerrorMessage(conn));
+	}
+	PQclear(res);
+
+	check_no_spock_dependents(conn);
 
 	res = debug_exec(conn, "DROP EXTENSION spock CASCADE;");
 	if (PQresultStatus(res) != PGRES_COMMAND_OK)
@@ -5607,6 +5785,15 @@ establish_peer_coverage_barrier(BidirectionalState *state, PGconn *n3_conn,
 		print_msg(VERBOSITY_NORMAL,
 				  _("Creating replication slot for peer \"%s\"...\n"), peer->node_name);
 		peer_conn = connectdb(peer->dsn);
+
+		/*
+		 * A slot of this name already on the peer was not created by this
+		 * run; refuse before recording anything, so --cleanup never drops it.
+		 */
+		if (replication_slot_exists(peer_conn, peer->slot_name))
+			die(_("replication slot \"%s\" already exists on peer \"%s\"; "
+				  "this is unexpected at this stage of the join\n"),
+				peer->slot_name, peer->node_name);
 
 		/*
 		 * Record the slot before creating it, so a death in between leaves
@@ -7271,9 +7458,20 @@ static char *
 generate_restore_point_name(void)
 {
 	char	   *rpn = malloc(NAMEDATALEN);
+	struct timeval tv;
 
 	if (rpn == NULL)
 		die(_("out of memory\n"));
-	snprintf(rpn, NAMEDATALEN, "spock_create_subscriber_%lx", random());
+
+	/*
+	 * The name must differ between runs: recovery stops at the first restore
+	 * point with a matching name, so a repeated name from a reused data
+	 * directory would stop it early.  random() alone repeats across runs on
+	 * platforms where it is unseeded or seeded with the same second.
+	 */
+	gettimeofday(&tv, NULL);
+	snprintf(rpn, NAMEDATALEN, "spock_create_subscriber_%x%05x_%x_%lx",
+			 (unsigned int) tv.tv_sec, (unsigned int) tv.tv_usec,
+			 (unsigned int) getpid(), (unsigned long) random());
 	return rpn;
 }
