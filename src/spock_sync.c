@@ -417,23 +417,28 @@ ensure_replication_origin(char *slot_name)
  * new node's spock.progress with, so that START REPLICATION skips the
  * transactions the COPY snapshot already contains.
  *
- * spock.progress.remote_lsn is flushed at most once a second, so it can name
- * a position behind what the origin has actually applied.  Seeding from it
- * lets START REPLICATION skip transactions the snapshot did not contain, and
- * those changes are then never applied here.
+ * The caller runs this inside a transaction that imported the slot's
+ * snapshot, the one the copy uses.  Read there, spock.progress.remote_lsn is
+ * the last commit the snapshot contains or, since the table is flushed at
+ * most once a second, one before it.  A seed behind the snapshot makes the
+ * new node apply again what the copy already holds, which conflict
+ * resolution absorbs; it never skips anything.
  *
  * With the origin's apply workers paused, take the resume LSN from
  * pg_replication_origin_status instead, which the apply worker writes at
- * commit and is therefore exact.  The caller passes the LSN the slot reported
- * as its consistent point: a paused worker cannot have committed past it, so
- * a row that has means a worker was not paused after all (the pause times
- * out), and the read is refused rather than trusted.  The other columns still
- * come from the table: they seed lag tracking only and are replaced by the
- * first replicated message.  remote_insert_lsn is clamped to the resume LSN
- * so it never reads as behind a commit known to be applied.
+ * commit and is therefore exact, so nothing is applied twice.  That view is
+ * not MVCC, so the snapshot does not bound it; the pause does.  The caller
+ * passes the LSN the slot reported as its consistent point: a paused worker
+ * cannot have committed past it, so a row that has means a worker was not
+ * paused after all (the pause times out), and the read is refused rather
+ * than trusted.  The other columns still come from the table: they seed lag
+ * tracking only and are replaced by the first replicated message.
+ * remote_insert_lsn is clamped to the resume LSN so it never reads as behind
+ * a commit known to be applied.
  *
  * Without the pause (an origin older than 5.0.7, or a per-table resync) the
- * origin status can be past the snapshot, so the table is used as before.
+ * origin status can be past the snapshot, so the table is used, under the
+ * snapshot, as before.
  *
  * The result is the caller's to PQclear(); NULL when it could not be read.
  */
@@ -1218,14 +1223,14 @@ spock_sync_subscription(SpockSubscription *sub)
 		 * Pause apply workers on the origin before creating the replication
 		 * slot.  This prevents data loss when adding a node under write load:
 		 * without the pause, an apply worker could commit a transaction after
-		 * the slot is created but before adjust_progress_info reads
-		 * spock.progress, making the new node think it has already seen data
+		 * the slot is created but before read_progress_info() reads the
+		 * origin status, making the new node think it has already seen data
 		 * that was not included in the COPY snapshot.
 		 *
 		 * The progress is read right after the slot is created, while the
 		 * workers are still paused, and they are resumed before the copy
-		 * starts.  If slot creation fails, the PG_CATCH block below attempts
-		 * a best-effort resume.
+		 * starts.  If slot creation or the read fails, the PG_CATCH block
+		 * below attempts a best-effort resume.
 		 *
 		 * pause_apply_workers() was added in 5.0.7; check for it first so an
 		 * older origin (a supported rolling-upgrade pairing) gets one clear
@@ -1261,27 +1266,55 @@ spock_sync_subscription(SpockSubscription *sub)
 			/*
 			 * Read the origin's progress now, while its apply workers are
 			 * still paused and before the copy, which can outlast the pause.
+			 *
+			 * Read it under the slot's snapshot, the one the copy imports
+			 * later, so that the spock.progress columns name what the copy
+			 * contains.  Without the pause the origin keeps applying while
+			 * this runs, and a live read of the table could name a commit the
+			 * snapshot does not hold, which the new node would then skip.
 			 */
+			start_copy_origin_tx(origin_conn, snapshot);
 			progress = read_progress_info(origin_conn, can_pause_apply_workers,
 										  lsn);
 		}
 		PG_CATCH();
 		{
-			/* Best-effort resume on error — workers' CV timeout will also
-			 * recover them if this fails. */
-			if (can_pause_apply_workers && PQstatus(origin_conn) == CONNECTION_OK)
+			if (PQstatus(origin_conn) == CONNECTION_OK)
 			{
-				PGresult *rres = PQexec(origin_conn,
-										"SELECT spock.resume_apply_workers()");
+				PGresult *rres;
+
+				/* End the snapshot transaction, if one was started. */
+				rres = PQexec(origin_conn, "ROLLBACK");
 				if (rres)
 					PQclear(rres);
+
+				/* Best-effort resume on error — workers' CV timeout will also
+				 * recover them if this fails. */
+				if (can_pause_apply_workers)
+				{
+					rres = PQexec(origin_conn,
+								  "SELECT spock.resume_apply_workers()");
+					if (rres)
+						PQclear(rres);
+				}
 			}
 			PQfinish(origin_conn);
 			PG_RE_THROW();
 		}
 		PG_END_TRY();
 
-		/* The progress is read; let the origin's apply workers go on. */
+		/*
+		 * The progress is read.  End the snapshot transaction and let the
+		 * origin's apply workers go on.
+		 */
+		{
+			PGresult *rres = PQexec(origin_conn, "ROLLBACK");
+
+			if (PQresultStatus(rres) != PGRES_COMMAND_OK)
+				elog(WARNING, "ROLLBACK on origin node failed: %s",
+					 PQresultErrorMessage(rres));
+			PQclear(rres);
+		}
 		if (can_pause_apply_workers)
 		{
 			PGresult *rres = PQexec(origin_conn,

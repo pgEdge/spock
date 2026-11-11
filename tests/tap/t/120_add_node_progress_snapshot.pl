@@ -21,24 +21,25 @@ use SpockTest qw(
 # every row n3 committed after it must reach n2 through replication, since
 # the copy did not contain it.
 #
-# The seed used to be read from n1's spock.progress table after the whole
-# copy.  n1's apply workers are paused for the sync, but the pause expires
-# after spock.pause_timeout, so for a copy longer than that n1 was applying
-# and flushing progress again by the time of the read, and the table named
-# a position well past the snapshot.  n2 then resumed from there and skipped
-# every row n1 had applied from n3 since the snapshot but had not copied.
+# The seed used to come from n1's spock.progress table, read after the copy
+# under the copy's snapshot.  That value is the last n3 commit the snapshot
+# contains or, since the table is flushed at most once a second, one before
+# it, so n2 applied again what the copy already held; it never lost a row.
 #
-# The seed is now read from the origin status right after the slot is
-# created, while the workers are still paused, and the workers are resumed
-# before the copy, so the seed is the snapshot position whatever the copy
-# does afterward.
+# The seed now comes from n1's replication origin status, which is exact but
+# live: it is not bounded by the snapshot, only by the pause of n1's apply
+# workers, and the pause expires after spock.pause_timeout.  So the read has
+# to happen right after the slot is created, while the workers are still
+# paused, and the workers are resumed before the copy.  Taken after the
+# copy instead, the read would seed n2 with every n3 commit n1 applied since
+# the snapshot, and n2 would skip them.
 #
-# The test sets spock.pause_timeout to 2s on n1 and holds the sync on n2
-# between the slot creation and the copy, by locking pg_replication_origin
-# there, until n1 has applied and flushed a clear block of further rows from
-# n3.  On the old code the copy then outlasts the pause and the post-copy
-# read seeds n2 past the snapshot, losing that block; on the fixed code the
-# seed is taken before the hold and no row is lost.
+# The test guards that ordering.  It sets spock.pause_timeout to 2s on n1
+# and holds the sync on n2 between the slot creation and the copy, by
+# locking pg_replication_origin there, until n1 has applied and flushed a
+# clear block of further rows from n3.  A status read taken after the copy
+# would seed n2 past the snapshot and lose that block; the read taken
+# before the hold seeds the snapshot position and no row is lost.
 # =============================================================================
 
 create_cluster(3, 'Create 3-node Spock cluster');
@@ -193,8 +194,8 @@ ok(sync_nodes(3, 1, 'n3', 120), 'n1 has applied everything from n3');
 ok(sync_nodes(3, 2, 'n3', 120), 'n2 has applied everything from n3');
 
 # n2 must hold every row n3 ever wrote.  The rows n1 applied from n3 between
-# the snapshot and the post-copy progress read are the ones the old code
-# left out of both the copy and the resumed stream.
+# the snapshot and the end of the copy are the ones a status read taken
+# after the copy would leave out of both the copy and the resumed stream.
 my $summary = "SELECT count(*), coalesce(sum(id), 0), coalesce(max(id), 0) FROM load";
 my $on_n3 = scalar_query(3, $summary);
 is(scalar_query(1, $summary), $on_n3, 'n1 has every row n3 wrote');
