@@ -16,6 +16,24 @@ CREATE SCHEMA hollywood
     CREATE TABLE films (title text, release date, awards text[])
     CREATE TABLE shorts (title text, release date, awards text[]);
 
+-- Same with the schema named after its AUTHORIZATION role
+CREATE SCHEMA AUTHORIZATION nonsuper
+    CREATE TABLE nonsuper_films (title text, release date);
+
+-- And with AUTHORIZATION CURRENT_USER, run as a role other than the one
+-- AutoDDL switches to.  Rolled back, so nothing is replicated.
+BEGIN;
+CREATE ROLE autoddl_schema_owner;
+GRANT CREATE ON DATABASE regression TO autoddl_schema_owner;
+SET LOCAL search_path = public;
+SET LOCAL ROLE autoddl_schema_owner;
+CREATE SCHEMA AUTHORIZATION CURRENT_USER
+    CREATE TABLE owner_films (title text, release date);
+RESET ROLE;
+SELECT count(*) FROM spock.tables
+WHERE nspname = 'autoddl_schema_owner' AND relname = 'owner_films' AND set_name IS NOT NULL;
+ROLLBACK;
+
 -- Create a test table on provider (node 1)
 CREATE TABLE test1 (id int primary key, name text);
 
@@ -42,6 +60,7 @@ CALL spock.wait_for_sync_event(true, 'test_provider', :'sync_event');
 
 -- Check schema, table and function appear on subscriber (node 2)
 SELECT count(*) FROM spock.tables where nspname = 'hollywood' AND set_name IS NOT NULL;
+SELECT count(*) FROM spock.tables where nspname = 'nonsuper' AND set_name IS NOT NULL;
 SELECT count(*) FROM spock.tables where relname = 'test1' AND set_name IS NOT NULL;
 SELECT count(*) FROM spock.tables where (relname = 'test2' or relname = 'test3') AND set_name IS NOT NULL;
 
@@ -112,6 +131,8 @@ CREATE TABLE autoddl_perm_like_ok (LIKE autoddl_perm_src);
 DROP TABLE IF EXISTS autoddl_perm_like, autoddl_perm_ctas, autoddl_perm_ctas2;
 DROP TABLE IF EXISTS autoddl_perm_like_ok, autoddl_perm_src;
 DROP TABLE autoddl_temp_src;
+
+DROP SCHEMA nonsuper CASCADE;
 
 -- Reset the configuration to the default value
 \c :provider_dsn
