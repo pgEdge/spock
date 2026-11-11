@@ -3911,6 +3911,20 @@ stream_replay:
 		}
 
 		/*
+		 * Replay needs this worker's exception log entry, which is assigned
+		 * on the first BEGIN.  An error before that, from the startup message
+		 * or a malformed BEGIN, would write to exception_log_ptr[-1] below,
+		 * so restart the worker instead.  A permanent one, such as an
+		 * unsupported startup message version, retries until it is fixed.
+		 */
+		if (my_exception_log_index < 0)
+		{
+			prepare_transient_error_retry(edata,
+										  "error before the exception log entry was assigned");
+			PG_RE_THROW();
+		}
+
+		/*
 		 * Reaching this point means that we are dealing with the first
 		 * occurrence of an exception in the default, non-exception-handling
 		 * mode. We need to abort the current toplevel transactions and
