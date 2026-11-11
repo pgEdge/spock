@@ -121,7 +121,7 @@ index 1bacea4360e..20f60178c72 100644
 +										   logged_old_attrs,
  										   &old_key_copied);
  
- 	/* NO EREPORT(ERROR) from here till changes are logged */
+ 	clear_all_visible = PageIsAllVisible(page);
 @@ -4171,6 +4182,7 @@ l2:
  	bms_free(key_attrs);
  	bms_free(id_attrs);
