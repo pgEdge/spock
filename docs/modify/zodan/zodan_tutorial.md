@@ -82,13 +82,19 @@ pg_ctl -D /path/to/data start
 
 # Create database and user
 psql -c "CREATE DATABASE inventory;"
-psql -c "CREATE USER pgedge WITH PASSWORD '1safepassword';"
+psql -c "CREATE USER pgedge WITH SUPERUSER PASSWORD '1safepassword';"
 psql -c "GRANT ALL ON DATABASE inventory TO pgedge;"
 
 # Install Spock extension
 psql -d inventory -c "CREATE EXTENSION spock;"
 psql -d inventory -c "CREATE EXTENSION dblink;"
 ```
+
+The steps below create replication slots and replication origins on the
+nodes, which by default only a superuser may do, so `pgedge` is a
+superuser here, on n4 and on the existing nodes alike. A role without
+that attribute needs `REPLICATION` for the slot functions and `EXECUTE`
+on the `pg_replication_origin_*()` functions instead.
 
 ## Using the Zodan Procedure to Add a Node
 
@@ -108,6 +114,15 @@ Load the Zodan procedures with the following command:
 ```sql
 \i /path/to/zodan.sql
 ```
+
+`spock.add_node()` checks the nodes before it changes anything, but two
+of its checks are narrower than the ones under
+[Validate Prerequisites](#validate-prerequisites): it compares only the
+roles that can log in, and it looks for disabled subscriptions on every
+node except n1. Run the role and subscription queries from that section
+first. A role that cannot log in but owns a table is not noticed until
+the structure copy fails on n4, after the slots and subscriptions have
+been created.
 
 Then, use `spock.add_node()` from the new node to create the node
 definition. In the following example, the `spock.add_node` procedure adds node `n4` to
@@ -239,7 +254,9 @@ Perform safety checks to ensure node `n4` is a clean slate:
 
 !!! info
 
-    If any prerequisite fails, the process aborts to prevent conflicts.
+    `spock.add_node()` runs these checks and aborts if one fails, except
+    that it compares only the roles that can log in and does not look at
+    the subscriptions on n1 itself. The queries below cover those too.
 
 #### Confirm that the Database Exists on n4
 
@@ -1020,6 +1037,47 @@ runs 5.0.x, follow the documentation and `zodan.sql` of that release.
     position for that node from `spock.progress` on n4, advance the slot on
     the node to it, then advance the replication origin with the same name
     on n4 to it.
+
+#### Confirm the Copy Covers Every Replicated Table
+
+The copy comes from n1 alone, so it holds only the tables in n1's
+replication sets. A table that n2 or n3 replicates but n1 does not is
+absent from the copy, and advancing that node's slot past its earlier
+changes to the table would lose them for good. Confirm that every table
+in a replication set on n2 or n3 is also in one on n1, and that any row
+or column filter in `spock.replication_set_table` is the same on n1:
+
+```sql
+WITH on_n1 AS (
+    SELECT nspname, relname
+    FROM dblink(
+        'host=127.0.0.1 dbname=inventory port=5432 user=pgedge password=1safepassword',
+        'SELECT nspname, relname FROM spock.tables WHERE set_name IS NOT NULL'
+    ) AS t(nspname text, relname text)
+)
+SELECT n.node_name, t.nspname, t.relname
+FROM dblink(
+    'host=127.0.0.1 dbname=inventory port=5432 user=pgedge password=1safepassword',
+    'SELECT n.node_name, i.if_dsn
+     FROM spock.node n
+     JOIN spock.node_interface i ON n.node_id = i.if_nodeid
+     WHERE n.node_name IN (''n2'', ''n3'')'
+) AS n(node_name text, if_dsn text)
+CROSS JOIN LATERAL dblink(
+    n.if_dsn,
+    'SELECT nspname, relname FROM spock.tables WHERE set_name IS NOT NULL'
+) AS t(nspname text, relname text)
+WHERE NOT EXISTS (
+    SELECT 1 FROM on_n1
+    WHERE on_n1.nspname = t.nspname AND on_n1.relname = t.relname
+);
+-- Expected: no rows
+```
+
+If the query returns a table, do not advance the slots. Add the table to
+a replication set on n1, then copy it to n4 with
+`spock.sub_resync_table('sub_n1_n4', ...)` and wait for
+`spock.table_wait_for_sync('sub_n1_n4', ...)` before going on.
 
 #### Wait for sub_n1_n4 to Be Ready
 
