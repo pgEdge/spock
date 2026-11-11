@@ -1047,17 +1047,26 @@ handle_begin(StringInfo s)
 				}
 			}
 
-			/* TODO: What to do if we can't find a free slot? */
-			if (free_slot_index == -1)
-			{
-				/* no free entries found. */
-				elog(ERROR, "SPOCK %s: unable to find an empty exception log slot.",
-					 MySubscription->name);
-			}
-
 			/* We didn't find a slot, but we have a valid index. */
 			if (!slot_found)
 			{
+				/*
+				 * Only an error if we need a new entry: another worker may
+				 * have taken our name since the unlocked search, and the loop
+				 * stops there before seeing a free entry.  Release the lock
+				 * first, since we are outside a transaction and nothing else
+				 * will.  Class 53 makes apply_work() restart the worker
+				 * instead of replaying with no entry.
+				 */
+				if (free_slot_index == -1)
+				{
+					LWLockRelease(SpockCtx->lock);
+					ereport(ERROR,
+							(errcode(ERRCODE_CONFIGURATION_LIMIT_EXCEEDED),
+							 errmsg("SPOCK %s: unable to find an empty exception log slot.",
+									MySubscription->name)));
+				}
+
 				/* TODO: What happens if a subscription is dropped? Memory leak */
 				new_elog_entry = &exception_log_ptr[free_slot_index];
 				namestrcpy(&new_elog_entry->slot_name, MySubscription->name);

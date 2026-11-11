@@ -388,12 +388,20 @@ falling behind a logical subscriber.
 spock.pg_standby_slot_names = 'physical_slot_1,physical_slot_2'
 ```
 
-Used whenever the Spock worker is running: PostgreSQL 15 and 16 always;
-PostgreSQL 17 when native slotsync is not active (either
-`spock.use_native_failover_slots` is `off`, or it is `on` but
-`sync_replication_slots` is not enabled). On PostgreSQL 17+ with native
-slotsync, or on PostgreSQL 18+ with `spock.use_native_failover_slots = on`,
-use `synchronized_standby_slots` instead.
+Available on every supported PostgreSQL version, and installed whenever the
+Spock worker and its walsender hook are (that is, unless
+`spock.use_native_failover_slots` is on). PostgreSQL's own
+`synchronized_standby_slots` has no equivalent of
+`spock.standby_slots_min_confirmed`: it waits for every slot it names, so
+with it one standby that is down stops logical replication to every
+subscriber. Use only one of them; setting both is redundant. For a failover slot
+`synchronized_standby_slots` is applied first and waits for all of its
+slots, so when it names every slot listed here this setting adds nothing,
+and the walsender logs that; a slot listed only here still counts. A listed
+slot that does not exist can never confirm: with the default `-1` the
+walsender waits until `wal_sender_timeout`, logs a warning naming the slot,
+and starts over, so after a promotion either create the slots on the new
+primary or clear the setting there.
 
 ### `spock.standby_slots_min_confirmed`
 
@@ -404,6 +412,12 @@ given LSN before logical replication is allowed to proceed. The default
 ```ini
 spock.standby_slots_min_confirmed = -1
 ```
+
+With a value lower than the number of listed slots, subscribers can receive
+changes that some standbys do not have yet. After a failure, promote the
+standby with the highest `pg_last_wal_receive_lsn()`: it has every change
+sent to a subscriber. Promoting a standby that is further behind leaves
+subscribers with rows the new primary never had.
 
 ### `spock.failover_slots_naptime`
 
@@ -431,6 +445,84 @@ Settable at runtime with `SIGHUP` (reload).
 
 ```ini
 spock.failover_slots_feedback_naptime = 10000
+```
+
+### `spock.failover_slots_recreate_invalidated`
+
+Whether the `spock_failover_slots` worker drops and recreates a synchronized
+slot whose copy on the standby was invalidated, for example because the
+standby removed WAL or the primary removed catalog rows the copy still
+needed. Such a copy looks current but cannot serve a subscriber after a
+promotion. With the default `on`, the worker reports it with a WARNING,
+drops it and creates it again from the primary. The new copy stays a
+temporary slot until the primary's slot has caught up with it, while the
+worker keeps synchronizing the other slots; if the standby is promoted
+before then, the copy is dropped. A temporary copy belongs to the worker
+process: if the worker exits for any reason, for example because the
+primary is restarting and cannot be reached, the copy is dropped with it,
+and the worker that the postmaster starts a minute later creates it again
+at the standby's position of that time, which the primary's slot has to
+pass again. If a temporary copy is invalidated while the worker holds it,
+PostgreSQL terminates the worker to release the slot, with the same
+effect. With `off`, the worker
+leaves the copy as it is and reports it once, so it can be looked at
+before anything is dropped; it is recreated on the first pass after the
+setting is turned back on. Settable at runtime with `SIGHUP` (reload).
+
+Used wherever the Spock worker synchronizes slots, which on v5 is every
+PostgreSQL version unless `spock.use_native_failover_slots` is on and native
+slot sync has taken over; there this setting is ignored.
+
+```ini
+spock.failover_slots_recreate_invalidated = on
+```
+
+### `spock.failover_slots_database`
+
+The database the `spock_failover_slots` worker connects to on the standby.
+A synchronized slot copy holds the primary's positions, but not the
+snapshot the primary saved for the slot, which physical replication does
+not carry. After a promotion, decoding from such a copy has to build a new
+snapshot, and transactions that commit before it is consistent are never
+sent to the subscriber. When this setting names a database, the worker
+decodes each copy's WAL on the standby, as PostgreSQL 17's native slot sync
+does, so the copy only points at positions where the standby has saved a
+snapshot of its own. A new copy is made persistent only once that
+snapshot is consistent. While a transaction older than a copy's
+`restart_lsn` is still open on the primary, decoding cannot reach a
+consistent snapshot; the copy is reported once and left as it is until
+the transaction ends, and the worker goes on with the other slots.
+
+On PostgreSQL 16 this must be the database the synchronized slots belong
+to, normally the Spock database. Copies in another database, and every copy
+when the setting is empty, are synchronized without the check and reported
+once with a WARNING. The standby also needs `wal_level = logical`.
+PostgreSQL 15 cannot decode WAL on a standby, so there the check is not
+available and each copy is noted once in the log instead. Default: empty.
+Requires a restart.
+
+On PostgreSQL 16 and later the worker stays connected to this database on
+every node where the setting is present, including a primary, where it
+otherwise sleeps, and a standby where native slot sync has taken over. As
+with any open connection, `DROP DATABASE`, `ALTER DATABASE ... RENAME` and
+`CREATE DATABASE ... TEMPLATE` on that database then fail. Stopping the
+worker frees the database only until it restarts 60 seconds later; use
+`DROP DATABASE ... WITH (FORCE)`, or clear the setting and restart the
+server. If connecting fails, for example because the database does not
+exist, the worker reports it, carries on without the check, and does not
+try again until the server is restarted.
+
+The check is made on PostgreSQL 16 and later while the Spock worker
+synchronizes the slots. Where native slot sync has taken over, the worker
+still connects but makes no check. On PostgreSQL 15 this setting is ignored.
+
+On PostgreSQL 17 and later, once the worker has taken over from native slot
+sync, a copy that native slot sync made is synchronized like any other, but a
+standby cannot drop it. If the primary drops that slot, the worker leaves
+the copy and reports it once; it is dropped on the promoted node.
+
+```ini
+spock.failover_slots_database = 'pgedge'
 ```
 
 ### `spock.include_ddl_repset`
