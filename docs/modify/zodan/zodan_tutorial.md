@@ -905,6 +905,72 @@ FROM dblink(
 -- Returns: 'mgmt_tools,monitoring' (if any exist)
 ```
 
+#### Confirm the Copy Will Cover Every Replicated Table
+
+The copy comes from n1 alone, so n4 gets only the tables in n1's
+replication sets, less any schema in `skip_schema`, and only with the
+changes n1 has received. A table that n2 or n3 replicates but n1 has in
+no set, or whose set the subscription on n1 from that node does not
+carry, is missing from the copy or behind on it. Advancing that node's
+slot later would then skip its earlier changes to the table for good.
+The following query lists such tables, taking the n2 and n3 sets from
+`spock.tables` on each node and n1's incoming sets from
+`spock.subscription`:
+
+```sql
+WITH on_n1 AS (
+    SELECT nspname, relname
+    FROM dblink(
+        'host=127.0.0.1 dbname=inventory port=5432 user=pgedge password=1safepassword',
+        'SELECT nspname, relname FROM spock.tables WHERE set_name IS NOT NULL'
+    ) AS t(nspname text, relname text)
+),
+into_n1 AS (
+    SELECT provider, set_name
+    FROM dblink(
+        'host=127.0.0.1 dbname=inventory port=5432 user=pgedge password=1safepassword',
+        'SELECT n.node_name, unnest(s.sub_replication_sets)
+         FROM spock.subscription s
+         JOIN spock.node n ON n.node_id = s.sub_origin'
+    ) AS t(provider text, set_name text)
+)
+SELECT n.node_name, t.nspname, t.relname, t.set_name
+FROM dblink(
+    'host=127.0.0.1 dbname=inventory port=5432 user=pgedge password=1safepassword',
+    'SELECT n.node_name, i.if_dsn
+     FROM spock.node n
+     JOIN spock.node_interface i ON n.node_id = i.if_nodeid
+     WHERE n.node_name IN (''n2'', ''n3'')'
+) AS n(node_name text, if_dsn text)
+CROSS JOIN LATERAL dblink(
+    n.if_dsn,
+    'SELECT nspname, relname, set_name FROM spock.tables WHERE set_name IS NOT NULL'
+) AS t(nspname text, relname text, set_name text)
+WHERE NOT EXISTS (
+    SELECT 1 FROM on_n1
+    WHERE on_n1.nspname = t.nspname AND on_n1.relname = t.relname
+)
+OR NOT EXISTS (
+    SELECT 1 FROM into_n1
+    WHERE into_n1.provider = n.node_name AND into_n1.set_name = t.set_name
+);
+-- Expected: no rows
+```
+
+None of these tables may be in a schema you are about to list in
+`skip_schema`, and any row or column filter in
+`spock.replication_set_table` has to be the same on n1.
+
+If the query returns a row, put that right on n1 first: add the table to
+a replication set there, or add its set to the subscription from that
+node, and bring n1's copy of the table up to date with
+`spock.sub_resync_table()` on n1. Only then create `sub_n1_n4`. Fixing
+it after the copy by resynchronizing the one table on n4 is not enough:
+a table resync also rewrites the positions in `spock.progress` on n4
+from n1's origins at that moment, which can be past changes to other
+tables that n4 never received, and advancing the slots to them would
+skip those changes.
+
 #### Create an Enabled Subscription on n4 from n1
 
 Create a subscription (`sub_n1_n4`) on n4, pointing to n1 as the provider.
@@ -1022,7 +1088,9 @@ To avoid that, move each slot and the matching replication origin on n4
 to the last commit from that node that is already in the copy. When the
 COPY from n1 finishes, Spock records that position in `spock.progress` on
 n4: one row per origin node, with the last commit from that node that n1
-had applied when the copy was taken.
+had applied when the copy was taken. That is only right when the copy
+covered every table n2 and n3 replicate, which you confirmed before
+creating `sub_n1_n4`.
 
 This relies on n4 running Spock 6.0.0 or later, which takes the position
 from the replication origins on n1 when the copy snapshot is taken.
@@ -1037,47 +1105,6 @@ runs 5.0.x, follow the documentation and `zodan.sql` of that release.
     position for that node from `spock.progress` on n4, advance the slot on
     the node to it, then advance the replication origin with the same name
     on n4 to it.
-
-#### Confirm the Copy Covers Every Replicated Table
-
-The copy comes from n1 alone, so it holds only the tables in n1's
-replication sets. A table that n2 or n3 replicates but n1 does not is
-absent from the copy, and advancing that node's slot past its earlier
-changes to the table would lose them for good. Confirm that every table
-in a replication set on n2 or n3 is also in one on n1, and that any row
-or column filter in `spock.replication_set_table` is the same on n1:
-
-```sql
-WITH on_n1 AS (
-    SELECT nspname, relname
-    FROM dblink(
-        'host=127.0.0.1 dbname=inventory port=5432 user=pgedge password=1safepassword',
-        'SELECT nspname, relname FROM spock.tables WHERE set_name IS NOT NULL'
-    ) AS t(nspname text, relname text)
-)
-SELECT n.node_name, t.nspname, t.relname
-FROM dblink(
-    'host=127.0.0.1 dbname=inventory port=5432 user=pgedge password=1safepassword',
-    'SELECT n.node_name, i.if_dsn
-     FROM spock.node n
-     JOIN spock.node_interface i ON n.node_id = i.if_nodeid
-     WHERE n.node_name IN (''n2'', ''n3'')'
-) AS n(node_name text, if_dsn text)
-CROSS JOIN LATERAL dblink(
-    n.if_dsn,
-    'SELECT nspname, relname FROM spock.tables WHERE set_name IS NOT NULL'
-) AS t(nspname text, relname text)
-WHERE NOT EXISTS (
-    SELECT 1 FROM on_n1
-    WHERE on_n1.nspname = t.nspname AND on_n1.relname = t.relname
-);
--- Expected: no rows
-```
-
-If the query returns a table, do not advance the slots. Add the table to
-a replication set on n1, then copy it to n4 with
-`spock.sub_resync_table('sub_n1_n4', ...)` and wait for
-`spock.table_wait_for_sync('sub_n1_n4', ...)` before going on.
 
 #### Wait for sub_n1_n4 to Be Ready
 
