@@ -12,6 +12,11 @@
 # before it is enabled.  While frozen, the subscription must be disabled with
 # local sync status READY and its origin must exist.  After the resume it must
 # replicate.
+#
+# Also covers the plain (non-bidirectional) path's failure handling: a failed
+# base backup must not leave its provider slot behind, and DROP EXTENSION must
+# not run while a non-spock object depends on spock.  The restore point name
+# must carry a per-run suffix.
 # =============================================================================
 
 use strict;
@@ -81,6 +86,39 @@ sub n2_query {
     return $out;
 }
 
+sub run_scs {
+    my (@extra) = @_;
+    my $out = `"$SCS_BIN" --pgdata "$n2_datadir" --subscriber-name n2 --provider-dsn "$n1_dsn" --subscriber-dsn "$n2_dsn" --postgresql-conf "$n2_conf" @extra 2>&1`;
+    return ($? >> 8, $out);
+}
+
+sub provider_slots {
+    return scalar_query(1, "SELECT count(*) FROM pg_replication_slots"
+                         . " WHERE slot_type = 'logical' AND plugin = 'spock_output'");
+}
+
+# A failed base backup must not leave its slot pinning WAL on the provider.
+{
+    my ($rc, $out) = run_scs("--extra-basebackup-args '--waldir=/nonexistent_083_waldir'");
+    isnt($rc, 0, 'a failed base backup makes the utility fail');
+    is(provider_slots(), '0', 'the failed run left no slot on the provider');
+    remove_tree($n2_datadir) if -d $n2_datadir;
+}
+
+# A non-spock object depending on spock must stop the run before anything is dropped.
+system_or_bail "$pg_bin/psql", '-q', '-p', $n1_port, '-d', $dbname, '-c',
+    'CREATE VIEW v083 AS SELECT * FROM spock.node';
+{
+    my ($rc, $out) = run_scs();
+    isnt($rc, 0, 'a dependent object makes the utility fail');
+    like($out, qr/depend on it and would be collaterally dropped.*v083/s,
+         'the dependent object is named');
+    is(provider_slots(), '0', 'the failed run left no slot on the provider');
+    remove_tree($n2_datadir) if -d $n2_datadir;
+}
+system_or_bail "$pg_bin/psql", '-q', '-p', $n1_port, '-d', $dbname, '-c',
+    'DROP VIEW v083';
+
 my $paused = "${n2_datadir}.spock_bidir_test_paused";
 my $resume = "${n2_datadir}.spock_bidir_test_resume";
 my $scs_log = "$log_dir/scs_enable_order.log";
@@ -138,6 +176,15 @@ while (time() < $deadline) {
     sleep(1);
 }
 is($rc, 0, 'utility finished successfully') or diag(`tail -30 $scs_log`);
+
+{
+    open my $lf, '<', $scs_log or die $!;
+    local $/;
+    my $log = <$lf>;
+    close $lf;
+    like($log, qr/restore point "spock_create_subscriber_[0-9a-f]{13}_[0-9a-f]+_[0-9a-f]+"/,
+         'the restore point name carries a per-run suffix');
+}
 
 is(n2_query("SELECT sub_enabled FROM spock.subscription"), 't',
    'subscription is enabled after the resume');

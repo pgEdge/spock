@@ -95,12 +95,12 @@
 #   6  an unwritable sidecar location is rejected before the source slot is created
 #   1  destroy_cluster
 #  ---
-#  100  total
+#  102  total
 # =============================================================================
 
 use strict;
 use warnings;
-use Test::More tests => 100;
+use Test::More tests => 102;
 use File::Path qw(remove_tree);
 use lib '.';
 use SpockTest qw(create_cluster cross_wire destroy_cluster system_or_bail
@@ -543,6 +543,34 @@ is($source_slot_after, '0', 'source slot removed from n1 after cleanup');
 
 ok(!-d $n3_datadir, 'n3 data directory removed after cleanup --force');
 ok(!-f $manifest, 'manifest removed after cleanup');
+
+# =============================================================================
+# TEST: a slot already on a peer under the name this join would use is not
+# ours: the join must refuse it, and --cleanup must leave it alone.
+# =============================================================================
+{
+    my $peer_slot = scalar_query(1,
+        "SELECT spock.spock_gen_slot_name('$dbname', 'n2', 'sub_n3_n2')");
+    system_or_bail "$pg_bin/psql", '-q', '-p', $node_ports->[1], '-d', $dbname,
+        '-c', "SELECT pg_create_logical_replication_slot('$peer_slot', 'spock_output')";
+
+    ok(!system_maybe($SCS_BIN, '--bidirectional',
+          '--pgdata',          $n3_datadir,
+          '--subscriber-name', 'n3',
+          '--provider-dsn',    $n1_dsn,
+          '--subscriber-dsn',  $n3_dsn,
+          '--postgresql-conf', $n3_conf),
+       'join refuses a pre-existing slot of the peer slot name');
+    system_maybe($SCS_BIN, '--bidirectional', '--cleanup', '--force',
+                 '--pgdata', $n3_datadir);
+    is(scalar_query(2,
+          "SELECT count(*) FROM pg_replication_slots WHERE slot_name = '$peer_slot'"),
+       '1', '--cleanup leaves the pre-existing peer slot alone');
+
+    system_or_bail "$pg_bin/psql", '-q', '-p', $node_ports->[1], '-d', $dbname,
+        '-c', "SELECT pg_drop_replication_slot('$peer_slot')";
+    remove_tree($n3_datadir) if -d $n3_datadir;
+}
 
 # =============================================================================
 # TEST: --cleanup --force is a safe no-op when the target is already fully
