@@ -80,6 +80,7 @@ test: 110_resync_node_info_warning
 test: 111_failover_slot_invalidated_resync
 test: 116_lww_frozen_local_row
 test: 112_resync_apply_race
+test: 121_exception_slot_exhausted
 test: 113_tablesync_same_txn
 test: 114_failover_slot_consistent_snapshot
 test: 115_failover_slot_native_synced_copy
