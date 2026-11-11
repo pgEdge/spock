@@ -15,7 +15,7 @@
 -- (an empty script) sets the version name back to 6.0.0.  Every statement is
 -- written to be a no-op on a catalog that already has the beta 2 objects, so
 -- running this on a beta 2 node changes nothing.  The definitions are the
--- same as in spock--6.0.0.sql and spock--5.0.13--6.0.0.sql.
+-- same as in spock--6.0.0.sql and spock--5.0.14--6.0.0.sql.
 --
 -- Remove both files at general availability.
 
