@@ -16,6 +16,24 @@ CREATE SCHEMA hollywood
     CREATE TABLE films (title text, release date, awards text[])
     CREATE TABLE shorts (title text, release date, awards text[]);
 
+-- Same with the schema named after its AUTHORIZATION role
+CREATE SCHEMA AUTHORIZATION nonsuper
+    CREATE TABLE nonsuper_films (title text, release date);
+
+-- And with AUTHORIZATION CURRENT_USER, run as a role other than the one
+-- AutoDDL switches to.  Rolled back, so nothing is replicated.
+BEGIN;
+CREATE ROLE autoddl_schema_owner;
+GRANT CREATE ON DATABASE regression TO autoddl_schema_owner;
+SET LOCAL search_path = public;
+SET LOCAL ROLE autoddl_schema_owner;
+CREATE SCHEMA AUTHORIZATION CURRENT_USER
+    CREATE TABLE owner_films (title text, release date);
+RESET ROLE;
+SELECT count(*) FROM spock.tables
+WHERE nspname = 'autoddl_schema_owner' AND relname = 'owner_films' AND set_name IS NOT NULL;
+ROLLBACK;
+
 -- Create a test table on provider (node 1)
 CREATE TABLE test1 (id int primary key, name text);
 
@@ -59,6 +77,7 @@ CALL spock.wait_for_sync_event(true, 'test_provider', :'sync_event');
 
 -- Check schema, table and function appear on subscriber (node 2)
 SELECT count(*) FROM spock.tables where nspname = 'hollywood' AND set_name IS NOT NULL;
+SELECT count(*) FROM spock.tables where nspname = 'nonsuper' AND set_name IS NOT NULL;
 SELECT count(*) FROM spock.tables where relname = 'test1' AND set_name IS NOT NULL;
 SELECT count(*) FROM spock.tables where (relname = 'test2' or relname = 'test3') AND set_name IS NOT NULL;
 
@@ -70,6 +89,7 @@ SELECT status FROM spock.sub_show_status();
 \c :provider_dsn
 DROP TABLE test_380 CASCADE;
 DROP TABLE test_380_part CASCADE;
+DROP SCHEMA nonsuper CASCADE;
 ALTER SYSTEM SET spock.enable_ddl_replication = 'off';
 ALTER SYSTEM SET spock.include_ddl_repset = 'off';
 ALTER SYSTEM SET spock.allow_ddl_from_functions = 'off';

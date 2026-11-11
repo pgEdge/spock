@@ -173,13 +173,49 @@ remove_table_from_repsets(Oid nodeid, Oid reloid, bool only_for_update)
 }
 
 /*
+ * create_schema_name
+ *		The name of the schema a CREATE SCHEMA statement created.
+ *
+ * Without a name, the schema is named after its AUTHORIZATION role, as in
+ * CreateSchemaCommand().  CURRENT_USER and CURRENT_ROLE mean stmt_userid,
+ * the user the statement ran as: the caller may have switched users since.
+ */
+static char *
+create_schema_name(CreateSchemaStmt *stmt, Oid stmt_userid)
+{
+	RoleSpec   *role = stmt->authrole;
+
+	if (stmt->schemaname != NULL)
+		return stmt->schemaname;
+
+	Assert(role != NULL);
+	switch (role->roletype)
+	{
+		case ROLESPEC_CSTRING:
+			return role->rolename;
+		case ROLESPEC_CURRENT_ROLE:
+		case ROLESPEC_CURRENT_USER:
+			return GetUserNameFromId(stmt_userid, false);
+		case ROLESPEC_SESSION_USER:
+			return GetUserNameFromId(GetSessionUserId(), false);
+		case ROLESPEC_PUBLIC:
+			break;
+	}
+	elog(ERROR, "unexpected role type %d in CREATE SCHEMA", (int) role->roletype);
+	return NULL;				/* keep compiler quiet */
+}
+
+/*
  * add_ddl_to_repset
  *		Check if the DDL statement can be added to the replication set. (For
  * now only tables are added). The function also checks whether the table has
  * needed indexes to be added to replication set. If not, they are ignored.
+ *
+ * stmt_userid is the user the statement ran as; the caller may have switched
+ * users since.
  */
 static void
-add_ddl_to_repset(Node *parsetree)
+add_ddl_to_repset(Node *parsetree, Oid stmt_userid)
 {
 	Relation	targetrel;
 	SpockRepSet *repset;
@@ -234,11 +270,26 @@ add_ddl_to_repset(Node *parsetree)
 	{
 		ListCell *cell;
 		CreateSchemaStmt *cstmt = (CreateSchemaStmt *) parsetree;
+		char	   *nspname = create_schema_name(cstmt, stmt_userid);
 
+		/*
+		 * The elements may name their tables without a schema.  Up to
+		 * PostgreSQL 18 the server filled in the new schema in this parse
+		 * tree; from 19rc2 it does that on a copy.  Fill it in here, on our
+		 * own copy, so the lookup finds the new table rather than one in the
+		 * search path.
+		 */
 		foreach(cell, cstmt->schemaElts)
 		{
-			if (nodeTag(lfirst(cell)) == T_CreateStmt)
-				add_ddl_to_repset(lfirst(cell));
+			CreateStmt *elt;
+
+			if (!IsA(lfirst(cell), CreateStmt))
+				continue;
+
+			elt = copyObject(lfirst_node(CreateStmt, cell));
+			if (elt->relation->schemaname == NULL)
+				elt->relation->schemaname = nspname;
+			add_ddl_to_repset((Node *) elt, stmt_userid);
 		}
 		return;
 	}
@@ -260,7 +311,8 @@ add_ddl_to_repset(Node *parsetree)
 
 		if (analyze &&
 			castNode(Query, stmt->query)->commandType == CMD_UTILITY)
-			add_ddl_to_repset(castNode(Query, stmt->query)->utilityStmt);
+			add_ddl_to_repset(castNode(Query, stmt->query)->utilityStmt,
+							  stmt_userid);
 
 		return;
 	}
@@ -574,7 +626,7 @@ spock_ProcessUtility(
 			autoddl_can_proceed(context, toplevel_stmt, nodeTag(parsetree)))
 		{
 			toplevel_stmt = T_Invalid;
-			add_ddl_to_repset(parsetree);
+			add_ddl_to_repset(parsetree, save_userid);
 		}
 
 		/*
@@ -600,7 +652,7 @@ spock_ProcessUtility(
 									 roleoid,
 									 parsetree);
 
-			add_ddl_to_repset(parsetree);
+			add_ddl_to_repset(parsetree, save_userid);
 		}
 	}
 	/* Restore previous session privileges */
