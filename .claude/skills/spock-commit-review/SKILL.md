@@ -11,12 +11,14 @@ change has a defect until you have checked the places where one would hide.
 A review that approves a broken commit is worse than no review, so when in
 doubt, reject and say what would convince you.
 
-Spock is a PostgreSQL extension doing multi-master logical replication: an
-output plugin on the provider, apply and sync background workers on the
-subscriber, conflict resolution with commit timestamps, AutoDDL, failover
-slots on standbys, and SQL-callable management functions. Mistakes here lose
-data silently or take a whole cluster through crash recovery, which is why the
-bar is high.
+## The checklist
+
+What to check, in what order, how to judge a finding and when to reject are
+in `REVIEW.md` at the repository root. That file is the one place the review
+rules live, so a review by hand, in a session or from the hook applies the
+same ones. The hook appends the committed `REVIEW.md` after this text; in a
+session, read it from the repository. If it is missing from both, say so and
+reject.
 
 ## What you get
 
@@ -45,7 +47,8 @@ the message if one is proposed. Read the index, not the working tree, which
 may hold unstaged edits: write it out with
 `git checkout-index -a --prefix=<tmp>/` (add `--ignore-skip-worktree-bits`
 on git 2.35 or later for a sparse checkout) and read there, or read one file
-with `git show :<path>`. Then apply the same checks and the same output.
+with `git show :<path>`. Then apply the checklist in `REVIEW.md` and print
+the same output.
 
 ## Where it lives
 
@@ -59,78 +62,16 @@ Per-commit review is opt-in and off by default, so an ordinary commit costs
 nothing once the hook is installed. Turn it on persistently with `git config
 --global <name>.commitReview true`, or for a single commit with
 `<NAME>_REVIEW=on`; `<NAME>_REVIEW=skip` bypasses one commit while it is on.
-Without it the checklist below is still used on demand, either as
-`/spock-commit-review` in a session or as the `REVIEW.md` at the repository
-root. `COMMIT_REVIEW_MODEL` overrides the model the hook runs.
-
-## What to check, in this order
-
-1. **Correctness against PostgreSQL semantics.** For every call into core,
-   check the real contract in the PostgreSQL version range Spock supports
-   (15 to 19):
-   locks held and released, snapshot visibility (catalog snapshot versus the
-   transaction snapshot), `CommitTransactionCommand()` inside a worker's
-   transaction, `PreventInTransactionBlock()`, memory context lifetime,
-   `ereport` levels, and anything that differs between majors. A change that is
-   right on 17 and wrong on 15 is wrong.
-2. **Worker and transaction state.** Apply, sync, manager and failover-slot
-   workers have their own transaction and snapshot discipline. Flag any path
-   that returns, errors, or loops without restoring it (PopActiveSnapshot,
-   CommitTransactionCommand, ReplicationSlotRelease, lock release, GUC nest
-   level), and any work done on a possibly freed pointer after the chain or
-   after a commit.
-3. **Races and ordering.** Signals set at commit, flags read without the lock,
-   checks done before an acquire, pauses that time out, replay positions that
-   move while something waits. Name the exact window and what loses data in
-   it.
-4. **Data loss and divergence.** Anything that can skip a transaction, apply
-   one twice, advance a progress or origin position past work not yet
-   applied, or let a conflict resolution pick the wrong row. This is the
-   category that must never pass.
-5. **Error handling and blast radius.** Does an error leave the subscription
-   disabled, the worker crash-looping, or the postmaster restarting? Is a
-   `FATAL` or `PANIC` justified? Is a provider-controlled value validated
-   before it sizes an allocation or indexes an array?
-6. **Version guards.** Every `#if PG_VERSION_NUM` branch: is the code reachable
-   on that version at all, does the other branch still compile, and is a
-   renamed core symbol handled on every major it changed in.
-7. **Tests.** A fix without a test that fails before it and passes after it is
-   incomplete unless the commit says why none is possible. Check that the test
-   exercises the changed path, is in `tests/tap/schedule` or the regress list,
-   takes a number no other test in the snapshot uses, does not depend on
-   timing
-   (sleeps, two separate queries that should be one), and skips loudly
-   (`plan skip_all`) when a prerequisite such as `pageinspect` or injection
-   points is missing rather than passing with fewer tests.
-8. **Project conventions.** Comments short, factual, PostgreSQL style, no em
-   dashes anywhere in code, comments, SQL, tests or messages. Commit subject:
-   one capitalized line ending with a period, prefixed `Issue (#N): ` when an
-   issue exists, body in plain paragraphs explaining the problem and the fix,
-   no attribution trailers (no `Co-Authored-By`, no "Generated with").
-   pgindent layout. Error message prefix `SPOCK ...:` where the file does so.
-9. **Scope.** Changes mixed into the commit that the message does not cover,
-   or a fix to one branch that the other maintained branch (`main` versus
-   `v5_STABLE`) also needs and the message does not mention.
-
-## How to judge
-
-Be concrete and adversarial. For each finding, show the line, state what
-happens (the sequence of events, the input, the version), and what the
-consequence is. "Could be a problem" is not a finding; "on PG 15 this reads
-`restart_lsn` after `InvalidateObsoleteReplicationSlots()` cleared it, so the
-copy is never recreated" is. If you reject, say exactly what change or evidence
-would make you approve. If you approve, say what you checked and found sound,
-because an approval with no evidence is the same as not reviewing.
-
-Do not pad. Do not list style nits ahead of correctness. Do not soften a
-rejection because the change is small, the author is senior, or the commit
-message sounds confident. Do not approve to be agreeable.
+Without it `REVIEW.md` is still used on demand, either as
+`/spock-commit-review` in a session or by hand. `COMMIT_REVIEW_MODEL`
+overrides the model the hook runs.
 
 ## Output
 
 Print exactly this structure, nothing before it. The first line is exactly
 `VERDICT: APPROVE` or exactly `VERDICT: REJECT`, once, and nothing else on
-that line; the hook accepts no other spelling:
+that line; the hook accepts no other spelling. Severities and the reasons to
+reject are the ones `REVIEW.md` gives.
 
 ```
 VERDICT: APPROVE
@@ -147,13 +88,3 @@ Checked and sound: what you verified and found correct, with file:line.
 
 Commit message: ok, or what to change.
 ```
-
-Severity: critical = data loss, divergence, crash of the postmaster or a
-cluster-wide effect; high = a worker crash, a stuck subscription, a wrong
-result on some supported version or configuration; medium = correctness that
-needs an unusual condition, or a test that proves nothing; low = convention.
-
-Reject on any critical or high finding, on a fix with no test and no stated
-reason, and on a commit message that misstates what the change does. Approve
-only when you have opened the surrounding code for every hunk and found
-nothing of medium severity or above.

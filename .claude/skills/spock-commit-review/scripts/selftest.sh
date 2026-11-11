@@ -140,13 +140,41 @@ grep -q '^+one$' "$STUB_PROMPT" || fail "prompt has no diff"
 grep -q 'EXTERNAL-DIFF' "$STUB_PROMPT" && fail "the committer's external diff reached the prompt"
 pass "APPROVE commits, local and kept hooks run, prompt carries message and diff, reviewer sees the index"
 git checkout -q -- a.txt
+grep -q '^# Reviewing a change' "$STUB_PROMPT" && fail "a repository without REVIEW.md got a checklist from somewhere"
+
+# REVIEW.md at the root reaches the prompt once it is committed, and the
+# committed copy is used: a staged edit to it shows only in the diff.
+printf '# Reviewing a change\n\nREVIEW-GUIDE-ONE\n' > REVIEW.md
+git add REVIEW.md
+STUB_VERDICT=APPROVE git commit -q -m 'Guide.' >/dev/null 2>&1 || fail "commit adding REVIEW.md refused"
+grep -q '^REVIEW-GUIDE-ONE$' "$STUB_PROMPT" && fail "the index copy of REVIEW.md was used before it was committed"
+printf '# Reviewing a change\n\nREVIEW-GUIDE-TWO\n' > REVIEW.md
+git add REVIEW.md
+STUB_VERDICT=APPROVE git commit -q -m 'Guide two.' >/dev/null 2>&1 || fail "commit editing REVIEW.md refused"
+grep -q '^REVIEW-GUIDE-ONE$' "$STUB_PROMPT" || fail "the committed REVIEW.md is missing from the prompt"
+grep -q '^REVIEW-GUIDE-TWO$' "$STUB_PROMPT" && fail "the staged REVIEW.md replaced the committed one"
+grep -q '^+REVIEW-GUIDE-TWO$' "$STUB_PROMPT" || fail "the staged edit to REVIEW.md is missing from the diff"
+pass "the committed REVIEW.md is appended to the prompt and a staged edit to it is only diffed"
+
+# The first commit of a repository has no HEAD, so the staged REVIEW.md is
+# the only copy and is used.
+F="$T/first/$NAME"
+git init -q "$F"
+cd "$F"
+git remote add origin "https://github.invalid/someone/$NAME.git"
+printf '# Reviewing a change\n\nREVIEW-GUIDE-FIRST\n' > REVIEW.md
+git add REVIEW.md
+STUB_VERDICT=APPROVE git commit -q -m 'Initial.' >/dev/null 2>&1 || fail "initial commit refused"
+grep -q '^REVIEW-GUIDE-FIRST$' "$STUB_PROMPT" || fail "the staged REVIEW.md was not used for the initial commit"
+pass "an initial commit uses the staged REVIEW.md"
+cd "$R"
 
 printf 'two\n' > a.txt
 git add a.txt
 if STUB_VERDICT=REJECT git commit -q -m 'Second.' >/dev/null 2>&1; then
     fail "rejected commit went through"
 fi
-[ "$(git log --oneline | wc -l | tr -d ' ')" = 2 ] || fail "rejected commit landed"
+[ "$(git log --oneline | wc -l | tr -d ' ')" = 4 ] || fail "rejected commit landed"
 ls "$R/.git/$NAME-reviews"/*.md >/dev/null 2>&1 || fail "no report written"
 pass "REJECT refuses the commit and writes a report"
 
