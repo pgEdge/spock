@@ -27,3 +27,7 @@ single-pg18-installcheck/
 # node per version, logs and reports; tens of gigabytes.  Always ignored --
 # re-create by running the script.
 cluster-upgrade/
+
+# tests/valgrind/run-valgrind.sh output
+tests/valgrind/output/
+tests/valgrind/__pycache__/
