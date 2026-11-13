@@ -4830,6 +4830,15 @@ spock_execute_sql_command(char *cmdstr, char *role, bool isTopLevel)
 		CommandCounterIncrement();
 
 		/*
+		 * spock.replicate_ddl() has already queued the statement.  Refuse one
+		 * aimed at a node-local extension; this runs after the statement so
+		 * that a CREATE EXTENSION ... CASCADE can be checked against what it
+		 * installed.
+		 */
+		if (in_spock_replicate_ddl_command)
+			spock_refuse_ddl_local_extension(command->stmt);
+
+		/*
 		 * Restore the GUC variables we set above.
 		 */
 		AtEOXact_GUC(true, save_nestlevel);

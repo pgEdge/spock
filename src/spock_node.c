@@ -134,8 +134,8 @@ typedef struct SubscriptionTuple
  *   RESERVED_PURPOSE_DDL     replicate_ddl      reserved when *false*
  *
  * DDL is reserved when the object is node-local, i.e. its DDL is not
- * replicated, so replicate_ddl == false means reserved.  A NULL flag (e.g.
- * replicate_ddl is NULL for extensions) is never treated as reserved.
+ * replicated, so replicate_ddl == false means reserved.  The columns are NOT
+ * NULL; a NULL flag would be treated as not reserved.
  *
  * RESERVED_PURPOSE_EXTENSION_OWNED is the one compound purpose: builtin AND
  * block_in_repset AND replicate_ddl, which today selects exactly the spock and
