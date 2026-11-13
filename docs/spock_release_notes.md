@@ -751,8 +751,12 @@ AutoDDL has been refactored and hardened:
   reported it as replicated.  The `lolor` extension row in
   `spock.reserved_object` has `replicate_ddl = false`, and AutoDDL runs
   these statements only where they are issued, with a WARNING saying so.
-  Run them on each node.  A `DROP EXTENSION` naming lolor together with
-  another extension is refused while DDL replication is on.
+  Run them on each node.  `COMMENT ON EXTENSION lolor` and `SECURITY
+  LABEL ON EXTENSION lolor` stay local too.  A `DROP EXTENSION` naming
+  lolor together with another extension is refused while DDL replication
+  is on, and so is `CREATE EXTENSION ... CASCADE` of an extension that
+  requires lolor.  `spock.replicate_ddl()` refuses these statements for
+  lolor.
 
 ### Reserved schemas and extensions
 
@@ -760,11 +764,14 @@ Spock keeps some schemas and extensions out of the structure-sync dump and
 out of replication sets.  That list used to be fixed in the code.  It is now
 the `spock.reserved_object` catalog, with three settings per row:
 
-* `exclude_from_dump` — left out of the structure-sync dump.
-* `block_in_repset` — its tables may not be added to a replication set.
-* `replicate_ddl` — when `false`, DDL against the schema, or `CREATE`,
-  `ALTER` and `DROP EXTENSION` for the extension, runs only on the node
-  where it is issued.  The default is `true`.
+* `exclude_from_dump`: left out of the structure-sync dump.
+* `block_in_repset`: its tables may not be added to a replication set.
+* `replicate_ddl`: when `false`, `CREATE`, `ALTER` and `DROP EXTENSION`
+  for the extension run only on the node where they are issued.  For a
+  schema, the same holds for the DDL statements AutoDDL can trace to the
+  schema; others, such as `GRANT`, still replicate.  See the list in
+  [Replication Set Management](spock_functions/repset_mgmt.md).  The
+  default is `true`.
 
 The built-in rows cannot be changed or removed:
 

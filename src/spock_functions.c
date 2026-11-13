@@ -31,6 +31,8 @@
 #include "catalog/indexing.h"
 #include "catalog/namespace.h"
 #include "catalog/pg_authid_d.h"
+#include "catalog/pg_depend.h"
+#include "catalog/pg_extension.h"
 #include "catalog/pg_inherits.h"
 #include "catalog/pg_type.h"
 
@@ -2981,7 +2983,8 @@ stmt_targets_only_ddl_local(Node *stmt)
 
 /*
  * The extensions an extension statement (CREATE, ALTER, ALTER ... SET SCHEMA,
- * DROP) names, or NIL for any other statement.  The names point into stmt.
+ * DROP, COMMENT ON, SECURITY LABEL ON) names, or NIL for any other statement.
+ * The names point into stmt.
  */
 static List *
 stmt_extension_names(Node *stmt)
@@ -3002,6 +3005,22 @@ stmt_extension_names(Node *stmt)
 					return NIL;
 				return list_make1(strVal(alter->object));
 			}
+		case T_CommentStmt:
+			{
+				CommentStmt *comment = (CommentStmt *) stmt;
+
+				if (comment->objtype != OBJECT_EXTENSION)
+					return NIL;
+				return list_make1(strVal(comment->object));
+			}
+		case T_SecLabelStmt:
+			{
+				SecLabelStmt *label = (SecLabelStmt *) stmt;
+
+				if (label->objtype != OBJECT_EXTENSION)
+					return NIL;
+				return list_make1(strVal(label->object));
+			}
 		case T_DropStmt:
 			{
 				DropStmt   *drop = (DropStmt *) stmt;
@@ -3020,6 +3039,65 @@ stmt_extension_names(Node *stmt)
 }
 
 /*
+ * The first node-local extension (replicate_ddl = false) that the extension
+ * with OID extoid requires, directly or through other extensions, or NULL.
+ * CREATE EXTENSION records a normal dependency on each required extension.
+ */
+static char *
+required_ddl_local_extension(Oid extoid, List **visited)
+{
+	Relation	depRel;
+	ScanKeyData key[2];
+	SysScanDesc scan;
+	HeapTuple	tup;
+	List	   *required = NIL;
+	ListCell   *cell;
+	char	   *result = NULL;
+
+	*visited = lappend_oid(*visited, extoid);
+
+	depRel = table_open(DependRelationId, AccessShareLock);
+	ScanKeyInit(&key[0], Anum_pg_depend_classid, BTEqualStrategyNumber,
+				F_OIDEQ, ObjectIdGetDatum(ExtensionRelationId));
+	ScanKeyInit(&key[1], Anum_pg_depend_objid, BTEqualStrategyNumber,
+				F_OIDEQ, ObjectIdGetDatum(extoid));
+	scan = systable_beginscan(depRel, DependDependerIndexId, true, NULL, 2, key);
+	while (HeapTupleIsValid(tup = systable_getnext(scan)))
+	{
+		Form_pg_depend dep = (Form_pg_depend) GETSTRUCT(tup);
+
+		if (dep->refclassid == ExtensionRelationId &&
+			dep->deptype == DEPENDENCY_NORMAL &&
+			!list_member_oid(*visited, dep->refobjid))
+			required = lappend_oid(required, dep->refobjid);
+	}
+	systable_endscan(scan);
+	table_close(depRel, AccessShareLock);
+
+	foreach(cell, required)
+	{
+		Oid			reqoid = lfirst_oid(cell);
+		char	   *reqname;
+
+		if (list_member_oid(*visited, reqoid))
+			continue;
+		reqname = get_extension_name(reqoid);
+		if (reqname != NULL &&
+			spock_name_is_reserved(RESERVED_KIND_EXTENSION,
+								   RESERVED_PURPOSE_DDL, reqname))
+		{
+			result = reqname;
+			break;
+		}
+		result = required_ddl_local_extension(reqoid, visited);
+		if (result != NULL)
+			break;
+	}
+	list_free(required);
+	return result;
+}
+
+/*
  * Does this extension statement name only node-local extensions
  * (replicate_ddl = false)?  On true, *extname receives the first one.
  *
@@ -3028,14 +3106,19 @@ stmt_extension_names(Node *stmt)
  * node-local extension from its apply worker, which such an extension may
  * refuse (lolor does), and the whole drop would then be discarded there;
  * keeping it local would leave the other extensions installed everywhere
- * else.  Either way the nodes would silently disagree.  This runs after the
- * statement has executed, so the ERROR rolls the drop back.
+ * else.  Either way the nodes would silently disagree.
+ *
+ * CREATE EXTENSION ... CASCADE of a replicated extension that requires a
+ * node-local one is refused for the same reason: on a subscriber that does
+ * not have the node-local extension yet, CASCADE would try to create it from
+ * the apply worker.
+ *
+ * This runs after the statement has executed, so an ERROR rolls it back.
  */
 static bool
 stmt_targets_ddl_local_extension(Node *stmt, const char **extname)
 {
 	List	   *names = stmt_extension_names(stmt);
-	List	   *local;
 	ListCell   *cell;
 	const char *local_name = NULL;
 	const char *other_name = NULL;
@@ -3043,13 +3126,12 @@ stmt_targets_ddl_local_extension(Node *stmt, const char **extname)
 	if (names == NIL)
 		return false;
 
-	local = spock_reserved_object_names(RESERVED_KIND_EXTENSION,
-										RESERVED_PURPOSE_DDL);
 	foreach(cell, names)
 	{
 		const char *name = (const char *) lfirst(cell);
 
-		if (name_in_list(local, name))
+		if (spock_name_is_reserved(RESERVED_KIND_EXTENSION,
+								   RESERVED_PURPOSE_DDL, name))
 		{
 			if (local_name == NULL)
 				local_name = name;
@@ -3057,16 +3139,51 @@ stmt_targets_ddl_local_extension(Node *stmt, const char **extname)
 		else if (other_name == NULL)
 			other_name = name;
 	}
-	list_free_deep(local);
 	list_free(names);
 
 	if (local_name == NULL)
+	{
+		if (IsA(stmt, CreateExtensionStmt))
+		{
+			CreateExtensionStmt *create = (CreateExtensionStmt *) stmt;
+			bool		cascade = false;
+
+			foreach(cell, create->options)
+			{
+				DefElem    *opt = (DefElem *) lfirst(cell);
+
+				if (strcmp(opt->defname, "cascade") == 0)
+					cascade = defGetBoolean(opt);
+			}
+
+			if (cascade)
+			{
+				Oid			extoid = get_extension_oid(create->extname, true);
+				List	   *visited = NIL;
+				char	   *required = NULL;
+
+				if (OidIsValid(extoid))
+					required = required_ddl_local_extension(extoid, &visited);
+				list_free(visited);
+
+				if (required != NULL)
+					ereport(ERROR,
+							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+							 errmsg("cannot create extension \"%s\" with CASCADE",
+									create->extname),
+							 errdetail("It requires node-local extension \"%s\", which an apply worker cannot create.",
+									   required),
+							 errhint("Create extension \"%s\" on each node first, then create \"%s\" without CASCADE.",
+									 required, create->extname)));
+			}
+		}
 		return false;
+	}
 
 	if (other_name != NULL)
 		ereport(ERROR,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("cannot drop node-local extension \"%s\" together with extension \"%s\" while DDL replication is enabled",
+				 errmsg("cannot drop node-local extension \"%s\" together with extension \"%s\"",
 						local_name, other_name),
 				 errdetail("Dropping \"%s\" is not replicated, but dropping \"%s\" would be.",
 						   local_name, other_name),
@@ -3074,6 +3191,27 @@ stmt_targets_ddl_local_extension(Node *stmt, const char **extname)
 
 	*extname = local_name;
 	return true;
+}
+
+/*
+ * Refuse a statement given to spock.replicate_ddl() that targets a node-local
+ * extension (replicate_ddl = false).  The statement is queued before it runs,
+ * and a peer's apply worker would then have to run it, which such an
+ * extension may refuse (lolor does).  Called after each statement has run
+ * locally, so the ERROR rolls back both the statement and the queued copy.
+ */
+void
+spock_refuse_ddl_local_extension(Node *stmt)
+{
+	const char *extname;
+
+	if (stmt_targets_ddl_local_extension(stmt, &extname))
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("spock.replicate_ddl() cannot replicate DDL for node-local extension \"%s\"",
+						extname),
+				 errdetail("The extension is node-local (replicate_ddl = false in spock.reserved_object)."),
+				 errhint("Run the statement on each node without spock.replicate_ddl().")));
 }
 
 /*

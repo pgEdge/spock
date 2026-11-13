@@ -100,13 +100,26 @@ source of truth for three behaviours:
   -- it runs where issued but is not shipped to other nodes. The default is
   `true`.
 
-  For an extension, `CREATE EXTENSION`, `ALTER EXTENSION` and `DROP
-  EXTENSION` are kept local; run them on each node. A `DROP EXTENSION` that
-  names both a node-local extension and a replicated one is refused while DDL
-  replication is on; drop them in separate statements. Whatever such a
-  statement does with `CASCADE` also stays on the local node: objects that
-  depend on the extension are dropped only there, and extensions that
-  `CREATE EXTENSION ... CASCADE` installs are installed only there.
+  For an extension, `CREATE EXTENSION`, `ALTER EXTENSION`, `DROP
+  EXTENSION`, `COMMENT ON EXTENSION` and `SECURITY LABEL ON EXTENSION` are
+  kept local; run them on each node. A `DROP EXTENSION` that names both a
+  node-local extension and a replicated one is refused while DDL replication
+  is on; drop them in separate statements. `CREATE EXTENSION ... CASCADE` of
+  a replicated extension that requires a node-local one is also refused, even
+  when every required extension is already installed; create the node-local
+  extension on each node first, then run the `CREATE EXTENSION` without
+  `CASCADE`. `spock.replicate_ddl()` refuses all of these statements for a
+  node-local extension. Whatever a statement on a node-local extension does
+  with `CASCADE` also stays on the local node: objects that depend on the
+  extension are dropped only there, and extensions that `CREATE EXTENSION
+  ... CASCADE` installs are installed only there.
+
+  A statement that removes a node-local extension without naming it is not
+  caught: `DROP EXTENSION ... CASCADE` of an extension it requires, `DROP
+  SCHEMA ... CASCADE` of a schema it was created in, or `DROP OWNED BY` its
+  owner. Such a statement replicates, and each peer must then drop the
+  node-local extension from its apply worker. Drop the node-local extension
+  on each node first.
 
   For a schema, only DDL whose target schema Spock can identify is kept
   local: `CREATE`
