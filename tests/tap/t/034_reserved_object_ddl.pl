@@ -349,7 +349,7 @@ my $have_cube = scalar_query(1,
     "SELECT count(*) FROM pg_available_extensions WHERE name IN ('cube', 'earthdistance')");
 
 SKIP: {
-    skip 'cube or earthdistance not available (contrib not installed)', 6
+    skip 'cube or earthdistance not available (contrib not installed)', 7
         unless defined $have_cube && $have_cube eq '2';
 
     psql_or_bail(1,
@@ -368,6 +368,8 @@ SKIP: {
     ($rc, $out) = psql_try1(
         "SELECT spock.replicate_ddl('CREATE EXTENSION earthdistance CASCADE')");
     isnt($rc, 0, 'spock.replicate_ddl() of the same CASCADE is refused');
+    like($out, qr/cannot create extension "earthdistance" with CASCADE/,
+         'by the CASCADE check');
     is(scalar_query(1,
         "SELECT count(*) FROM pg_extension WHERE extname IN ('cube', 'earthdistance')"),
        '0', 'and rolled back');
