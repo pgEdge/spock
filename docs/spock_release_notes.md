@@ -181,7 +181,7 @@ above.
   DDL replication.
 * `spock.reserved_object_add(p_name name, p_kind text, p_exclude_from_dump
   boolean DEFAULT true, p_block_in_repset boolean DEFAULT true,
-  p_replicate_ddl boolean DEFAULT NULL)`.
+  p_replicate_ddl boolean DEFAULT true)`.
 * `spock.reserved_object_remove(p_name name, p_kind text)`.
 * `spock.node_alter(p_location text, p_country text, p_info_patch jsonb)`,
   which changes the local node's metadata and validates a `tiebreaker`
@@ -743,7 +743,16 @@ AutoDDL has been refactored and hardened:
   dropped was queued for replication, even though every peer runs the same
   cleanup when it applies the `DROP EXTENSION`.  For lolor this left peers
   unable to drop the extension and stalled apply.  The `DROP EXTENSION`
-  itself still replicates.
+  itself still replicates, except for a node-local extension (below).
+* **`CREATE`, `ALTER` and `DROP EXTENSION lolor` are no longer
+  replicated.** lolor refuses to be created or dropped by an apply
+  worker, so every peer logged the replicated statement in
+  `spock.exception_log` and discarded it, while the node that ran it
+  reported it as replicated.  The `lolor` extension row in
+  `spock.reserved_object` has `replicate_ddl = false`, and AutoDDL runs
+  these statements only where they are issued, with a WARNING saying so.
+  Run them on each node.  A `DROP EXTENSION` naming lolor together with
+  another extension is refused while DDL replication is on.
 
 ### Reserved schemas and extensions
 
@@ -753,8 +762,9 @@ the `spock.reserved_object` catalog, with three settings per row:
 
 * `exclude_from_dump` — left out of the structure-sync dump.
 * `block_in_repset` — its tables may not be added to a replication set.
-* `replicate_ddl` (schemas only) — when `false`, DDL against the schema runs
-  only on the node where it is issued.
+* `replicate_ddl` — when `false`, DDL against the schema, or `CREATE`,
+  `ALTER` and `DROP EXTENSION` for the extension, runs only on the node
+  where it is issued.  The default is `true`.
 
 The built-in rows cannot be changed or removed:
 
@@ -762,7 +772,7 @@ The built-in rows cannot be changed or removed:
 |--------------|-------------------|-----------------|---------------|
 | `spock`      | yes               | yes             | yes           |
 | `snowflake`  | yes               | yes             | yes           |
-| `lolor`      | yes               | no              | yes           |
+| `lolor`      | yes               | no              | schema yes, extension no |
 | `coldfront`  | yes               | no              | yes           |
 | `pgedge_ace` | yes               | yes             | no            |
 
@@ -1098,7 +1108,7 @@ or `NOTHING` is also rejected.
   restart skipping.
 * `spock.reserved_object_add(p_name name, p_kind text,
   p_exclude_from_dump boolean DEFAULT true, p_block_in_repset boolean
-  DEFAULT true, p_replicate_ddl boolean DEFAULT NULL)` — reserve a schema
+  DEFAULT true, p_replicate_ddl boolean DEFAULT true)` — reserve a schema
   or extension, or change an existing row.
 * `spock.reserved_object_remove(p_name name, p_kind text)` — remove a
   reserved schema or extension you added.

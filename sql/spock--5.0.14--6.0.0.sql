@@ -365,7 +365,8 @@ SELECT spock.slot_enable_failover();
 --     that already has them would fail.
 --   * block_in_repset   - may not be added to a replication set.
 --   * replicate_ddl     - when false, AutoDDL does not ship DDL for this
---                         object (node-local; e.g. pgedge_ace).
+--                         object (node-local; e.g. the pgedge_ace schema
+--                         and the lolor extension).
 --
 -- Built-in rows (builtin = true) are seeded by the extension and are protected
 -- from removal/modification.  Add your own with spock.reserved_object_add().
@@ -375,14 +376,12 @@ CREATE TABLE spock.reserved_object (
     kind              text    NOT NULL CHECK (kind IN ('schema', 'extension')),
     exclude_from_dump boolean NOT NULL DEFAULT true,
     block_in_repset   boolean NOT NULL DEFAULT true,
-    -- replicate_ddl applies to schemas only (when false, AutoDDL keeps DDL
-    -- targeting the schema node-local).  It is not meaningful for extensions,
-    -- so it is required for schemas and must be NULL for extensions.
-    replicate_ddl     boolean,
+    -- When false, AutoDDL keeps the object's DDL node-local: for a schema,
+    -- DDL on objects in it; for an extension, CREATE, ALTER and DROP
+    -- EXTENSION.
+    replicate_ddl     boolean NOT NULL DEFAULT true,
     builtin           boolean NOT NULL DEFAULT false,
-    PRIMARY KEY (name, kind),
-    CONSTRAINT reserved_object_replicate_ddl_kind
-        CHECK ((kind = 'schema') = (replicate_ddl IS NOT NULL))
+    PRIMARY KEY (name, kind)
 ) WITH (user_catalog_table=true);
 
 -- Preserve operator-added rows across pg_dump/restore; built-ins are re-seeded
@@ -393,16 +392,20 @@ SELECT pg_catalog.pg_extension_config_dump('spock.reserved_object', 'WHERE NOT b
 -- replication sets: lolor's tables must replicate so large objects survive a
 -- DROP EXTENSION on all nodes, and coldfront adds its own claim, registry and
 -- configuration tables to the default set to coordinate the mesh.
+--
+-- The lolor extension itself is node-local (replicate_ddl = false): lolor
+-- refuses to be created or dropped by an apply worker, so CREATE, ALTER and
+-- DROP EXTENSION lolor are run on each node rather than replicated.
 INSERT INTO spock.reserved_object
     (name, kind, exclude_from_dump, block_in_repset, replicate_ddl, builtin) VALUES
     ('spock',      'schema',    true, true,  true,  true),
-    ('spock',      'extension', true, true,  NULL,  true),
+    ('spock',      'extension', true, true,  true,  true),
     ('snowflake',  'schema',    true, true,  true,  true),
-    ('snowflake',  'extension', true, true,  NULL,  true),
+    ('snowflake',  'extension', true, true,  true,  true),
     ('lolor',      'schema',    true, false, true,  true),
-    ('lolor',      'extension', true, false, NULL,  true),
+    ('lolor',      'extension', true, false, false, true),
     ('coldfront',  'schema',    true, false, true,  true),
-    ('coldfront',  'extension', true, false, NULL,  true),
+    ('coldfront',  'extension', true, false, true,  true),
     ('pgedge_ace', 'schema',    true, true,  false, true);
 
 CREATE FUNCTION spock.reserved_object_guard()
@@ -428,17 +431,14 @@ CREATE FUNCTION spock.reserved_object_add(
     p_kind              text,
     p_exclude_from_dump boolean DEFAULT true,
     p_block_in_repset   boolean DEFAULT true,
-    p_replicate_ddl     boolean DEFAULT NULL)
+    p_replicate_ddl     boolean DEFAULT true)
 RETURNS void
 LANGUAGE plpgsql AS $$
 DECLARE
-    -- replicate_ddl is schema-only.  For a schema, an unset (NULL) argument
-    -- defaults to true; for an extension it is always NULL, so the
-    -- reserved_object_replicate_ddl_kind CHECK holds without the caller
-    -- having to pass NULL explicitly.  (The table is a user_catalog_table,
-    -- which forbids INSERT ... ON CONFLICT, so this hand-rolled upsert stands.)
-    v_replicate_ddl boolean := CASE WHEN p_kind = 'schema'
-                                    THEN COALESCE(p_replicate_ddl, true) END;
+    -- An explicit NULL is taken as the default, true.  (The table is a
+    -- user_catalog_table, which forbids INSERT ... ON CONFLICT, so this
+    -- hand-rolled upsert stands.)
+    v_replicate_ddl boolean := COALESCE(p_replicate_ddl, true);
 BEGIN
     UPDATE spock.reserved_object
        SET exclude_from_dump = p_exclude_from_dump,

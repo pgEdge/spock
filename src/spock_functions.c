@@ -2980,6 +2980,103 @@ stmt_targets_only_ddl_local(Node *stmt)
 }
 
 /*
+ * The extensions an extension statement (CREATE, ALTER, ALTER ... SET SCHEMA,
+ * DROP) names, or NIL for any other statement.  The names point into stmt.
+ */
+static List *
+stmt_extension_names(Node *stmt)
+{
+	switch (nodeTag(stmt))
+	{
+		case T_CreateExtensionStmt:
+			return list_make1(((CreateExtensionStmt *) stmt)->extname);
+		case T_AlterExtensionStmt:
+			return list_make1(((AlterExtensionStmt *) stmt)->extname);
+		case T_AlterExtensionContentsStmt:
+			return list_make1(((AlterExtensionContentsStmt *) stmt)->extname);
+		case T_AlterObjectSchemaStmt:
+			{
+				AlterObjectSchemaStmt *alter = (AlterObjectSchemaStmt *) stmt;
+
+				if (alter->objectType != OBJECT_EXTENSION)
+					return NIL;
+				return list_make1(strVal(alter->object));
+			}
+		case T_DropStmt:
+			{
+				DropStmt   *drop = (DropStmt *) stmt;
+				List	   *names = NIL;
+				ListCell   *cell;
+
+				if (drop->removeType != OBJECT_EXTENSION)
+					return NIL;
+				foreach(cell, drop->objects)
+					names = lappend(names, strVal(lfirst(cell)));
+				return names;
+			}
+		default:
+			return NIL;
+	}
+}
+
+/*
+ * Does this extension statement name only node-local extensions
+ * (replicate_ddl = false)?  On true, *extname receives the first one.
+ *
+ * A DROP EXTENSION that names both a node-local extension and a replicated
+ * one is refused.  Shipping it would make every subscriber try to drop the
+ * node-local extension from its apply worker, which such an extension may
+ * refuse (lolor does), and the whole drop would then be discarded there;
+ * keeping it local would leave the other extensions installed everywhere
+ * else.  Either way the nodes would silently disagree.  This runs after the
+ * statement has executed, so the ERROR rolls the drop back.
+ */
+static bool
+stmt_targets_ddl_local_extension(Node *stmt, const char **extname)
+{
+	List	   *names = stmt_extension_names(stmt);
+	List	   *local;
+	ListCell   *cell;
+	const char *local_name = NULL;
+	const char *other_name = NULL;
+
+	if (names == NIL)
+		return false;
+
+	local = spock_reserved_object_names(RESERVED_KIND_EXTENSION,
+										RESERVED_PURPOSE_DDL);
+	foreach(cell, names)
+	{
+		const char *name = (const char *) lfirst(cell);
+
+		if (name_in_list(local, name))
+		{
+			if (local_name == NULL)
+				local_name = name;
+		}
+		else if (other_name == NULL)
+			other_name = name;
+	}
+	list_free_deep(local);
+	list_free(names);
+
+	if (local_name == NULL)
+		return false;
+
+	if (other_name != NULL)
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("cannot drop node-local extension \"%s\" together with extension \"%s\" while DDL replication is enabled",
+						local_name, other_name),
+				 errdetail("Dropping \"%s\" is not replicated, but dropping \"%s\" would be.",
+						   local_name, other_name),
+				 errhint("Drop them in separate statements.")));
+
+	*extname = local_name;
+	return true;
+}
+
+/*
  * spock_guard_extension_owned_ddl
  *
  * Refuse direct DDL against a built-in extension-owned schema (spock,
@@ -3127,6 +3224,24 @@ spock_auto_replicate_ddl(const char *query, List *replication_sets,
 	 */
 	if (stmt_targets_only_ddl_local(stmt))
 		goto skip_ddl;
+
+	/*
+	 * Likewise for a node-local extension (replicate_ddl = false), such as
+	 * lolor, which cannot be created or dropped by an apply worker.  Say
+	 * which extension and what to do instead of the generic skip message.
+	 */
+	{
+		const char *extname;
+
+		if (stmt_targets_ddl_local_extension(stmt, &extname))
+		{
+			ereport(spock_enable_quiet_mode ? LOG : WARNING,
+					(errmsg("DDL for extension \"%s\" is not replicated", extname),
+					 errdetail("The extension is node-local (replicate_ddl = false in spock.reserved_object)."),
+					 errhint("Run the statement on each node.")));
+			return false;
+		}
+	}
 
 	/*
 	 * Filter local commands and decide on search path setting.

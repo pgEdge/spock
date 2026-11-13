@@ -249,6 +249,80 @@ SQL
     psql_or_bail(1, "DROP EVENT TRIGGER drop_ext_cleanup");
 }
 
+# --------------------------------------------------------------------------
+# Step 6: an extension with replicate_ddl = false is node-local.
+#
+# lolor is seeded that way, because it refuses to be created or dropped by an
+# apply worker: a replicated CREATE or DROP EXTENSION lolor would fail on
+# every subscriber and be discarded there. hstore, reserved by the operator
+# here, stands in for it so this needs no lolor.
+#
+# As in step 5 the assertions are provider-side: what must not happen is the
+# statement being queued.
+# --------------------------------------------------------------------------
+
+# Run SQL on n1 and return (exit_code, combined_output), so that both a
+# refusal and the WARNING on success can be checked.
+sub psql_try1 {
+    my ($sql) = @_;
+    my $pid = open(my $fh, '-|');
+    die "fork failed: $!" unless defined $pid;
+    if ($pid == 0) {
+        open(STDERR, '>&', \*STDOUT) or die "cannot dup STDERR: $!";
+        exec("$cfg->{pg_bin}/psql", '-X', '-p', $ports->[0], '-d', $db,
+             '-v', 'ON_ERROR_STOP=1', '-c', $sql);
+        exit 127;
+    }
+    my $out = do { local $/; <$fh> } // '';
+    close($fh);
+    return ($? >> 8, $out);
+}
+
+SKIP: {
+    skip 'hstore not available (contrib not installed)', 10
+        unless defined $have_hstore && $have_hstore eq '1';
+
+    psql_or_bail(1,
+        "SELECT spock.reserved_object_add('hstore', 'extension', p_replicate_ddl := false)");
+
+    my $queue_before = scalar_query(1, "SELECT count(*) FROM spock.queue");
+
+    my ($rc, $out) = psql_try1("CREATE EXTENSION hstore");
+    is($rc, 0, 'CREATE EXTENSION of a node-local extension succeeds') or diag($out);
+    like($out, qr/DDL for extension "hstore" is not replicated/,
+         'and says it is not replicated');
+
+    ($rc, $out) = psql_try1("ALTER EXTENSION hstore UPDATE");
+    is($rc, 0, 'ALTER EXTENSION of a node-local extension succeeds') or diag($out);
+
+    # A drop naming both a node-local and a replicated extension is refused,
+    # and rolled back, rather than half replicated. IF EXISTS lets the other
+    # name be one that is not installed, so nothing else is at stake.
+    ($rc, $out) = psql_try1("DROP EXTENSION IF EXISTS hstore, spock_no_such_ext");
+    isnt($rc, 0, 'a drop mixing node-local and replicated extensions is refused');
+    like($out,
+         qr/cannot drop node-local extension "hstore" together with extension "spock_no_such_ext"/,
+         'and names both extensions');
+    is(scalar_query(1, "SELECT count(*) FROM pg_extension WHERE extname = 'hstore'"),
+       '1', 'the refused drop was rolled back');
+
+    ($rc, $out) = psql_try1("DROP EXTENSION hstore");
+    is($rc, 0, 'DROP EXTENSION of a node-local extension succeeds') or diag($out);
+    is(scalar_query(1, "SELECT count(*) FROM pg_extension WHERE extname = 'hstore'"),
+       '0', 'the extension was dropped locally');
+
+    is(scalar_query(1, "SELECT count(*) FROM spock.queue") - $queue_before, 0,
+       'none of the node-local extension DDL was queued')
+        or diag("queued DDL was:\n" . queued_ddl());
+
+    # Control: once the reservation is gone, the same CREATE is queued again.
+    psql_or_bail(1, "SELECT spock.reserved_object_remove('hstore', 'extension')");
+    $queue_before = scalar_query(1, "SELECT count(*) FROM spock.queue");
+    psql_or_bail(1, "CREATE EXTENSION hstore");
+    is(scalar_query(1, "SELECT count(*) FROM spock.queue") - $queue_before, 1,
+       'without the reservation CREATE EXTENSION is queued as before');
+}
+
 destroy_cluster('Destroy 2-node reserved-object DDL test cluster');
 
 done_testing();

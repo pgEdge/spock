@@ -44,11 +44,9 @@ CREATE TABLE IF NOT EXISTS spock.reserved_object (
     kind              text    NOT NULL CHECK (kind IN ('schema', 'extension')),
     exclude_from_dump boolean NOT NULL DEFAULT true,
     block_in_repset   boolean NOT NULL DEFAULT true,
-    replicate_ddl     boolean,
+    replicate_ddl     boolean NOT NULL DEFAULT true,
     builtin           boolean NOT NULL DEFAULT false,
-    PRIMARY KEY (name, kind),
-    CONSTRAINT reserved_object_replicate_ddl_kind
-        CHECK ((kind = 'schema') = (replicate_ddl IS NOT NULL))
+    PRIMARY KEY (name, kind)
 ) WITH (user_catalog_table=true);
 
 SELECT pg_catalog.pg_extension_config_dump('spock.reserved_object', 'WHERE NOT builtin');
@@ -59,13 +57,13 @@ INSERT INTO spock.reserved_object
     (name, kind, exclude_from_dump, block_in_repset, replicate_ddl, builtin)
 SELECT v.* FROM (VALUES
     ('spock'::name,      'schema',    true, true,  true,  true),
-    ('spock',            'extension', true, true,  NULL,  true),
+    ('spock',            'extension', true, true,  true,  true),
     ('snowflake',        'schema',    true, true,  true,  true),
-    ('snowflake',        'extension', true, true,  NULL,  true),
+    ('snowflake',        'extension', true, true,  true,  true),
     ('lolor',            'schema',    true, false, true,  true),
-    ('lolor',            'extension', true, false, NULL,  true),
+    ('lolor',            'extension', true, false, false, true),
     ('coldfront',        'schema',    true, false, true,  true),
-    ('coldfront',        'extension', true, false, NULL,  true),
+    ('coldfront',        'extension', true, false, true,  true),
     ('pgedge_ace',       'schema',    true, true,  false, true)
 ) AS v(name, kind, exclude_from_dump, block_in_repset, replicate_ddl, builtin)
 WHERE NOT EXISTS (SELECT 1 FROM spock.reserved_object r
@@ -94,17 +92,14 @@ CREATE OR REPLACE FUNCTION spock.reserved_object_add(
     p_kind              text,
     p_exclude_from_dump boolean DEFAULT true,
     p_block_in_repset   boolean DEFAULT true,
-    p_replicate_ddl     boolean DEFAULT NULL)
+    p_replicate_ddl     boolean DEFAULT true)
 RETURNS void
 LANGUAGE plpgsql AS $$
 DECLARE
-    -- replicate_ddl is schema-only.  For a schema, an unset (NULL) argument
-    -- defaults to true; for an extension it is always NULL, so the
-    -- reserved_object_replicate_ddl_kind CHECK holds without the caller
-    -- having to pass NULL explicitly.  (The table is a user_catalog_table,
-    -- which forbids INSERT ... ON CONFLICT, so this hand-rolled upsert stands.)
-    v_replicate_ddl boolean := CASE WHEN p_kind = 'schema'
-                                    THEN COALESCE(p_replicate_ddl, true) END;
+    -- An explicit NULL is taken as the default, true.  (The table is a
+    -- user_catalog_table, which forbids INSERT ... ON CONFLICT, so this
+    -- hand-rolled upsert stands.)
+    v_replicate_ddl boolean := COALESCE(p_replicate_ddl, true);
 BEGIN
     UPDATE spock.reserved_object
        SET exclude_from_dump = p_exclude_from_dump,
