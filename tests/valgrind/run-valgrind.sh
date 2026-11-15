@@ -293,8 +293,10 @@ for arg in "$@"; do
 		-p) has_p=yes; skip=yes ;;
 		-p?*) has_p=yes ;;
 		# Options whose value is the next word; "-o '-p 5432'" must not
-		# pass for -p.
+		# pass for -p.  The --long=value forms are one word already.
 		-D|-l|-m|-o|-t|-e|-N|-P|-U|-S) skip=yes ;;
+		--pgdata|--log|--mode|--options|--timeout|--event-source) skip=yes ;;
+		--service-name|--username|--password) skip=yes ;;
 	esac
 done
 if [ "$starts" = yes ] && [ "$has_p" = no ]; then
@@ -413,10 +415,12 @@ fi
 # checking on the leak scan only starts then.  Give this run's processes a
 # bounded time to finish before the report reads the XML.
 waited=0
+WAIT_EXPIRED=no
 while pgrep -f -- "--xml-file=$RAW_DIR/" >/dev/null 2>&1; do
 	if [ "$waited" -ge 120 ]; then
 		log "WARNING: valgrind processes still running after ${waited}s;"
-		log "         their logs may be read before they are complete"
+		log "         their logs are read before they are complete"
+		WAIT_EXPIRED=yes
 		break
 	fi
 	[ "$waited" -eq 0 ] && log "waiting for the last valgrind processes to exit"
@@ -453,6 +457,11 @@ log "report: $OUTPUT/report.md (also report.html, summary.md, summary.json)"
 
 if [ "$SUITE_FAILED" = yes ]; then
 	log "a test suite failed; see the logs under $OUTPUT"
+	exit 1
+fi
+if [ "$WAIT_EXPIRED" = yes ]; then
+	log "the report was written while valgrind processes were still running;"
+	log "it is incomplete"
 	exit 1
 fi
 case "$report_rc" in
