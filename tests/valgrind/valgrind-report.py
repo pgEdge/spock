@@ -13,15 +13,19 @@ from errors elsewhere, and writes:
 
 A log cut short by an immediate shutdown (SIGQUIT) is still read: the
 errors it did manage to write are kept and the file is counted as
-truncated.  Only the Python standard library is used.
+truncated.  Valgrind writes a repeated error once and reports how often it
+was seen in <errorcounts> at exit; those counts are the occurrences shown,
+and a truncated log counts each of its errors once.  Only the Python
+standard library is used.
 
 Usage:
     valgrind-report.py --raw DIR --out DIR [--title TEXT]
                        [--meta KEY=VALUE ...] [--source-root DIR]
                        [--fail-on-errors]
 
-Exit status: 0, or 3 with --fail-on-errors when at least one error was
-found.  Bad input is 2.
+Exit status: 0; 3 with --fail-on-errors when at least one error was
+found; 4 when a log could not be read or parsed, so the report is
+incomplete.  Bad input is 2.
 """
 
 import argparse
@@ -137,6 +141,8 @@ class VgError(object):
     def __init__(self, el, pid, args):
         self.pid = pid
         self.args = args
+        self.unique = _text(el, "unique")
+        self.count = 1          # set from <errorcounts> once the log is read
         self.kind = _text(el, "kind") or "Unknown"
         self.what = _text(el, "what") or _text(el, "xwhat/text") or ""
         # The first stack is where it happened.  Later <auxwhat>/<stack>
@@ -275,7 +281,23 @@ def parse_log(path):
             log.parse_failed = True
             continue
         log.errors.append(VgError(el, log.pid, log.args))
+
+    # A repeated error is written once; <errorcounts> at the end of the log
+    # says how often each <unique> id was seen.  The block is cumulative and
+    # may appear more than once, so keep the largest count.  A truncated
+    # log has none, and every error then counts once.
+    counts = {}
+    for block in re.findall(r"<errorcounts>(.*?)</errorcounts>", text, re.S):
+        for n, uniq in re.findall(
+                r"<count>(\d+)</count>\s*<unique>([^<]+)</unique>", block):
+            counts[uniq.strip()] = max(counts.get(uniq.strip(), 0), int(n))
+    for err in log.errors:
+        err.count = max(1, counts.get(err.unique, 1))
     return log
+
+
+def total_errors(logs):
+    return sum(e.count for l in logs for e in l.errors)
 
 
 # ---------------------------------------------------------------------------
@@ -290,7 +312,7 @@ class Group(object):
         self.pids = set()
 
     def add(self, err):
-        self.count += 1
+        self.count += err.count
         self.pids.add(err.pid)
 
     @property
@@ -380,7 +402,7 @@ def group_title(g, source_root):
 # ---------------------------------------------------------------------------
 
 def summary_markdown(title, meta, logs, groups, source_root):
-    total = sum(len(l.errors) for l in logs)
+    total = total_errors(logs)
     spock_groups = [g for g in groups if g.in_spock]
     other_groups = [g for g in groups if not g.in_spock]
     truncated = sum(1 for l in logs if l.truncated)
@@ -389,7 +411,14 @@ def summary_markdown(title, meta, logs, groups, source_root):
     out = []
     out.append("# " + title)
     out.append("")
-    if total == 0:
+    if failed:
+        out.append("**Incomplete.** %d of %d log(s) could not be read or "
+                   "parsed in full, so this report covers only what could "
+                   "be read." % (failed, len(logs)))
+        out.append("")
+    if total == 0 and failed:
+        out.append("No errors in the logs that could be read.")
+    elif total == 0:
         out.append("**No errors.** Valgrind reported nothing that the "
                    "suppressions did not cover.")
     else:
@@ -550,14 +579,22 @@ def h(s):
 
 
 def html_report(title, meta, logs, groups, source_root):
-    total = sum(len(l.errors) for l in logs)
+    total = total_errors(logs)
     spock_groups = [g for g in groups if g.in_spock]
     other_groups = [g for g in groups if not g.in_spock]
     truncated = sum(1 for l in logs if l.truncated)
+    failed = sum(1 for l in logs if l.parse_failed)
 
     out = [HTML_HEAD % {"title": h(title)}]
     out.append("<h1>%s</h1>" % h(title))
-    if total == 0:
+    if failed:
+        out.append('<p class="lead"><span class="bad">Incomplete.</span> '
+                   "%d of %d log(s) could not be read or parsed in full, so "
+                   "this report covers only what could be read.</p>"
+                   % (failed, len(logs)))
+    if total == 0 and failed:
+        out.append('<p class="lead">No errors in the logs that could be read.</p>')
+    elif total == 0:
         out.append('<p class="lead"><span class="ok">No errors.</span> '
                    "Valgrind reported nothing that the suppressions did not cover.</p>")
     else:
@@ -571,6 +608,9 @@ def html_report(title, meta, logs, groups, source_root):
     out.append("<tr><th>processes analysed</th><td>%d</td></tr>" % len(logs))
     if truncated:
         out.append("<tr><th>logs cut short by shutdown</th><td>%d</td></tr>" % truncated)
+    if failed:
+        out.append("<tr><th>logs that could not be parsed in full</th><td>%d</td></tr>"
+                   % failed)
     out.append("</table>")
 
     if total:
@@ -698,19 +738,23 @@ def main(argv):
     with open(os.path.join(args.out, "report.html"), "w", encoding="utf-8") as f:
         f.write(html_report(args.title, meta, logs, groups, source_root))
 
-    total = sum(len(l.errors) for l in logs)
+    total = total_errors(logs)
+    unparsed = sum(1 for l in logs if l.parse_failed)
+    by_kind = collections.Counter()
+    for l in logs:
+        for e in l.errors:
+            by_kind[e.kind] += e.count
     summary = {
         "title": args.title,
         "processes": len(logs),
         "truncated_logs": sum(1 for l in logs if l.truncated),
-        "unparsed_logs": sum(1 for l in logs if l.parse_failed),
+        "unparsed_logs": unparsed,
         "errors": total,
         "unique_errors": len(groups),
         "spock_unique_errors": len(spock_groups),
         "other_unique_errors": len(other_groups),
         "ignored_leaks": ignored_leaks,
-        "by_kind": dict(collections.Counter(
-            k for l in logs for k in (e.kind for e in l.errors))),
+        "by_kind": dict(by_kind),
         "meta": dict(meta),
     }
     with open(os.path.join(args.out, "summary.json"), "w", encoding="utf-8") as f:
@@ -720,8 +764,13 @@ def main(argv):
     print("valgrind-report: %d process log(s), %d error(s), %d unique "
           "(%d in spock code, %d elsewhere)" % (
               len(logs), total, len(groups), len(spock_groups), len(other_groups)))
+    if unparsed:
+        print("valgrind-report: %d log(s) could not be parsed in full; "
+              "the report is incomplete" % unparsed, file=sys.stderr)
     if args.fail_on_errors and total:
         return 3
+    if unparsed:
+        return 4
     return 0
 
 

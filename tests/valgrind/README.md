@@ -54,7 +54,7 @@ Useful options:
 
 ```sh
 --regress-tests "preseed init basic"   # a subset of the regression suite
---suite tap --tap-tests "001_node_creation 013_sub_disable_enable"
+--suite tap --tap-tests "001_basic 002_create_subscriber"
 --suite all
 --leak-check full          # off by default: backends never free everything
 --track-origins no         # faster, but no "where did this value come from"
@@ -78,7 +78,14 @@ forks is then under memcheck, each writing its own XML file.
 
 The wrapper bypasses valgrind for the server's self-describing calls
 (`--version`, `--describe-config`, `-C`), which pg_ctl and the Makefile
-use to probe the binary.
+use to probe the binary.  `pg_ctl` is wrapped too: it looks for `postgres`
+next to its own resolved path, which for a symlink is the real bin
+directory, so the wrapper adds `-p <shim>/postgres` to `start` and
+`restart` unless the caller gave its own.
+
+The script exits 1 when a suite fails, when `--fail-on-errors` is set and
+the report lists an error, or when a valgrind log could not be parsed and
+the report is therefore incomplete; 2 is a usage or setup problem.
 
 ## Reading the report
 
