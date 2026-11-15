@@ -37,7 +37,6 @@ import json
 import os
 import re
 import sys
-import xml.etree.ElementTree as ET
 
 # Error kinds, most serious first.  Anything unknown sorts after these.
 KIND_ORDER = [
@@ -100,6 +99,95 @@ SPOCK_FILE_RE = re.compile(r"(^|/)spock[^/]*\.c$")
 # ---------------------------------------------------------------------------
 # Parsing
 # ---------------------------------------------------------------------------
+
+# An element: <tag>body</tag> or <tag/>.  Valgrind's XML has no attributes.
+_ELEMENT_RE = re.compile(r"<([A-Za-z_][\w.-]*)>(.*?)</\1>|<([A-Za-z_][\w.-]*)/>", re.S)
+# <rawtext> carries the generated suppression as a CDATA section.
+_CDATA_RE = re.compile(r"<!\[CDATA\[(.*?)\]\]>", re.S)
+
+
+class Elem(object):
+    """The little of an XML element the report needs, read with regular
+    expressions.
+
+    Valgrind writes its XML itself: no attributes, namespaces or entities
+    beyond the five predefined ones, CDATA only around the generated
+    suppression, and never an element nested inside one of the same name.
+    That is all this handles, and it keeps
+    the script free of the xml module, which is not meant for input one
+    does not control.  A ``<`` that is not part of a well-formed child
+    raises ValueError, so a damaged element is noticed, not silently cut.
+    """
+    __slots__ = ("tag", "_body", "_children")
+
+    def __init__(self, tag, body):
+        self.tag = tag
+        self._body = body
+        self._children = None
+
+    @classmethod
+    def parse(cls, text):
+        m = _ELEMENT_RE.fullmatch(text.strip())
+        if m is None:
+            raise ValueError("not a single well-formed element")
+        return cls(m.group(1) or m.group(3), m.group(2) or "")
+
+    @property
+    def children(self):
+        if self._children is None:
+            body = self._body
+            # Match against a copy with CDATA blanked out, so nothing inside
+            # one looks like markup; take the child bodies from the original.
+            masked = _CDATA_RE.sub(lambda m: " " * (m.end() - m.start()), body)
+            kids = []
+            pos = 0
+            for m in _ELEMENT_RE.finditer(masked):
+                if "<" in masked[pos:m.start()]:
+                    raise ValueError("unbalanced markup inside <%s>" % self.tag)
+                inner = body[m.start(2):m.end(2)] if m.group(2) is not None else ""
+                kids.append(Elem(m.group(1) or m.group(3), inner))
+                pos = m.end()
+            if "<" in masked[pos:]:
+                raise ValueError("unbalanced markup inside <%s>" % self.tag)
+            self._children = kids
+        return self._children
+
+    def __iter__(self):
+        return iter(self.children)
+
+    @property
+    def text(self):
+        # Like ElementTree: the text before the first child element, with
+        # CDATA sections unwrapped and entities decoded.
+        body = self._body
+        out = []
+        pos = 0
+        while True:
+            lt = body.find("<", pos)
+            if lt < 0:
+                out.append(html.unescape(body[pos:]))
+                break
+            out.append(html.unescape(body[pos:lt]))
+            if not body.startswith("<![CDATA[", lt):
+                break
+            end = body.find("]]>", lt)
+            if end < 0:
+                raise ValueError("unterminated CDATA inside <%s>" % self.tag)
+            out.append(body[lt + 9:end])
+            pos = end + 3
+        return "".join(out)
+
+    def find(self, path):
+        el = self
+        for tag in path.split("/"):
+            el = next((c for c in el.children if c.tag == tag), None)
+            if el is None:
+                return None
+        return el
+
+    def findall(self, tag):
+        return [c for c in self.children if c.tag == tag]
+
 
 class Frame(object):
     __slots__ = ("ip", "obj", "fn", "file", "line", "dir")
@@ -276,11 +364,11 @@ def parse_log(path):
     # short mid-element) does not cost the others.
     for m in re.finditer(r"<error>.*?</error>", text, re.S):
         try:
-            el = ET.fromstring(m.group(0))
-        except ET.ParseError:
+            err = VgError(Elem.parse(m.group(0)), log.pid, log.args)
+        except ValueError:
             log.parse_failed = True
             continue
-        log.errors.append(VgError(el, log.pid, log.args))
+        log.errors.append(err)
 
     # A repeated error is written once; <errorcounts> at the end of the log
     # says how often each <unique> id was seen.  The block is cumulative and
