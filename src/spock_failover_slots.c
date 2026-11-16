@@ -1050,7 +1050,10 @@ reserve_wal_for_copy(XLogRecPtr remote_restart_lsn)
 
 	ReplicationSlotsComputeRequiredLSN();
 
-	/* The copy is temporary, so the error drops it; the next pass retries */
+	/*
+	 * The error ends the worker, which drops the temporary copy; the copy is
+	 * created again after the worker restarts.
+	 */
 	XLByteToSeg(restart_lsn, segno, wal_segment_size);
 	if (XLogGetLastRemovedSegno() >= segno)
 		elog(ERROR, "WAL required by replication slot %s has been removed concurrently",

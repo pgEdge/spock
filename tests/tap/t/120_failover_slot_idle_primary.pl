@@ -217,10 +217,12 @@ sub run_scenario {
     ok(wait_until(30, 1, sub { $sb->("SELECT pg_is_in_recovery()") eq 'f' }),
         "[$mode] standby promoted");
 
-    # Give the worker a moment to notice the promotion and drop a pending copy.
-    sleep(5);
-    my $slot_after = $sb->("SELECT count(*) FROM pg_replication_slots
-                            WHERE slot_name = '$slot_name'");
+    # A copy that was still pending would be dropped by the worker now, or
+    # show as temporary until it is.
+    my $slot_after = wait_until(30, 1, sub {
+        $sb->("SELECT count(*) FROM pg_replication_slots
+               WHERE slot_name = '$slot_name' AND NOT temporary") eq '1';
+    }) ? '1' : '0';
 
     my $n2_log_from = log_offset(2);
     psql_or_bail(2, "SELECT spock.sub_disable('sub_n2_n1')");

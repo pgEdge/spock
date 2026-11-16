@@ -277,9 +277,10 @@ is($left_alone_warnings, 1, 'the warning about the slot left alone was logged on
 
 # ---------- turn recreation back on, subscriber stopped ----------
 
-# With the subscriber stopped n1's slot does not move, so it stays behind
-# the position the recreated copy reserves on the standby.  The worker must
-# keep the copy pending and go on synchronizing the canary.
+# With the subscriber stopped n1's slot does not move, so its restart_lsn or
+# its catalog_xmin stays behind what the recreated copy starts with on the
+# standby.  The worker must keep the copy pending and go on synchronizing
+# the canary.
 psql_or_bail(2, "SELECT spock.sub_disable('sub_n2_n1')");
 ok(wait_until(60, 1, sub {
     return scalar_query(1,
@@ -302,9 +303,10 @@ ok($pending, "recreated copy of '$slot_name' waits as a temporary slot");
 # become persistent and keep following even though '$slot_name' is stalled
 # below it.  Two separate advances, each followed on the standby, show sync
 # keeps running across passes while the copy above is pending.  The copy
-# reserved its restart_lsn at the standby's position, and one advance moves
-# n1's restart_lsn only to the running-xacts record before the last one,
-# so keep advancing until n1's slot has passed the copy.
+# started with the standby's catalog_xmin, and at the standby's redo pointer
+# if n1's restart_lsn was older, and one advance moves n1's restart_lsn only
+# to the running-xacts record before the last one, so keep advancing until
+# n1's slot has passed the copy.
 for my $round (1 .. 2)
 {
     my $target = advance_canary();
