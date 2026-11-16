@@ -31,7 +31,8 @@ use Time::HiRes qw(time);
 #      Turning sync off drops the pending copy; turning it on again
 #      creates a new one.
 #   6. Start the subscriber again and check the copy is made persistent.
-#   7. Create a slot on n1 that never moves, so its copy stays pending, then
+#   7. Create a slot on n1 that never moves and move the standby's redo
+#      pointer past it while sync is off, so its copy stays pending, then
 #      promote the standby and check the copy is dropped, not persisted.
 #
 # The worker does not exist on PG18+ (native slotsync only).
@@ -397,20 +398,46 @@ unless ($valid)
 
 # ---------- promotion with a copy still pending ----------
 
-# A new slot on n1 that never moves stays behind the standby's reservation,
-# so its copy stays pending.  Promotion must drop it, not persist a copy
-# whose restart_lsn is past what the primary's slot still needed.
+# A copy starts at the primary slot's restart_lsn when the standby still
+# keeps that WAL, and is then persistent at once.  It has to wait only when
+# the primary's slot is older than the standby's redo pointer.  So create a
+# slot on n1 that never moves while sync is off, move the standby's redo
+# pointer past it with a restartpoint, and turn sync on again: the copy then
+# starts at the redo pointer and stays pending.  Promotion must drop it, not
+# persist a copy whose restart_lsn is past what the primary's slot still
+# needed.
 my $stalled = 'inval_stalled';
-psql_or_bail(1,
-    "SELECT pg_create_logical_replication_slot('$stalled', 'test_decoding')");
-my $stalled_pending = wait_until(90, 2, sub {
-    psql_or_bail(1, "INSERT INTO inval_test (pad) VALUES ('x')");
-    psql_or_bail(1, "CHECKPOINT");
-    return qport($standby_port,
-        "SELECT temporary FROM pg_replication_slots
-         WHERE slot_name = '$stalled'") eq 't';
-});
-ok($stalled_pending, "copy of '$stalled' is pending on the standby");
+
+sub make_stalled_copy_pending
+{
+    qport($standby_port, "ALTER SYSTEM SET hot_standby_feedback = off");
+    qport($standby_port, "SELECT pg_reload_conf()");
+
+    psql_or_bail(1,
+        "SELECT pg_create_logical_replication_slot('$stalled', 'test_decoding')");
+    my $stalled_lsn = scalar_query(1,
+        "SELECT restart_lsn FROM pg_replication_slots WHERE slot_name = '$stalled'");
+
+    my $redo_passed = wait_until(60, 2, sub {
+        psql_or_bail(1, "INSERT INTO inval_test (pad) VALUES ('x')");
+        psql_or_bail(1, "CHECKPOINT");
+        qport($standby_port, "CHECKPOINT");
+        return qport($standby_port,
+            "SELECT redo_lsn > '$stalled_lsn'::pg_lsn FROM pg_control_checkpoint()") eq 't';
+    });
+    diag("standby's redo pointer did not pass $stalled_lsn") unless $redo_passed;
+
+    qport($standby_port, "ALTER SYSTEM SET hot_standby_feedback = on");
+    qport($standby_port, "SELECT pg_reload_conf()");
+
+    return $redo_passed && wait_until(90, 2, sub {
+        return qport($standby_port,
+            "SELECT temporary FROM pg_replication_slots
+             WHERE slot_name = '$stalled'") eq 't';
+    });
+}
+
+ok(make_stalled_copy_pending(), "copy of '$stalled' is pending on the standby");
 
 # With spock.drop_extra_slots off a persistent copy of a slot the primary no
 # longer has is kept, but a pending copy is not a usable slot and goes
@@ -432,15 +459,7 @@ qport($standby_port, "ALTER SYSTEM RESET spock.drop_extra_slots");
 qport($standby_port, "SELECT pg_reload_conf()");
 
 # Create it again for the promotion below.
-psql_or_bail(1,
-    "SELECT pg_create_logical_replication_slot('$stalled', 'test_decoding')");
-ok(wait_until(90, 2, sub {
-    psql_or_bail(1, "INSERT INTO inval_test (pad) VALUES ('x')");
-    psql_or_bail(1, "CHECKPOINT");
-    return qport($standby_port,
-        "SELECT temporary FROM pg_replication_slots
-         WHERE slot_name = '$stalled'") eq 't';
-}), "copy of '$stalled' is pending on the standby again");
+ok(make_stalled_copy_pending(), "copy of '$stalled' is pending on the standby again");
 
 system_or_bail("$pg_bin/pg_ctl", 'promote', '-D', $standby_datadir, '-w');
 ok(wait_until(30, 1, sub {
