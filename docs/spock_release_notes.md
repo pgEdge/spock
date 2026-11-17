@@ -1,5 +1,21 @@
 # Spock Release Notes
 
+## Spock 5.0.15
+
+### Upgrade Notes
+* There are no schema changes in 5.0.15.
+
+### Bug Fixes
+* When a standby was built while the primary was idle, the failover slot
+  worker kept each new slot copy temporary for as long as the primary stayed
+  idle. The copy started at the standby's own position, ahead of the
+  primary's slot, and an idle primary never moved its slot past that point.
+  A temporary copy is dropped at promotion, so after an unplanned failover
+  the promoted node had no slot and the subscriber failed with `replication
+  slot ... does not exist`. A new copy now starts at the primary slot's
+  `restart_lsn`, as PostgreSQL's own slot sync does, and is made permanent
+  on the same pass when the standby still has that WAL.
+
 ## Spock 5.0.14
 
 ### Upgrade Notes
