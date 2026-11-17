@@ -18,9 +18,12 @@
 #include "commands/dbcommands.h"
 #include "commands/extension.h"
 
+#include "postmaster/interrupt.h"
+
 #include "storage/ipc.h"
 #include "storage/proc.h"
 
+#include "utils/guc.h"
 #include "utils/lsyscache.h"	/* PG19 moved get_database_name() here */
 #include "utils/memutils.h"
 #include "utils/resowner.h"
@@ -29,6 +32,7 @@
 #include "pgstat.h"
 
 #include "spock_node.h"
+#include "spock_startup.h"
 #include "spock_worker.h"
 #include "spock.h"
 
@@ -213,11 +217,21 @@ spock_manager_main(Datum main_arg)
 	spock_manage_extension();
 	CommitTransactionCommand();
 
+	/* Decide what the startup gate of this database waits for. */
+	spock_startup_manager_begin();
+
 	/* Main wait loop. */
 	while (!got_SIGTERM)
 	{
 		int			rc;
 		int			sleep_timer;
+
+		/* The startup drain follows its settings on a reload. */
+		if (ConfigReloadPending)
+		{
+			ConfigReloadPending = false;
+			ProcessConfigFile(PGC_SIGHUP);
+		}
 
 		/*
 		 * Launch or restart apply-workers. This determines how long we have
@@ -226,6 +240,10 @@ spock_manager_main(Datum main_arg)
 		 * exception handling).
 		 */
 		sleep_timer = manage_apply_workers();
+
+		/* Look at the startup drain often, it opens the node. */
+		if (spock_startup_manager_check())
+			sleep_timer = Min(sleep_timer, 1000);
 
 		rc = WaitLatch(&MyProc->procLatch,
 					   WL_LATCH_SET | WL_TIMEOUT | WL_POSTMASTER_DEATH,

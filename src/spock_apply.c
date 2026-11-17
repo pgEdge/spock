@@ -91,6 +91,7 @@
 #include "spock_exception_handler.h"
 #include "spock_common.h"
 #include "spock_readonly.h"
+#include "spock_startup.h"
 #include "spock.h"
 #include "spock_injection.h"
 #include "spock_jsonb_utils.h"
@@ -4280,6 +4281,8 @@ stream_replay:
 			if (!in_remote_transaction)
 				process_syncing_tables(last_received);
 
+			spock_startup_apply_progress(last_received, in_remote_transaction);
+
 			/* We must not have switched out of MessageContext by mistake */
 			Assert(CurrentMemoryContext == MessageContext);
 
@@ -5225,6 +5228,9 @@ spock_apply_main(Datum main_arg)
 	spock_init_progress_state(origin_startpos);
 
 	/* Start the replication. */
+	/* A provider that cannot be reached shows up in the startup drain. */
+	spock_startup_apply_connecting();
+
 	streamConn = spock_connect_replica(MySubscription->origin_if->dsn,
 									   MySubscription->slot_name, NULL);
 
@@ -5250,6 +5256,8 @@ spock_apply_main(Datum main_arg)
 	request_initial_status_update(streamConn, origin_startpos);
 
 	CommitTransactionCommand();
+
+	spock_startup_apply_attach();
 
 	/*
 	 * Do an initial leak check with reporting off; we don't want to see these

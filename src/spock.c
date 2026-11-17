@@ -67,6 +67,7 @@
 #include "spock_output_plugin.h"
 #include "spock_exception_handler.h"
 #include "spock_readonly.h"
+#include "spock_startup.h"
 #include "spock_shmem.h"
 #include "spock.h"
 
@@ -864,6 +865,8 @@ start_manager_workers(void)
 
 	table_endscan(scan);
 	table_close(rel, AccessShareLock);
+
+	spock_startup_supervisor_listed();
 }
 
 /*
@@ -1502,6 +1505,37 @@ _PG_init(void)
 							INT_MAX,
 							PGC_SIGHUP,
 							GUC_UNIT_S,
+							NULL,
+							NULL,
+							NULL);
+
+	DefineCustomIntVariable("spock.max_lag_for_availability_on_startup",
+							"Lag at which a restarted node starts to serve sessions",
+							"After a server start, statements of ordinary sessions "
+							"fail until every enabled subscription is at most this "
+							"far behind its provider. Set to 0 to disable.",
+							&spock_startup_max_lag,
+							0,
+							0,
+							INT_MAX,
+							PGC_SIGHUP,
+							GUC_UNIT_MS,
+							NULL,
+							NULL,
+							NULL);
+
+	DefineCustomIntVariable("spock.startup_drain_timeout",
+							"Longest time a restarted node waits for its subscriptions to catch up",
+							"When the time is up the node serves sessions even if "
+							"a subscription is still behind. Set to 0 to wait "
+							"without limit, or -1 to wait without limit but not "
+							"for providers that cannot be reached.",
+							&spock_startup_drain_timeout,
+							0,
+							-1,
+							INT_MAX,
+							PGC_SIGHUP,
+							GUC_UNIT_MS,
 							NULL,
 							NULL,
 							NULL);

@@ -1567,3 +1567,58 @@ GRANT SELECT ON spock.settings, spock.system_status, spock.worker_status,
     spock.subscription_status, spock.peer_status,
     spock.replication_set_status, spock.slot_status, spock.node_status
     TO pg_monitor;
+
+-- ----------------------------------------------------------------------
+-- Startup gate
+-- ----------------------------------------------------------------------
+CREATE FUNCTION spock.startup_gate_open() RETURNS boolean
+LANGUAGE c VOLATILE AS 'MODULE_PATHNAME', 'spock_startup_gate_open';
+REVOKE ALL ON FUNCTION spock.startup_gate_open() FROM PUBLIC;
+
+CREATE FUNCTION spock.get_startup_status(
+    OUT database_id         oid,
+    OUT subscription_id     oid,
+    OUT gate_state          text,
+    OUT gate_reason         text,
+    OUT drain_started       timestamptz,
+    OUT gate_opened         timestamptz,
+    OUT timeout_left        interval,
+    OUT rejected_statements bigint,
+    OUT drain_state         text,
+    OUT round               integer,
+    OUT target_lsn          pg_lsn,
+    OUT received_lsn        pg_lsn,
+    OUT round_started       timestamptz,
+    OUT last_round_time     interval)
+RETURNS SETOF record STABLE
+LANGUAGE c AS 'MODULE_PATHNAME', 'spock_get_startup_status';
+REVOKE ALL ON FUNCTION spock.get_startup_status() FROM PUBLIC;
+
+-- Startup gate of this database, one row per subscription it waits for.
+CREATE VIEW spock.startup_status AS
+    SELECT g.gate_state,
+           g.gate_reason,
+           g.drain_started,
+           g.gate_opened,
+           g.timeout_left,
+           g.rejected_statements,
+           g.subscription_id,
+           s.sub_name AS subscription_name,
+           o.node_name AS provider_node,
+           g.drain_state,
+           g.round,
+           g.target_lsn,
+           g.received_lsn,
+           g.round_started,
+           CASE WHEN g.drain_state = 'catching up'
+                THEN pg_catalog.clock_timestamp() - g.round_started
+           END AS round_time,
+           g.last_round_time
+      FROM spock.get_startup_status() AS g
+      LEFT JOIN spock.subscription AS s ON s.sub_id = g.subscription_id
+      LEFT JOIN spock.node AS o ON o.node_id = s.sub_origin
+     WHERE g.database_id = (SELECT d.oid FROM pg_catalog.pg_database AS d
+                             WHERE d.datname = pg_catalog.current_database());
+
+GRANT EXECUTE ON FUNCTION spock.get_startup_status() TO pg_monitor;
+GRANT SELECT ON spock.startup_status TO pg_monitor;
