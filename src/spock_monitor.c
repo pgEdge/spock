@@ -150,6 +150,9 @@ static const SpockMonitorEventInfo SpockMonitorEventInfos[SPOCK_EVENT_NUM_TYPES]
 	{"repair_mode_enabled", SPOCK_SEVERITY_WARNING},
 	{"repair_mode_disabled", SPOCK_SEVERITY_INFO},
 	{"extension_upgraded", SPOCK_SEVERITY_INFO},
+	{"startup_drain_started", SPOCK_SEVERITY_INFO},
+	{"startup_drain_completed", SPOCK_SEVERITY_INFO},
+	{"startup_drain_timed_out", SPOCK_SEVERITY_WARNING},
 };
 
 static const char *const SpockMonitorSeverityNames[] = {

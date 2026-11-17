@@ -64,6 +64,7 @@ nav:
     - Replicating Partitioned Tables: managing/partition_mgmt.md
     - Filtering Data: managing/filtering.md
     - Using Spock in Read-Only Mode: managing/read_only.md
+    - Keeping a Restarted Node Closed Until It Catches Up: managing/startup_gate.md
     - Using a Trigger to Manage Replication Set Membership: managing/repset_trigger.md
     - Using Snowflake Sequences: managing/snowflake.md
     - Using Lolor to Manage Large Objects: managing/lolor.md
@@ -129,6 +130,7 @@ nav:
       - spock.sub_resync_table(): spock_functions/functions/spock_sub_resync_table.md
       - spock.sub_show_status(): spock_functions/functions/spock_sub_show_status.md
       - spock.sub_show_table(): spock_functions/functions/spock_sub_show_table.md
+      - spock.startup_gate_open(): spock_functions/functions/spock_startup_gate_open.md
       - spock.sync_event(): spock_functions/functions/spock_sync_event.md
       - spock.sub_wait_for_sync(): spock_functions/functions/spock_sub_wait_for_sync.md
       - spock.spock_version(): spock_functions/functions/spock_version.md

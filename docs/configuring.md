@@ -295,6 +295,32 @@ liveness detection. Default: `300` (5 minutes).
 spock.apply_idle_timeout = 300
 ```
 
+### `spock.max_lag_for_availability_on_startup`
+
+Lag at which a restarted node starts to serve sessions. After a server start,
+the statements of ordinary sessions fail with SQLSTATE `57P03` until every
+enabled subscription is at most this far behind its provider. Default: `0`,
+which turns the startup gate off. The gate is set up at server start; setting
+the value to `0` and reloading opens a closed gate. See
+[Keeping a Restarted Node Closed Until It Catches Up](managing/startup_gate.md).
+
+```ini
+spock.max_lag_for_availability_on_startup = '30s'
+```
+
+### `spock.startup_drain_timeout`
+
+Longest time a restarted node waits for its subscriptions to catch up. When
+the time is up the node serves sessions even if a subscription is still
+behind, and writes a warning to the log. Default: `0`, which waits without
+limit. Set to `-1` to wait without limit for the providers that can be
+reached and not for the others. Only used when
+`spock.max_lag_for_availability_on_startup` is set.
+
+```ini
+spock.startup_drain_timeout = '5min'
+```
+
 ### `spock.sync_timeout`
 
 Overrides the time (in seconds) budgeted for a single synchronisation wait in

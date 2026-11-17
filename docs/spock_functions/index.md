@@ -44,6 +44,7 @@ The following user functions are available via the Spock extension:
 | **Miscellaneous Management Functions** | |
 | [spock.table_wait_for_sync](functions/spock_table_wait_for_sync.md) | Pause until a table finishes synchronizing. |
 | [spock.replicate_ddl](functions/spock_replicate_ddl.md) | Enable DDL replication. |
+| [spock.startup_gate_open](functions/spock_startup_gate_open.md) | Open the startup gate of a restarted node by hand. |
 | spock_version | Returns the Spock version in a major/minor version form: `4.0.10`. Defined in the public schema so invoked without the `spock.` prefix. |
 | spock_version_num | Returns the Spock version in a single numeric form: `40010`. Defined in the public schema so invoked without the `spock.` prefix. |
 | spock.get_channel_stats | Returns tuple traffic statistics. |
