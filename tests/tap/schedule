@@ -58,3 +58,4 @@ test: 114_failover_slot_consistent_snapshot
 test: 115_failover_slot_native_synced_copy
 test: 117_call_rollback_extended_protocol
 test: 119_standby_holdback_quorum
+test: 120_add_node_progress_snapshot
