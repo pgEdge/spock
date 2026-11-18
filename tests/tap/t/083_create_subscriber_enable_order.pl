@@ -119,6 +119,56 @@ system_or_bail "$pg_bin/psql", '-q', '-p', $n1_port, '-d', $dbname, '-c',
 system_or_bail "$pg_bin/psql", '-q', '-p', $n1_port, '-d', $dbname, '-c',
     'DROP VIEW v083';
 
+# SIGTERM while the utility waits: it must clean up from the main flow,
+# drop the provider slot and stop the new node.
+{
+    my $cpaused = "${n2_datadir}.spock_bidir_test_paused";
+    my $clog    = "$log_dir/scs_cancel.log";
+    unlink($clog, $cpaused);
+
+    my $cpid = fork();
+    die "fork() failed: $!" unless defined $cpid;
+    if ($cpid == 0) {
+        open(my $fh, '>>', $clog) or die $!;
+        open(STDOUT, '>&', $fh) or die $!;
+        open(STDERR, '>&', $fh) or die $!;
+        $ENV{SPOCK_CREATE_SUBSCRIBER_TEST_PAUSE_BEFORE} = 'subscribe_enable';
+        exec($SCS_BIN,
+             '--pgdata',          $n2_datadir,
+             '--subscriber-name', 'n2',
+             '--provider-dsn',    $n1_dsn,
+             '--subscriber-dsn',  $n2_dsn,
+             '--postgresql-conf', $n2_conf) or exit(127);
+    }
+
+    my $creached = 0;
+    for (1 .. 120) {
+        if (-e $cpaused) { $creached = 1; last; }
+        last if waitpid($cpid, WNOHANG) == $cpid;
+        sleep(1);
+    }
+    ok($creached, 'utility reached the pause')
+        or do { diag(`tail -30 $clog`); done_testing(); exit 1; };
+    is(provider_slots(), '1', 'the plain path holds a provider slot while paused');
+
+    kill('TERM', $cpid);
+    my $crc;
+    for (1 .. 60) {
+        if (waitpid($cpid, WNOHANG) == $cpid) { $crc = $? >> 8; last; }
+        sleep(1);
+    }
+    is($crc, 1, 'SIGTERM makes the utility exit with status 1');
+    open my $lf, '<', $clog or die $!;
+    local $/;
+    my $log = <$lf>;
+    close $lf;
+    like($log, qr/Canceling\.\.\./, 'the cancellation is reported');
+    is(provider_slots(), '0', 'the cancelled run dropped its provider slot');
+    ok(!-e "$n2_datadir/postmaster.pid", 'the new node was stopped');
+    unlink($cpaused);
+    remove_tree($n2_datadir) if -d $n2_datadir;
+}
+
 my $paused = "${n2_datadir}.spock_bidir_test_paused";
 my $resume = "${n2_datadir}.spock_bidir_test_resume";
 my $scs_log = "$log_dir/scs_enable_order.log";

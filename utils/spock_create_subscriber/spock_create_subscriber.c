@@ -238,6 +238,9 @@ static VerbosityLevelEnum verbosity = VERBOSITY_NORMAL;
 static PGconn *subscriber_conn = NULL;
 static PGconn *provider_conn = NULL;
 
+/* set by sigexit_handler(); acted on by die_if_time_to_stop() */
+static volatile sig_atomic_t time_to_stop = false;
+
 /*
  * Provider slots created by the plain (non-bidirectional) path that no
  * subscription uses yet.  die() drops them; a bidirectional join records its
@@ -255,7 +258,8 @@ static PendingSlot *pending_slots = NULL;
 static void register_pending_slot(const char *dsn, const char *name);
 static void release_pending_slot(const char *name);
 static void drop_pending_slots(void);
-static void signal_handler(int sig);
+static void sigexit_handler(int sig);
+static void die_if_time_to_stop(void);
 static void usage(void);
 static void die(const char *fmt,...)
 			pg_attribute_printf(1, 2);
@@ -433,13 +437,24 @@ connectdb(const char *connstr)
 	return conn;
 }
 
-void
-signal_handler(int sig)
+/*
+ * When SIGINT/SIGTERM are caught, just tell the main flow to exit at the next
+ * possible moment: die() is not async-signal-safe.
+ */
+static void
+sigexit_handler(int sig)
 {
-	if (sig == SIGINT || sig == SIGTERM)
-	{
+	time_to_stop = true;
+}
+
+/*
+ * Cancel the run if a signal arrived.  Called at the waiting points.
+ */
+static void
+die_if_time_to_stop(void)
+{
+	if (time_to_stop)
 		die(_("\nCanceling...\n"));
-	}
 }
 
 /*
@@ -3185,11 +3200,10 @@ strip_subscriber_catalog(SubscriberCreateContext *ctx)
 
 			/*
 			 * Neither step below is safe to interrupt -- both write
-			 * pg_control/WAL directly, and signal_handler() -> die() is not
-			 * async-signal-safe.  A signal landing mid-write could corrupt
-			 * pg_control with no repair short of --cleanup --force.  Block
-			 * both signals across this pair of calls; any that arrives is
-			 * deferred until right after.
+			 * pg_control/WAL directly.  A signal landing mid-write could
+			 * corrupt pg_control with no repair short of --cleanup --force.
+			 * Block both signals across this pair of calls; any that arrives
+			 * is deferred until right after.
 			 */
 			sigemptyset(&block_set);
 			sigaddset(&block_set, SIGINT);
@@ -3520,8 +3534,8 @@ main(int argc, char **argv)
 	progname = get_progname(argv[0]);
 	pg_logging_init(argv[0]);
 	start_time = time(NULL);
-	signal(SIGINT, signal_handler);
-	signal(SIGTERM, signal_handler);
+	signal(SIGINT, sigexit_handler);
+	signal(SIGTERM, sigexit_handler);
 
 	parse_options(argc, argv, &ctx);
 	run_cleanup_mode_if_requested(&ctx);	/* exits if --cleanup was given */
@@ -3765,7 +3779,10 @@ maybe_test_pause_before(const char *step_name)
 		fclose(f);
 
 	while (!file_exists(resume_path))
+	{
 		pg_usleep(100000L);		/* 100ms */
+		die_if_time_to_stop();
+	}
 
 	unlink(marker_path);
 	unlink(resume_path);
@@ -3971,6 +3988,7 @@ run_basebackup(const char *provider_connstr, const char *data_dir,
 		setenv("PGPASSWORD", password, 1);
 	}
 	ret = system(cmd->data);
+	die_if_time_to_stop();
 	if (password != NULL)
 	{
 		if (saved_password != NULL)
@@ -5718,6 +5736,7 @@ wait_for_origin_progress(PGconn *conn, const char *origin_name, const char *targ
 				  "complete (--max-wait)\n"), max_wait, context_label);
 
 		pg_usleep(1000000);		/* 1 sec */
+		die_if_time_to_stop();
 		print_msg(VERBOSITY_VERBOSE, ".");
 	}
 
@@ -5992,6 +6011,7 @@ clear_forwarding(PGconn *n3_conn, const char *source_dsn, const char *source_sub
 				  "clear on \"%s\" (--max-wait)\n"), max_wait, source_sub_name);
 
 		pg_usleep(1000000);		/* 1 sec */
+		die_if_time_to_stop();
 		print_msg(VERBOSITY_VERBOSE, ".");
 	}
 
@@ -6069,6 +6089,7 @@ wait_for_sub_replicating(PGconn *conn, const char *sub_name, int stall_timeout, 
 				  "replicating (--max-wait)\n"), max_wait, sub_name);
 
 		pg_usleep(1000000);		/* 1 sec */
+		die_if_time_to_stop();
 		print_msg(VERBOSITY_VERBOSE, ".");
 	}
 
@@ -6895,6 +6916,7 @@ run_pg_resetwal(const char *data_dir)
 
 	print_msg(VERBOSITY_DEBUG, _("Running pg_resetwal: %s.\n"), cmd->data);
 	ret = system(cmd->data);
+	die_if_time_to_stop();
 
 	destroyPQExpBuffer(cmd);
 
@@ -7050,6 +7072,7 @@ wait_postmaster_connection(const char *connstr)
 			break;
 
 		pg_usleep(1000000);		/* 1 sec */
+		die_if_time_to_stop();
 		print_msg(VERBOSITY_VERBOSE, ".");
 	}
 
@@ -7072,6 +7095,7 @@ wait_postmaster_connection(const char *connstr)
 
 		/* No response; wait */
 		pg_usleep(1000000);		/* 1 sec */
+		die_if_time_to_stop();
 		print_msg(VERBOSITY_VERBOSE, ".");
 	}
 
@@ -7157,6 +7181,7 @@ wait_primary_connection(const char *connstr, int stall_timeout, int max_wait)
 		}
 
 		pg_usleep(1000000);		/* 1 sec */
+		die_if_time_to_stop();
 		print_msg(VERBOSITY_VERBOSE, ".");
 	}
 
@@ -7197,6 +7222,7 @@ wait_postmaster_shutdown(void)
 				  "shut down\n"), max_wait_secs);
 
 		pg_usleep(1000000);		/* 1 sec */
+		die_if_time_to_stop();
 		print_msg(VERBOSITY_NORMAL, ".");
 	}
 
