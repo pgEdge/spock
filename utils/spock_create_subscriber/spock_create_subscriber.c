@@ -2683,6 +2683,12 @@ parse_options(int argc, char **argv, SubscriberCreateContext *ctx)
 			die(_("--replication-sets cannot be combined with --bidirectional; "
 				  "the joining node's replication sets are detected "
 				  "automatically from the cluster it is joining.\n"));
+
+		/* The bidirectional subscriptions are created without these. */
+		if (ctx->apply_delay != 0)
+			die(_("--apply-delay cannot be combined with --bidirectional.\n"));
+		if (ctx->force_text_transfer)
+			die(_("--text-types cannot be combined with --bidirectional.\n"));
 	}
 	else if (!ctx->replication_sets || !strlen(ctx->replication_sets))
 		ctx->replication_sets = "default,default_insert_only,ddl_sql";
