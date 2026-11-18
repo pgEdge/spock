@@ -123,6 +123,22 @@ for my $case (
     unlink($auto);
 }
 
+# A copy already past the source's timeline is refused; --cleanup does not
+# apply to the plain path, so the hint must say to remove the directory.
+{
+    local $ENV{PGPASSWORD} = $db_password;
+    is(system("$pg_bin/pg_basebackup -D '$n2_datadir' -d '$n1_dsn' -X stream "
+              . "-c fast > /dev/null 2>&1"), 0, 'base backup of the provider taken');
+    is(system("$pg_bin/pg_resetwal -f -l 000000020000000100000000 '$n2_datadir' "
+              . "> /dev/null 2>&1"), 0, 'timeline of the copy advanced');
+    my ($rc, $out) = run_scs();
+    isnt($rc, 0, 'a copy on a later timeline makes the utility fail');
+    like($out, qr/already on timeline 2, past the source's current timeline 1.*remove the data directory and retry/s,
+         'the hint is to remove the data directory');
+    is(provider_slots(), '0', 'the failed run left no slot on the provider');
+    remove_tree($n2_datadir) if -d $n2_datadir;
+}
+
 # A non-spock object depending on spock must stop the run before anything is dropped.
 system_or_bail "$pg_bin/psql", '-q', '-p', $n1_port, '-d', $dbname, '-c',
     'CREATE VIEW v083 AS SELECT * FROM spock.node';
