@@ -83,11 +83,11 @@ cross_wire(2, ['n1', 'n2'], 'Cross-wire nodes n1 and n2');
 ok(psql_ok(3, "SELECT spock.node_drop('n3')"), 'n3 spock node registration dropped');
 
 # lolor on the source cluster, its tables in the default replication set.
-# n1 and n2 are cross-wired with automatic DDL replication, so CREATE
-# EXTENSION on n1 arrives on n2 by itself.
-ok(psql_ok(1, "CREATE EXTENSION lolor"), 'lolor installed on n1');
-ok(wait_for_scalar(2, "SELECT count(*) FROM pg_extension WHERE extname = 'lolor'", '1'),
-   'lolor arrived on n2 via DDL replication');
+# n1 and n2 are cross-wired with automatic DDL replication, but CREATE
+# EXTENSION lolor is node-local, so it is run on each node.
+for my $node (1, 2) {
+    ok(psql_ok($node, "CREATE EXTENSION lolor"), "lolor installed on n$node");
+}
 for my $node (1, 2) {
     ok(psql_ok($node, "SELECT spock.repset_add_table('default', 'lolor.pg_largeobject')"),
        "lolor.pg_largeobject in default repset on n$node");
