@@ -49,7 +49,7 @@ With `--bidirectional`, the utility joins the new node to an existing multi-mast
 | Option   | Description
 |----------|-------------
 | `--bidirectional` | Join an existing multi-master cluster.
-| `--stall-timeout=SECS` | Once PostgreSQL accepts connections, the number of seconds without replay progress before giving up (default 600). It does not bound PostgreSQL's own startup.
+| `--stall-timeout=SECS` | Once PostgreSQL accepts connections, the number of seconds without replay progress before giving up (default 1800). A single large transaction is sent only at commit, so while the provider decodes it the join shows no progress; raise this value when the source has bulk writers. It does not bound PostgreSQL's own startup. Use `--max-wait` for a hard ceiling.
 | `--max-wait=SECS` | A hard ceiling, in seconds, on the catchup wait after the connection is made (default: unbounded). It does not bound PostgreSQL's own startup.
 | `--cleanup` | Remove the partial state of an interrupted join and exit. Stops PostgreSQL if it is running in `--pgdata`.
 | `--force` | With `--cleanup`, also remove the data directory. Required when the manifest records a completed join.
