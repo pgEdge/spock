@@ -513,12 +513,12 @@ server.
 If connecting fails, for example because the database does not exist or
 does not accept connections, the worker reports it and carries on without
 the check. While it synchronizes slots on a standby, it tries again as
-soon as the database exists and accepts connections. A background worker cannot connect to a database once it is
-running, so the worker restarts to do so, and no slot is synchronized for
-about 15 seconds. If connecting fails although the database looks
-available, the worker tries again at once the first time, then after one
-minute, doubling up to five minutes. Correcting the setting itself still
-requires a restart of the server.
+soon as the database exists and accepts connections. A background worker
+cannot connect to a database once it is running, so the worker restarts to
+do so, and no slot is synchronized for about 15 seconds. If connecting
+fails although the database looks available, the worker tries again at
+once the first time, then after one minute, doubling up to five minutes.
+Correcting the setting itself still requires a restart of the server.
 
 The check is made on PostgreSQL 16 and later while the Spock worker
 synchronizes the slots. Where native slot sync has taken over, the worker
