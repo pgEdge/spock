@@ -327,7 +327,7 @@ isnt($scs_rc, 0,
 
 my $scs_output = slurp_log($scs_log);
 like($scs_output,
-     qr/\S[^\n]*? appears stalled: no origin progress for \d+ second\(s\) and the apply worker is not active \(--stall-timeout\)/,
+     qr/\S[^\n]*? appears stalled: no origin progress for \d+ second\(s\) and the apply worker is not active; .*rerun with a larger --stall-timeout/,
      'abort message attributes the stall to a specific phase, not a generic wait');
 
 # =============================================================================

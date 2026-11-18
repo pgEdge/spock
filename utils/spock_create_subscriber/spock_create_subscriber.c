@@ -103,7 +103,7 @@ typedef struct BidirectionalState
 	bool		enabled;
 	int			num_peers;
 	PeerNodeInfo *peers;
-	int			stall_timeout;	/* default 600s */
+	int			stall_timeout;	/* default 1800s */
 	int			max_wait;		/* default 0 = unbounded */
 	char	   *source_slot_name;
 	char	   *source_restore_lsn; /* recovery target LSN; consumed by the
@@ -2737,7 +2737,7 @@ parse_options(int argc, char **argv, SubscriberCreateContext *ctx)
 		snprintf(ctx->bidir_pending_path, MAXPGPATH,
 				 "%s.spock_bidir_pending.json", data_dir);
 		if (ctx->bidir.stall_timeout == 0)
-			ctx->bidir.stall_timeout = 600;
+			ctx->bidir.stall_timeout = 1800;
 	}
 }
 
@@ -3644,7 +3644,7 @@ usage(void)
 	printf(_("\nBidirectional join (joins an existing multi-master cluster):\n"));
 	printf(_("  --bidirectional         enable bidirectional join plumbing\n"));
 	printf(_("  --stall-timeout=SECS    once PostgreSQL accepts connections, seconds of no\n"));
-	printf(_("                          replay progress before giving up (default 600); does\n"));
+	printf(_("                          replay progress before giving up (default 1800); does\n"));
 	printf(_("                          not bound PostgreSQL's own startup\n"));
 	printf(_("  --max-wait=SECS         hard ceiling on post-connection catchup wait, seconds\n"));
 	printf(_("                          (default: unbounded); does not bound PostgreSQL's own\n"));
@@ -5840,7 +5840,9 @@ wait_for_origin_progress(PGconn *conn, const char *origin_name, const char *targ
 			 */
 			if (watch_sub_name == NULL || !apply_worker_is_busy(conn, watch_sub_name))
 				die(_("%s appears stalled: no origin progress for %d second(s) "
-					  "and the apply worker is not active (--stall-timeout)\n"),
+					  "and the apply worker is not active; a single large "
+					  "transaction still being decoded on the provider looks "
+					  "the same; if so, rerun with a larger --stall-timeout\n"),
 					context_label, stall_timeout);
 
 			print_msg(VERBOSITY_VERBOSE,
