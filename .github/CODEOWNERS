@@ -2,27 +2,27 @@
 # spock is Tier 3. The last matching line wins.
 
 # Tier 3: every change needs a code owner's approval.
-*  @mason-sharp
+*  @pgEdge/spock-admins
 
 # Workflows, release, packaging and signing: a code owner or build-packaging.
-/.github/workflows/  @mason-sharp @pgEdge/build-packaging
-/.github/actions/  @mason-sharp @pgEdge/build-packaging
-action.yml  @mason-sharp @pgEdge/build-packaging
-action.yaml  @mason-sharp @pgEdge/build-packaging
-.goreleaser*.yml  @mason-sharp @pgEdge/build-packaging
-.goreleaser*.yaml  @mason-sharp @pgEdge/build-packaging
-*.spec  @mason-sharp @pgEdge/build-packaging
-debian/  @mason-sharp @pgEdge/build-packaging
-rpm/  @mason-sharp @pgEdge/build-packaging
-packaging/  @mason-sharp @pgEdge/build-packaging
-release*.sh  @mason-sharp @pgEdge/build-packaging
-sign*.sh  @mason-sharp @pgEdge/build-packaging
-sign*.py  @mason-sharp @pgEdge/build-packaging
-Dockerfile*  @mason-sharp @pgEdge/build-packaging
+/.github/workflows/  @pgEdge/spock-admins @pgEdge/build-packaging
+/.github/actions/  @pgEdge/spock-admins @pgEdge/build-packaging
+action.yml  @pgEdge/spock-admins @pgEdge/build-packaging
+action.yaml  @pgEdge/spock-admins @pgEdge/build-packaging
+.goreleaser*.yml  @pgEdge/spock-admins @pgEdge/build-packaging
+.goreleaser*.yaml  @pgEdge/spock-admins @pgEdge/build-packaging
+*.spec  @pgEdge/spock-admins @pgEdge/build-packaging
+debian/  @pgEdge/spock-admins @pgEdge/build-packaging
+rpm/  @pgEdge/spock-admins @pgEdge/build-packaging
+packaging/  @pgEdge/spock-admins @pgEdge/build-packaging
+release*.sh  @pgEdge/spock-admins @pgEdge/build-packaging
+sign*.sh  @pgEdge/spock-admins @pgEdge/build-packaging
+sign*.py  @pgEdge/spock-admins @pgEdge/build-packaging
+Dockerfile*  @pgEdge/spock-admins @pgEdge/build-packaging
 
 # Ownership and AI review configuration: code owners only.
 /CODEOWNERS  @mason-sharp
 /.github/CODEOWNERS  @mason-sharp
 /docs/CODEOWNERS  @mason-sharp
-/REVIEW.md  @mason-sharp
-/.coderabbit.yaml  @mason-sharp
+/REVIEW.md  @pgEdge/spock-admins
+/.coderabbit.yaml  @pgEdge/spock-admins
