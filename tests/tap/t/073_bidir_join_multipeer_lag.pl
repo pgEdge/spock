@@ -266,6 +266,24 @@ print $conf_fh "log_directory='$log_dir'\n";
 print $conf_fh "log_filename='00${n4_port}.log'\n";
 close $conf_fh;
 
+# The source's subscriptions must all select the same replication sets;
+# otherwise the forwarded and direct paths could select different changes.
+{
+    system_or_bail "$pg_bin/psql", '-q', '-p', $node_ports->[0], '-d', $dbname, '-c',
+        "UPDATE spock.subscription SET sub_replication_sets = ARRAY['default','default_insert_only']"
+        . " WHERE sub_name = 'sub_n1_n2'";
+    my $out = `"$SCS_BIN" --bidirectional --pgdata "$n4_datadir" --subscriber-name n4 --provider-dsn "$n1_dsn" --subscriber-dsn "$n4_dsn" --postgresql-conf "$n4_conf" 2>&1`;
+    isnt($? >> 8, 0, 'a source whose subscriptions select different replication sets is rejected');
+    like($out, qr/do not all select the same replication sets \(\{ddl_sql,default,default_insert_only\}, \{default,default_insert_only\}\)/,
+         'the rejection lists the differing selections');
+    is(scalar_query(1, "SELECT COUNT(*) FROM pg_replication_slots WHERE slot_name LIKE 'spk_%n4%'"),
+       '0', 'no source slot was created');
+    ok(!-d $n4_datadir, 'no data directory was created');
+    system_or_bail "$pg_bin/psql", '-q', '-p', $node_ports->[0], '-d', $dbname, '-c',
+        "UPDATE spock.subscription SET sub_replication_sets = ARRAY['default','default_insert_only','ddl_sql']"
+        . " WHERE sub_name = 'sub_n1_n2'";
+}
+
 my $scs_log = "$log_dir/scs_multipeer.log";
 unlink($scs_log) if -f $scs_log;
 

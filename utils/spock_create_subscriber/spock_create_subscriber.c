@@ -958,6 +958,33 @@ get_source_mesh_replication_sets(PGconn *conn)
 	char	   *result;
 	int			i;
 
+	/*
+	 * The joining node selects one list of sets on every subscription, so
+	 * every edge of the source must already select the same list: the
+	 * forwarded path (peer -> source -> joining node) uses the source's
+	 * selection of each peer, the direct path the joining node's.
+	 */
+	res = debug_exec(conn,
+					 "SELECT DISTINCT array_to_string(ARRAY(SELECT unnest(sub_replication_sets)"
+					 " ORDER BY 1), ',') FROM spock.subscription ORDER BY 1");
+	if (PQresultStatus(res) != PGRES_TUPLES_OK)
+	{
+		PQclear(res);
+		die(_("could not determine the cluster's replication sets: %s\n"),
+			PQerrorMessage(conn));
+	}
+	if (PQntuples(res) > 1)
+	{
+		list = createPQExpBuffer();
+		for (i = 0; i < PQntuples(res); i++)
+			appendPQExpBuffer(list, "%s{%s}", i > 0 ? ", " : "", PQgetvalue(res, i, 0));
+		PQclear(res);
+		die(_("the source's subscriptions do not all select the same replication "
+			  "sets (%s); a bidirectional join requires them to match\n"),
+			list->data);
+	}
+	PQclear(res);
+
 	res = debug_exec(conn,
 					 "SELECT DISTINCT s FROM spock.subscription,"
 					 " unnest(sub_replication_sets) AS s ORDER BY 1");
