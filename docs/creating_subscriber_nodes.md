@@ -33,6 +33,36 @@ You can use the following options to override the location of the configuration 
 |----------|-------------
 |`--hba-conf` | path to the new `pg_hba.conf`
 | `--postgresql-conf` | path to the new `postgresql.conf`
+| `--postgresql-auto-conf` | settings to override in `postgresql.auto.conf`
 | `--recovery-conf` | path to the template recovery configuration
 
 Unlike `spock.sub_create`'s other data sync options, this method of cloning ignores replication sets and copies all tables on all databases. However, it's often much faster, especially over high-bandwidth connections.
+
+**New node configuration**
+
+After the configuration overrides are applied, the utility checks the new node's configuration and stops if `wal_level` is not `logical` or `shared_preload_libraries` does not include `spock`. With `--bidirectional`, `track_commit_timestamp` must also be `on`.
+
+### Joining a multi-master cluster
+
+With `--bidirectional`, the utility joins the new node to an existing multi-master cluster: the new node subscribes to every existing node, and every existing node subscribes to it. The provider named by `--provider-dsn` is the source node; the other nodes are discovered from its subscriptions. The replication sets are taken from the source's subscriptions, so `--replication-sets`, `--apply-delay` and `--text-types` cannot be combined with `--bidirectional`.
+
+| Option   | Description
+|----------|-------------
+| `--bidirectional` | Join an existing multi-master cluster.
+| `--stall-timeout=SECS` | Once PostgreSQL accepts connections, the number of seconds without replay progress before giving up (default 600). It does not bound PostgreSQL's own startup.
+| `--max-wait=SECS` | A hard ceiling, in seconds, on the catchup wait after the connection is made (default: unbounded). It does not bound PostgreSQL's own startup.
+| `--cleanup` | Remove the partial state of an interrupted join and exit. Stops PostgreSQL if it is running in `--pgdata`.
+| `--force` | With `--cleanup`, also remove the data directory. Required when the manifest records a completed join.
+
+`--subscriber-dsn` must be an address the existing nodes can use to connect back to the new node. The join requires:
+
+- Spock 6.0.0 or later on every node.
+- `track_commit_timestamp = on` on the source and on every peer.
+- Every node in the cluster subscribed to every other node, with all those subscriptions replicating.
+- No unreplicated changes pending from the source to an existing peer.
+- Exactly one Spock database on the source, and no enabled native logical subscriptions.
+- The same replication sets, with the same tables, row filters and table schemas, on the source and on each peer.
+
+Until the join completes, keep the new node unreachable by other clients, for example with a private address or a restrictive `pg_hba.conf` set through `--hba-conf` or `--postgresql-conf`; the utility does not do this.
+
+The utility records the objects it creates on the other nodes in `spock_bidirectional_manifest.json` in `--pgdata`, and in `<pgdata>.spock_bidir_pending.json` until the base backup is complete. If a join fails or is interrupted, run the utility with `--bidirectional --cleanup --pgdata=DIRECTORY` to remove the subscriptions and replication slots it created. Add `--force` to also remove the data directory.
