@@ -55,12 +55,12 @@
 
 #include "utils/builtins.h"
 #include "utils/fmgroids.h"
-#include "utils/relcache.h"
 #include "utils/fmgrprotos.h"
 #include "utils/guc.h"
 #include "utils/inval.h"
 #include "utils/memutils.h"
 #include "utils/pg_lsn.h"
+#include "utils/relcache.h"
 #include "utils/resowner.h"
 #include "utils/snapmgr.h"
 #include "utils/varlena.h"
