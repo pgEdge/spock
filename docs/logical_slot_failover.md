@@ -580,6 +580,45 @@ primary it idles.
 | `spock.failover_slots_recreate_invalidated` | `on` | Drop and recreate a synchronized slot whose copy was invalidated on the standby; `off` leaves it as it is and reports it once. PG15-17 only; ignored on PG17 with native slot sync and on PG18+ (SIGHUP) |
 | `spock.failover_slots_database` | `''` | Database the worker connects to so it can decode each copy on the standby and give it a consistent snapshot; off by default. PG16-17 only, ignored on PG18+; on PG16 the slots' database (restart) |
 
+### A new copy stays temporary until it has caught up
+
+When the worker creates a copy of a slot on the standby, the copy is a
+temporary slot. The worker makes it persistent only when the primary's slot has
+caught up with the position the standby could reserve for it (its
+`restart_lsn` and `catalog_xmin`) and the copy has a consistent snapshot. A
+copy that has not caught up is kept pending and checked again on the next
+pass. A temporary copy is dropped when the standby is promoted, because a copy
+in that state could not serve a subscriber and would skip transactions
+committed after its `restart_lsn`.
+
+A copy can stay pending when the primary's slot is behind what the standby has
+reserved, for example when the subscriber was disconnected or far behind while
+the standby was built. The standby logs "waiting for remote slot ... to pass
+local slot ..." while it waits.
+
+Before a planned failover, check on the standby that every slot you rely on is
+listed with `temporary = false`:
+
+```sql
+SELECT slot_name, temporary, synced, invalidation_reason
+FROM pg_replication_slots
+WHERE slot_type = 'logical';
+```
+
+A slot that is missing from the result, or shows `temporary = true`, is not
+ready. Do not promote the standby until it is persistent.
+
+If the standby is promoted while a copy is still temporary, the copy is
+dropped and the subscriber fails with:
+
+```
+ERROR:  replication slot "..." does not exist
+```
+
+This is intended: replication stops visibly instead of continuing with rows
+silently missing. To recover, resynchronize the subscriber from the promoted
+node.
+
 ### Example (`postgresql.conf` on standby)
 
 ```ini
