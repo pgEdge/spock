@@ -576,6 +576,8 @@ like(`$pg_bin/pg_controldata '$promoted'`,
     isnt($rc, 0, 'promoted copy: join rejected');
     like($out, qr/already on timeline 2, past the source's current timeline 1/,
          'promoted copy: rejection names the timelines');
+    like($out, qr/run --cleanup --force and retry with a fresh base backup/,
+         'promoted copy: the hint is --cleanup --force');
     ok(!-e "$promoted/postmaster.pid", 'promoted copy: not started');
     assert_nothing_created('promoted copy');
 }

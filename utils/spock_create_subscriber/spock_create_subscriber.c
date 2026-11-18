@@ -315,7 +315,8 @@ static void initialize_data_dir(char *data_dir, char *connstr,
 								char *postgresql_conf, char *postgresql_auto_conf,
 								char *pg_hba_conf, char *extra_basebackup_args);
 static bool check_data_dir(char *data_dir, RemoteInfo *remoteinfo);
-static void check_reused_data_dir_is_safe(const char *data_dir, RemoteInfo *remoteinfo);
+static void check_reused_data_dir_is_safe(const char *data_dir, RemoteInfo *remoteinfo,
+										  bool bidirectional);
 
 static char *read_sysid(const char *data_dir);
 
@@ -2964,7 +2965,7 @@ create_replication_slots(SubscriberCreateContext *ctx)
 			check_no_native_subscriptions(provider_conn);
 			ctx->use_existing_data_dir = check_data_dir(data_dir, ctx->remote_info);
 			if (ctx->use_existing_data_dir)
-				check_reused_data_dir_is_safe(data_dir, ctx->remote_info);
+				check_reused_data_dir_is_safe(data_dir, ctx->remote_info, true);
 
 			source_sub_name = sub_name_for(ctx->subscriber_name, ctx->remote_info->node_name);
 
@@ -3008,7 +3009,7 @@ create_replication_slots(SubscriberCreateContext *ctx)
 			ctx->use_existing_data_dir = check_data_dir(data_dir, ctx->remote_info);
 
 			if (ctx->use_existing_data_dir)
-				check_reused_data_dir_is_safe(data_dir, ctx->remote_info);
+				check_reused_data_dir_is_safe(data_dir, ctx->remote_info, false);
 		}
 
 		/*
@@ -4350,7 +4351,8 @@ check_data_dir(char *data_dir, RemoteInfo *remoteinfo)
  * wait forever for WAL that will never arrive.  Refuse reuse instead.
  */
 static void
-check_reused_data_dir_is_safe(const char *data_dir, RemoteInfo *remoteinfo)
+check_reused_data_dir_is_safe(const char *data_dir, RemoteInfo *remoteinfo,
+							  bool bidirectional)
 {
 	char	   *local_sysid = read_sysid(data_dir);
 	bool		mismatch = strcmp(remoteinfo->sysid, local_sysid) != 0;
@@ -4368,9 +4370,10 @@ check_reused_data_dir_is_safe(const char *data_dir, RemoteInfo *remoteinfo)
 		die(_("data directory \"%s\" is already on timeline %u, past the "
 			  "source's current timeline %u -- it was already promoted by "
 			  "an earlier, incomplete attempt and can never resume "
-			  "recovery from this source again; run --cleanup --force and "
-			  "retry with a fresh base backup\n"),
-			data_dir, cf->checkPointCopy.ThisTimeLineID, remoteinfo->timeline_id);
+			  "recovery from this source again; %s and retry with a fresh "
+			  "base backup\n"),
+			data_dir, cf->checkPointCopy.ThisTimeLineID, remoteinfo->timeline_id,
+			bidirectional ? _("run --cleanup --force") : _("remove the data directory"));
 	pg_free(cf);
 }
 
