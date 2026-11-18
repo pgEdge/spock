@@ -913,3 +913,84 @@ jobs:
                   name: aggregated-manifest
                   path: aggregated/manifest.json
                   retention-days: 90
+
+    # =========================================================================
+    # GitHub Release — attach the changelog so the tag page shows release
+    # notes, the way the control-plane releases do. The body is the
+    # `## Spock <version>` section of docs/spock_release_notes.md; if that
+    # section is missing the release gets a short pointer body instead of
+    # being empty. This job only publishes NOTES — the packages are built and
+    # pushed by the jobs above, independently of the GitHub Release.
+    # =========================================================================
+    create-release:
+        name: Create GitHub Release (changelog notes)
+        needs: [determine-repo-type, push-dnf, push-apt]
+        # Real tag pushes only — never on workflow_dispatch / simulate_tag, and
+        # only once the packages for this tag have actually been published.
+        # daily repo_type is a test/dev tag (e.g. v6.0.0-test1) and must not
+        # get a public GitHub Release; only staging (rc/beta/final) do. A
+        # final tag becomes "Latest"; rc/beta are marked pre-release below.
+        if: >-
+            github.event_name == 'push'
+            && github.ref_type == 'tag'
+            && needs.determine-repo-type.outputs.repo-type != 'daily'
+            && needs.push-dnf.result == 'success'
+            && needs.push-apt.result == 'success'
+        runs-on: ubuntu-latest
+        permissions:
+            contents: write   # create/edit the GitHub Release for this tag
+        steps:
+            - name: Checkout code
+              uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+              with:
+                  persist-credentials: false
+
+            - name: Build release notes from docs/spock_release_notes.md
+              id: notes
+              env:
+                  VERSION: ${{ needs.determine-repo-type.outputs.component-version }}
+                  TAG:     ${{ github.ref_name }}
+              run: |
+                  set -euo pipefail
+                  notes_file="release-notes.md"
+                  # The changelog header is "## Spock <version>"; capture that
+                  # section up to the next level-2 header.
+                  awk -v hdr="## Spock ${VERSION}" '
+                      $0 == hdr { flag=1; next }
+                      /^## / && flag { flag=0 }
+                      flag { print }
+                  ' docs/spock_release_notes.md > "$notes_file"
+                  # Drop leading blank lines left by the header.
+                  sed -i -e '/./,$!d' "$notes_file"
+                  if [ -s "$notes_file" ]; then
+                      echo "Using the Spock ${VERSION} section of docs/spock_release_notes.md."
+                  else
+                      echo "::warning::No '## Spock ${VERSION}' section in docs/spock_release_notes.md; using a pointer body."
+                      {
+                          echo "Release ${TAG}."
+                          echo
+                          echo "See the [Spock release notes](https://github.com/${GITHUB_REPOSITORY}/blob/${TAG}/docs/spock_release_notes.md)."
+                      } > "$notes_file"
+                  fi
+
+            - name: Create or update the release
+              env:
+                  GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+                  TAG:      ${{ github.ref_name }}
+              run: |
+                  set -euo pipefail
+                  # A pre-release tag carries a suffix (e.g. v6.0.0-rc.1); mark
+                  # it so it never becomes the "Latest" release.
+                  prerelease_flag=""
+                  case "$TAG" in
+                      *-*) prerelease_flag="--prerelease" ;;
+                  esac
+                  if gh release view "$TAG" >/dev/null 2>&1; then
+                      echo "Release $TAG exists; updating its notes."
+                      gh release edit "$TAG" --title "$TAG" \
+                          --notes-file release-notes.md $prerelease_flag
+                  else
+                      echo "Creating release $TAG."
+                      gh release create "$TAG" --title "$TAG" \
+                          --notes-file release-notes.md $prerelease_flag
+                  fi
