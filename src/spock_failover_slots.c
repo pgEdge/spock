@@ -105,6 +105,9 @@ typedef struct RemoteSlot
 	 * satisfy it.
 	 */
 	XLogRecPtr	own_restart_lsn;
+
+	/* Has the standby received the WAL at the slot's own restart_lsn? */
+	bool		restart_lsn_received;
 } RemoteSlot;
 
 typedef enum FailoverSlotFilterKey
@@ -698,6 +701,9 @@ local_decoding_unavailable(ReplicationSlot *slot)
 static List *undecodable_warned = NIL;
 static List *inconsistent_warned = NIL;
 
+/* Slots reported because the standby has not received their restart_lsn */
+static List *unreceived_warned = NIL;
+
 #if PG_VERSION_NUM >= 170000
 /*
  * Copies made by native slot sync that the primary no longer has.  A
@@ -1149,6 +1155,7 @@ invalidated_warned_prune(List *remote_slots)
 	warned_list_prune(&invalidated_warned, remote_slots);
 	warned_list_prune(&undecodable_warned, remote_slots);
 	warned_list_prune(&inconsistent_warned, remote_slots);
+	warned_list_prune(&unreceived_warned, remote_slots);
 }
 
 /*
@@ -1409,6 +1416,28 @@ synchronize_one_slot(RemoteSlot *remote_slot)
 	{
 		TransactionId xmin_horizon = InvalidTransactionId;
 		ReplicationSlot *slot;
+
+		/*
+		 * A new copy starts at the primary slot's restart_lsn, so wait until
+		 * the standby has received it.  Until then the only position to
+		 * offer is the end of the WAL received, which while the standby is
+		 * catching up is usually inside a record.  Decoding cannot start
+		 * there: the error would end the worker on every pass, and where the
+		 * standby cannot decode, the copy would be made persistent at a
+		 * position no subscriber can start from.
+		 */
+		if (!remote_slot->restart_lsn_received)
+		{
+			/* Said once, not on every pass */
+			if (warning_due(&unreceived_warned, remote_slot->name, true))
+				elog(LOG,
+					 "not creating replication slot \"%s\" yet: the standby has not received the primary slot's restart_lsn",
+					 remote_slot->name);
+			PopActiveSnapshot();
+			CommitTransactionCommand();
+			return;
+		}
+		warning_due(&unreceived_warned, remote_slot->name, false);
 
 		/*
 		 * We have to create the slot to reserve its name and resources, but
@@ -1848,6 +1877,8 @@ synchronize_failover_slots(long sleep_time)
 			 * restart_lsn, so one slot that lags does not hold back the
 			 * others.
 			 */
+			remote_slot->restart_lsn_received =
+				remote_slot->restart_lsn <= receivePtr;
 			remote_slot->own_restart_lsn = Min(remote_slot->restart_lsn,
 											   receivePtr);
 			if (remote_slot->restart_lsn > lsn)
