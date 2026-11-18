@@ -299,28 +299,43 @@ ok(wait_until(60, 2, sub {
 }), "T1: the standby's copy carries that restart_lsn");
 
 # A database the worker cannot connect to: the first attempt fails, and the
-# worker the postmaster restarts a minute later goes on without a database,
+# worker the postmaster starts in its place goes on without a database,
 # says so, and keeps the copies synchronized without the snapshot check.
-qport($standby_port, "ALTER SYSTEM SET spock.failover_slots_database = 'no_such_db'");
+qport($standby_port, "ALTER SYSTEM SET spock.failover_slots_database = 'fs_late_db'");
 system_or_bail("$pg_bin/pg_ctl", 'restart', '-D', $standby_datadir, '-w',
     '-l', "$standby_datadir/startup.log");
 ok(wait_until(150, 5, sub {
-    return count_log(qr/spock_failover_slots worker is not connecting to database "no_such_db"/) > 0;
+    return count_log(qr/spock_failover_slots worker is not connecting to database "fs_late_db"/) > 0;
 }), 'the worker reports the database it could not connect to');
 confirm_past_open_transaction('T1, without a database');
 ok(count_log(qr/replication slot "\Q$slot_name\E" is synchronized without a consistent snapshot/) >= 2,
     'the copy is reported as synchronized without a snapshot again');
 
-qport($standby_port, "ALTER SYSTEM SET spock.failover_slots_database = '$dbname'");
-system_or_bail("$pg_bin/pg_ctl", 'restart', '-D', $standby_datadir, '-w',
-    '-l', "$standby_datadir/startup.log");
+# The database appears.  The worker notices, and the worker started in its
+# place connects to it, with no restart of the server.
+psql_or_bail(1, "CREATE DATABASE fs_late_db");
+ok(wait_until(120, 2, sub {
+    return qport($standby_port,
+        "SELECT datname FROM pg_stat_activity
+         WHERE backend_type = 'spock_failover_slots worker'") eq 'fs_late_db';
+}), 'the worker connects to the database once it exists');
+is(count_log(qr/spock_failover_slots worker is restarting to connect to database "fs_late_db"/),
+    1, 'the worker restarted once to connect to it');
 
+# On PG17 and later the worker connected to fs_late_db could decode the copy
+# too, and may have reported it.  Count the reports made from here on, with
+# the server stopped so that neither worker adds one while counting.
 my $inconsistent_re =
     qr/replication slot "\Q$slot_name\E" has no consistent snapshot on the standby/;
+qport($standby_port, "ALTER SYSTEM SET spock.failover_slots_database = '$dbname'");
+system_or_bail("$pg_bin/pg_ctl", 'stop', '-D', $standby_datadir, '-w');
+my $inconsistent_before = count_log($inconsistent_re);
+system_or_bail("$pg_bin/pg_ctl", 'start', '-D', $standby_datadir, '-w',
+    '-l', "$standby_datadir/startup.log");
 ok(wait_until(60, 2, sub {
     insert_rows(1);
     psql_or_bail(1, "CHECKPOINT");
-    return count_log($inconsistent_re) > 0;
+    return count_log($inconsistent_re) > $inconsistent_before;
 }), 'the worker reports a copy that cannot be consistent while T1 is open');
 
 # Decoding that copy would wait for T1 in the snapshot builder, and on a
@@ -352,7 +367,8 @@ ok(wait_until(90, 2, sub {
         "SELECT restart_lsn > '$old_restart'::pg_lsn
          FROM pg_replication_slots WHERE slot_name = '$slot_name'") eq 't';
 }), 'the copy moves on once T1 has ended');
-is(count_log($inconsistent_re), 1, 'the inconsistent copy was reported once');
+is(count_log($inconsistent_re), $inconsistent_before + 1,
+    'the inconsistent copy was reported once');
 
 # ---------- the same with local decoding ----------
 

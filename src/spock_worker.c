@@ -796,6 +796,9 @@ spock_worker_shmem_startup(void)
 		SpockCtx->supervisor = NULL;
 		SpockCtx->subscriptions_changed = false;
 		SpockCtx->failover_slots_db_connecting = false;
+		SpockCtx->failover_slots_db_retry = false;
+		SpockCtx->failover_slots_db_failures = 0;
+		SpockCtx->failover_slots_db_failed_at = 0;
 		pg_atomic_init_u32(&SpockCtx->pause_apply, 0);
 		ConditionVariableInit(&SpockCtx->pause_cv);
 		SpockCtx->total_workers = nworkers;
@@ -822,21 +825,58 @@ spock_worker_shmem_startup(void)
 	LWLockRelease(AddinShmemInitLock);
 }
 /*
- * Whether the failover slot worker is connecting to
- * spock.failover_slots_database.  Set across the connection attempt so
- * that, if it fails or is interrupted, the restarted worker does not try
- * again before a server restart.
+ * The failover slot worker's connection to spock.failover_slots_database.
+ *
+ * A failed connection is FATAL, so the worker cannot note the failure
+ * itself.  It marks the attempt in shared memory instead, and the worker
+ * the postmaster starts next finds the mark still there.
+ *
+ * Called at worker start.  Returns true if the worker should connect to
+ * the database now, and then marks the attempt; the caller must call
+ * spock_failover_slots_db_connect_done() once connected.  Returns false if
+ * the last attempt failed or was interrupted and no retry was asked for;
+ * the worker then runs without the database.
  */
 bool
-spock_failover_slots_db_connecting(void)
+spock_failover_slots_db_connect_begin(void)
 {
-	return SpockCtx->failover_slots_db_connecting;
+	if (SpockCtx->failover_slots_db_connecting)
+	{
+		/* The attempt marked by an earlier worker never finished */
+		SpockCtx->failover_slots_db_connecting = false;
+		SpockCtx->failover_slots_db_failures++;
+		SpockCtx->failover_slots_db_failed_at = GetCurrentTimestamp();
+	}
+
+	if (SpockCtx->failover_slots_db_failures > 0 &&
+		!SpockCtx->failover_slots_db_retry)
+		return false;
+
+	SpockCtx->failover_slots_db_retry = false;
+	SpockCtx->failover_slots_db_connecting = true;
+	return true;
 }
 
 void
-spock_set_failover_slots_db_connecting(bool connecting)
+spock_failover_slots_db_connect_done(void)
 {
-	SpockCtx->failover_slots_db_connecting = connecting;
+	SpockCtx->failover_slots_db_connecting = false;
+	SpockCtx->failover_slots_db_failures = 0;
+}
+
+/* Failed attempts in a row, and when the last one was noticed */
+int
+spock_failover_slots_db_failures(TimestampTz *failed_at)
+{
+	*failed_at = SpockCtx->failover_slots_db_failed_at;
+	return SpockCtx->failover_slots_db_failures;
+}
+
+/* Let the next worker try the database again */
+void
+spock_failover_slots_db_request_retry(void)
+{
+	SpockCtx->failover_slots_db_retry = true;
 }
 
 /*

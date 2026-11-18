@@ -15,6 +15,13 @@
   slot ... does not exist`. A new copy now starts at the primary slot's
   `restart_lsn`, as PostgreSQL's own slot sync does, and is made permanent
   on the same pass when the standby still has that WAL.
+* After one failed connection to `spock.failover_slots_database`, the
+  failover slot worker synchronized slot copies without the consistent
+  snapshot check until the server was restarted, even when the cause was
+  temporary. The worker now tries again as soon as the database exists and
+  accepts connections. If connecting fails for another reason, it tries
+  again at once the first time and then after a wait of one to five minutes.
+  The worker is also restarted 15 seconds after it exits, down from 60.
 
 ## Spock 5.0.14
 
