@@ -55,6 +55,7 @@
 
 #include "utils/builtins.h"
 #include "utils/fmgroids.h"
+#include "utils/relcache.h"
 #include "utils/fmgrprotos.h"
 #include "utils/guc.h"
 #include "utils/inval.h"
@@ -1883,6 +1884,11 @@ synchronize_failover_slots(long sleep_time)
 	return sleep_time;
 }
 
+#if PG_VERSION_NUM >= 160000
+/* Is this worker running without the database it is configured with? */
+static bool without_database = false;
+#endif
+
 /*
  * Connect to spock.failover_slots_database if set: decoding a copy on the
  * standby needs a database connection, and on PG16 the slot's own
@@ -1897,29 +1903,121 @@ failover_slots_connect(void)
 
 	if (dbname && dbname[0])
 	{
-		if (!spock_failover_slots_db_connecting())
+		if (spock_failover_slots_db_connect_begin())
 		{
 			/*
-			 * A missing database makes the connection FATAL.  The flag then
-			 * stays set, so the restarted worker connects without a database
-			 * and slot sync goes on, without the snapshot check, until the
-			 * server is restarted with a corrected setting.
+			 * A database that is missing or refuses connections makes the
+			 * connection FATAL.  The restarted worker then connects without
+			 * a database, so slot sync goes on without the snapshot check,
+			 * and tries the database again later (see
+			 * failover_slots_db_retry_due()).
 			 */
-			spock_set_failover_slots_db_connecting(true);
 			BackgroundWorkerInitializeConnection(dbname, NULL, 0);
-			spock_set_failover_slots_db_connecting(false);
+			spock_failover_slots_db_connect_done();
 			return;
 		}
 		ereport(WARNING,
 				(errmsg("spock_failover_slots worker is not connecting to database \"%s\"",
 						dbname),
 				 errdetail("An earlier attempt to connect to it failed or was interrupted."),
-				 errhint("Correct spock.failover_slots_database if needed, then restart the "
-						 "server; the worker does not try again before that.")));
+				 errhint("While it synchronizes slots on a standby, the worker tries "
+						 "again once the database exists and accepts connections.  "
+						 "Correcting spock.failover_slots_database needs a server "
+						 "restart.")));
+		without_database = true;
 	}
 #endif
 	BackgroundWorkerInitializeConnection(NULL, NULL, 0);
 }
+
+#if PG_VERSION_NUM >= 160000
+/*
+ * Does the database named by spock.failover_slots_database exist and accept
+ * connections?  pg_database is a shared catalog, so a worker that is not
+ * connected to a database can read it.  Its index can be used only once
+ * the shared relcache file has been loaded, as in GetDatabaseTuple();
+ * opening it otherwise is FATAL in a process without a database.
+ */
+static bool
+failover_slots_db_connectable(void)
+{
+	Relation	rel;
+	ScanKeyData key;
+	SysScanDesc scan;
+	HeapTuple	tuple;
+	bool		connectable = false;
+
+	StartTransactionCommand();
+	rel = table_open(DatabaseRelationId, AccessShareLock);
+	ScanKeyInit(&key, Anum_pg_database_datname, BTEqualStrategyNumber,
+				F_NAMEEQ, CStringGetDatum(spock_failover_slots_database));
+	scan = systable_beginscan(rel, DatabaseNameIndexId,
+							  criticalSharedRelcachesBuilt, NULL, 1, &key);
+	tuple = systable_getnext(scan);
+	if (HeapTupleIsValid(tuple))
+	{
+		Form_pg_database dbform = (Form_pg_database) GETSTRUCT(tuple);
+
+		/* An invalid database is one whose drop was interrupted */
+		connectable = dbform->datallowconn &&
+			!database_is_invalid_form(dbform);
+	}
+	systable_endscan(scan);
+	table_close(rel, AccessShareLock);
+	CommitTransactionCommand();
+
+	return connectable;
+}
+
+/*
+ * How long to wait after a failed connection before trying again, when the
+ * database looked connectable all along and the cause is therefore unknown
+ * (the worker was terminated while connecting, or ran out of memory).  The
+ * first failure is retried at once; after that the wait starts at one
+ * minute and doubles up to five.  A failed attempt costs a restart of the
+ * worker, during which no slot is synchronized.
+ */
+#define DB_RETRY_WAIT_MIN_MS	(60 * 1000L)
+#define DB_RETRY_WAIT_MAX_MS	(5 * 60 * 1000L)
+
+/*
+ * Is it time for a worker running without spock.failover_slots_database to
+ * exit, so that the worker started in its place tries the database again?
+ * A background worker cannot connect to a database once it is running.
+ *
+ * Try again as soon as a database that was missing or refused connections
+ * becomes connectable.  If it was connectable all along, try again after
+ * the wait above.
+ */
+static bool
+failover_slots_db_retry_due(void)
+{
+	static bool seen_unconnectable = false;
+	TimestampTz failed_at;
+	int			failures;
+	long		wait_ms;
+
+	if (!failover_slots_db_connectable())
+	{
+		seen_unconnectable = true;
+		return false;
+	}
+	if (seen_unconnectable)
+		return true;
+
+	failures = spock_failover_slots_db_failures(&failed_at);
+	if (failures <= 1)
+		return true;
+
+	wait_ms = DB_RETRY_WAIT_MIN_MS;
+	for (int i = 2; i < failures && wait_ms < DB_RETRY_WAIT_MAX_MS; i++)
+		wait_ms *= 2;
+	wait_ms = Min(wait_ms, DB_RETRY_WAIT_MAX_MS);
+
+	return TimestampDifferenceExceeds(failed_at, GetCurrentTimestamp(),
+									  (int) wait_ms);
+}
+#endif
 
 void
 spock_failover_slots_main(Datum main_arg)
@@ -1971,7 +2069,19 @@ spock_failover_slots_main(Datum main_arg)
 			&& !(spock_use_native_failover_slots && sync_replication_slots)
 #endif
 			)
+		{
+#if PG_VERSION_NUM >= 160000
+			if (without_database && failover_slots_db_retry_due())
+			{
+				spock_failover_slots_db_request_retry();
+				ereport(LOG,
+						(errmsg("spock_failover_slots worker is restarting to connect to database \"%s\"",
+								spock_failover_slots_database)));
+				proc_exit(1);
+			}
+#endif
 			sleep_time = synchronize_failover_slots(spock_failover_slots_naptime);
+		}
 		else
 		{
 			/*
@@ -2528,7 +2638,7 @@ spock_init_failover_slot(void)
 	snprintf(bgw.bgw_library_name, BGW_MAXLEN, "spock");
 	snprintf(bgw.bgw_function_name, BGW_MAXLEN, "spock_failover_slots_main");
 	snprintf(bgw.bgw_name, BGW_MAXLEN, "spock_failover_slots worker");
-	bgw.bgw_restart_time = 60;
+	bgw.bgw_restart_time = 15;
 
 	RegisterBackgroundWorker(&bgw);
 
