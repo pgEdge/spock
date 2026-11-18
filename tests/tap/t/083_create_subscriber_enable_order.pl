@@ -105,6 +105,24 @@ sub provider_slots {
     remove_tree($n2_datadir) if -d $n2_datadir;
 }
 
+# A configuration that cannot host spock must stop the run, with the slot dropped.
+for my $case (
+    [ 'wal_level=replica',                  qr/wal_level is "replica" .* must be "logical"/ ],
+    [ "shared_preload_libraries=''",        qr/shared_preload_libraries .* does not include "spock"/ ],
+) {
+    my ($setting, $re) = @$case;
+    my $auto = '/tmp/tmp_spock_node_1_auto.conf.override_083';
+    open my $af, '>', $auto or die $!;
+    print $af "$setting\n";
+    close $af;
+    my ($rc, $out) = run_scs("--postgresql-auto-conf '$auto'");
+    isnt($rc, 0, "$setting makes the utility fail");
+    like($out, $re, "the rejection names the setting for $setting");
+    is(provider_slots(), '0', "the run left no slot on the provider for $setting");
+    remove_tree($n2_datadir) if -d $n2_datadir;
+    unlink($auto);
+}
+
 # A non-spock object depending on spock must stop the run before anything is dropped.
 system_or_bail "$pg_bin/psql", '-q', '-p', $n1_port, '-d', $dbname, '-c',
     'CREATE VIEW v083 AS SELECT * FROM spock.node';
