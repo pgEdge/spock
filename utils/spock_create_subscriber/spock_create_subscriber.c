@@ -309,6 +309,8 @@ static void install_extension(PGconn *conn, const char *extname);
 
 static void ensure_trailing_newline(const char *path);
 static void ensure_output_plugin_libraries_has_spock(const char *data_dir);
+static char *read_postgres_guc(const char *data_dir, const char *name);
+static void check_subscriber_config(const char *data_dir, bool bidirectional);
 static void initialize_data_dir(char *data_dir, char *connstr,
 								char *postgresql_conf, char *postgresql_auto_conf,
 								char *pg_hba_conf, char *extra_basebackup_args);
@@ -3046,6 +3048,7 @@ run_basebackup_and_write_manifest(SubscriberCreateContext *ctx)
 						ctx->postgresql_conf, ctx->postgresql_auto_conf, ctx->pg_hba_conf,
 						ctx->extra_basebackup_args);
 	snprintf(pid_file, MAXPGPATH, "%s/postmaster.pid", data_dir);
+	check_subscriber_config(data_dir, ctx->bidir.enabled);
 
 	if (ctx->bidir.enabled)
 	{
@@ -4148,6 +4151,87 @@ ensure_output_plugin_libraries_has_spock(const char *data_dir)
 	free(escaped);
 
 	ensure_trailing_newline(auto_conf_path);
+}
+
+/*
+ * Return the value "postgres -C" reports for GUC "name" in data_dir's
+ * configuration, without starting the server; dies if it cannot be read.
+ */
+static char *
+read_postgres_guc(const char *data_dir, const char *name)
+{
+	char	   *exec_path = find_other_exec_or_die(argv0, "postgres");
+	PQExpBuffer cmd = createPQExpBuffer();
+	FILE	   *fp;
+	char		value[1024];
+	size_t		len;
+
+	appendPQExpBuffer(cmd, "\"%s\" -C %s -D \"%s\" 2>/dev/null",
+					  exec_path, name, data_dir);
+	fp = popen(cmd->data, "r");
+	if (fp == NULL)
+		die(_("could not run \"%s\": %s\n"), cmd->data, strerror(errno));
+	if (fgets(value, sizeof(value), fp) == NULL)
+		value[0] = '\0';
+	if (pclose(fp) != 0)
+		die(_("could not read %s from the configuration of \"%s\"\n"),
+			name, data_dir);
+	destroyPQExpBuffer(cmd);
+
+	len = strlen(value);
+	if (len > 0 && value[len - 1] == '\n')
+		value[len - 1] = '\0';
+	return pg_strdup(value);
+}
+
+/*
+ * Check that the configuration the new node will run with, once the
+ * overrides are applied, can host spock replication.  Checked here instead of
+ * letting the node fail after the catchup, or join without commit
+ * timestamps.
+ */
+static void
+check_subscriber_config(const char *data_dir, bool bidirectional)
+{
+	char	   *value;
+	char	   *tok;
+	char	   *saveptr;
+	bool		found = false;
+
+	value = read_postgres_guc(data_dir, "wal_level");
+	if (strcmp(value, "logical") != 0)
+		die(_("wal_level is \"%s\" in the configuration of \"%s\"; it must be \"logical\"\n"),
+			value, data_dir);
+	pg_free(value);
+
+	value = read_postgres_guc(data_dir, "shared_preload_libraries");
+	for (tok = strtok_r(value, ",", &saveptr); tok != NULL;
+		 tok = strtok_r(NULL, ",", &saveptr))
+	{
+		size_t		toklen;
+
+		while (*tok == ' ' || *tok == '"')
+			tok++;
+		toklen = strlen(tok);
+		while (toklen > 0 && (tok[toklen - 1] == ' ' || tok[toklen - 1] == '"'))
+			tok[--toklen] = '\0';
+		if (strcmp(tok, "spock") == 0)
+			found = true;
+	}
+	if (!found)
+		die(_("shared_preload_libraries in the configuration of \"%s\" does not include \"spock\"\n"),
+			data_dir);
+	pg_free(value);
+
+	if (bidirectional)
+	{
+		value = read_postgres_guc(data_dir, "track_commit_timestamp");
+		if (strcmp(value, "on") != 0)
+			die(_("track_commit_timestamp is \"%s\" in the configuration of \"%s\"; "
+				  "it must be \"on\" for bidirectional join\n"),
+				value, data_dir);
+		pg_free(value);
+	}
 }
 
 /*

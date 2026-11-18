@@ -690,6 +690,40 @@ is(scalar_query(1, "SELECT COUNT(*) FROM pg_replication_slots WHERE slot_name LI
 system_or_bail "$pg_bin/psql", '-q', '-p', $node_ports->[0], '-d', $dbname, '-c',
     "SET spock.enable_ddl_replication = off; DROP VIEW pn_dep_view";
 remove_tree($dir10) if -d $dir10;
+
+# =============================================================================
+# Scenario 11: the new node's own configuration lacks track_commit_timestamp.
+# The base backup inherits "on" from the source; the override turns it off, so
+# the join must stop once the overrides are applied.
+# =============================================================================
+note("Scenario 11: track_commit_timestamp off in the new node's configuration");
+my $dir11 = fresh_datadir();
+my $n3c_auto = '/tmp/tmp_spock_node_2_postgresql.auto.conf.override.n3c';
+open my $auto_fh, '>', $n3c_auto or die "Cannot write $n3c_auto: $!";
+print $auto_fh "track_commit_timestamp=off\n";
+close $auto_fh;
+
+$before = log_size();
+ok(!system_maybe($SCS_BIN,
+      '--bidirectional',
+      '--pgdata',              $dir11,
+      '--subscriber-name',     'n3',
+      '--provider-dsn',        $n1_dsn,
+      '--subscriber-dsn',      $n3c_dsn,
+      '--postgresql-conf',     $n3c_conf,
+      '--postgresql-auto-conf', $n3c_auto),
+   '--bidirectional rejects a new node configured with track_commit_timestamp=off');
+ok(log_tail_has(qr/track_commit_timestamp is "off" in the configuration of/, $before),
+   'rejection names track_commit_timestamp');
+
+command_ok(
+    [ $SCS_BIN, '--bidirectional', '--cleanup', '--force', '--pgdata', $dir11 ],
+    '--cleanup --force removes the rejected join\'s state'
+);
+is(scalar_query(1, "SELECT COUNT(*) FROM pg_replication_slots WHERE slot_name LIKE 'spk_%n3%'"),
+   '0', 'no source slot remains after cleanup');
+remove_tree($dir11) if -d $dir11;
+unlink($n3c_auto) if -f $n3c_auto;
 unlink($n3c_conf) if -f $n3c_conf;
 
 # =============================================================================
