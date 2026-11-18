@@ -1035,9 +1035,13 @@ jobs:
         needs: [determine-repo-type, push-dnf, push-apt]
         # Real tag pushes only — never on workflow_dispatch / simulate_tag, and
         # only once the packages for this tag have actually been published.
+        # daily repo_type is a test/dev tag (e.g. v5.0.11-test1) and must not
+        # get a public GitHub Release; only staging (rc/beta/final) do. A
+        # final tag becomes "Latest"; rc/beta are marked pre-release below.
         if: >-
             github.event_name == 'push'
             && github.ref_type == 'tag'
+            && needs.determine-repo-type.outputs.repo-type != 'daily'
             && needs.push-dnf.result == 'success'
             && needs.push-apt.result == 'success'
         runs-on: ubuntu-latest
