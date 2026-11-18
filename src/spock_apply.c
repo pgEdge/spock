@@ -866,17 +866,30 @@ handle_begin(StringInfo s)
 				}
 			}
 
-			/* TODO: What to do if we can't find a free slot? */
-			if (free_slot_index == -1)
-			{
-				/* no free entries found. */
-				elog(ERROR, "SPOCK %s: unable to find an empty exception log slot.",
-					 MySubscription->name);
-			}
-
 			/* We didn't find a slot, but we have a valid index. */
 			if (!slot_found)
 			{
+				/*
+				 * Only an error if we need a new entry: another worker may
+				 * have taken our name since the unlocked search, and the loop
+				 * stops there before seeing a free entry.  Release the lock
+				 * first, since we are outside a transaction and nothing else
+				 * will.  Class 53 makes apply_work() restart the worker
+				 * instead of replaying with no entry.
+				 */
+				if (free_slot_index == -1)
+				{
+					LWLockRelease(SpockCtx->lock);
+					ereport(ERROR,
+							(errcode(ERRCODE_CONFIGURATION_LIMIT_EXCEEDED),
+							 errmsg("SPOCK %s: unable to find an empty exception log slot",
+									MySubscription->name),
+							 errdetail("All %d entries of the exception log are in use.",
+									   SpockCtx->total_workers),
+							 errhint("Entries are freed only when the server restarts.  "
+									 "Restart the server, or increase max_worker_processes.")));
+				}
+
 				/*
 				 * TODO: What happens if a subscription is dropped? Memory
 				 * leak
@@ -4442,6 +4455,20 @@ stream_replay:
 		 */
 
 		/*
+		 * Replay needs this worker's exception log entry, which is assigned
+		 * on the first BEGIN.  An error before that, from the startup message
+		 * or a malformed BEGIN, would write to exception_log_ptr[-1] below,
+		 * so restart the worker instead.  A permanent one, such as an
+		 * unsupported startup message version, retries until it is fixed.
+		 */
+		if (my_exception_log_index < 0)
+		{
+			prepare_transient_error_retry(edata,
+										  "error before the exception log entry was assigned");
+			PG_RE_THROW();
+		}
+
+		/*
 		 * Reaching this point means that we are dealing with the first
 		 * occurrence of an exception in the default, non-exception-handling
 		 * mode. We need to abort the current toplevel transactions and reset
@@ -4792,14 +4819,24 @@ spock_execute_sql_command(char *cmdstr, char *role, bool isTopLevel)
 
 			/*
 			 * By the time SQL is in the queue it has already been filtered on
-			 * origin, so we can just add it to the replication set here.
+			 * origin, so we can just add it to the replication set here. The
+			 * statement ran as the current user.
 			 */
-			add_ddl_to_repset(pstmt->utilityStmt);
+			add_ddl_to_repset(pstmt->utilityStmt, GetUserId());
 		}
 
 		PortalDrop(portal, false);
 
 		CommandCounterIncrement();
+
+		/*
+		 * spock.replicate_ddl() has already queued the statement.  Refuse one
+		 * aimed at a node-local extension; this runs after the statement so
+		 * that a CREATE EXTENSION ... CASCADE can be checked against what it
+		 * installed.
+		 */
+		if (in_spock_replicate_ddl_command)
+			spock_refuse_ddl_local_extension(command->stmt);
 
 		/*
 		 * Restore the GUC variables we set above.

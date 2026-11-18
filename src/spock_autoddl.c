@@ -53,8 +53,9 @@ static void remove_table_from_repsets(Oid nodeid, Oid reloid,
 									  bool only_for_update);
 static bool autoddl_can_proceed(Node *parsetree, ProcessUtilityContext context,
 								NodeTag toplevel_stmt);
-static bool extract_ddl_target(Node *parsetree, RangeVar **relation,
-							   Oid *reloid, bool *missing_ok,
+static bool extract_ddl_target(Node *parsetree, Oid stmt_userid,
+							   RangeVar **relation, Oid *reloid,
+							   bool *missing_ok,
 							   bool *check_alter_stickiness);
 static void apply_repset_policy_for_reloid(SpockLocalNode *node, Oid reloid,
 										   AlterTableStmt *atstmt);
@@ -137,7 +138,7 @@ spock_autoddl_process(PlannedStmt *pstmt,
 								 list_make1(DEFAULT_INSONLY_REPSET_NAME),
 								 GetUserId(),
 								 parsetree))
-		add_ddl_to_repset(parsetree);
+		add_ddl_to_repset(parsetree, save_userid);
 
 end:
 	/* Restore previous session privileges */
@@ -163,7 +164,7 @@ end:
  *	   UNLOGGED/TEMP skip and default/insert-only repset routing.
  */
 void
-add_ddl_to_repset(Node *parsetree)
+add_ddl_to_repset(Node *parsetree, Oid stmt_userid)
 {
 	Relation	targetrel;
 	SpockLocalNode *node;
@@ -178,8 +179,8 @@ add_ddl_to_repset(Node *parsetree)
 	if (!spock_include_ddl_repset)
 		return;
 
-	if (!extract_ddl_target(parsetree, &relation, &reloid, &missing_ok,
-							&check_alter_stickiness))
+	if (!extract_ddl_target(parsetree, stmt_userid, &relation, &reloid,
+							&missing_ok, &check_alter_stickiness))
 		return;
 
 	node = get_local_node(false, true);
@@ -213,6 +214,39 @@ add_ddl_to_repset(Node *parsetree)
 }
 
 /*
+ * create_schema_name
+ *		The name of the schema a CREATE SCHEMA statement created.
+ *
+ * Without a name, the schema is named after its AUTHORIZATION role, as in
+ * CreateSchemaCommand().  CURRENT_USER and CURRENT_ROLE mean stmt_userid,
+ * the user the statement ran as: the caller may have switched users since.
+ */
+static char *
+create_schema_name(CreateSchemaStmt *stmt, Oid stmt_userid)
+{
+	RoleSpec   *role = stmt->authrole;
+
+	if (stmt->schemaname != NULL)
+		return stmt->schemaname;
+
+	Assert(role != NULL);
+	switch (role->roletype)
+	{
+		case ROLESPEC_CSTRING:
+			return role->rolename;
+		case ROLESPEC_CURRENT_ROLE:
+		case ROLESPEC_CURRENT_USER:
+			return GetUserNameFromId(stmt_userid, false);
+		case ROLESPEC_SESSION_USER:
+			return GetUserNameFromId(GetSessionUserId(), false);
+		case ROLESPEC_PUBLIC:
+			break;
+	}
+	elog(ERROR, "unexpected role type %d in CREATE SCHEMA", (int) role->roletype);
+	return NULL;				/* keep compiler quiet */
+}
+
+/*
  * extract_ddl_target
  *		Parse-tree dispatch: decide whether this DDL targets a table that
  *		auto-DDL should auto-manage, and if so, fill in the target outputs.
@@ -233,8 +267,8 @@ add_ddl_to_repset(Node *parsetree)
  *							  policy
  */
 static bool
-extract_ddl_target(Node *parsetree, RangeVar **relation, Oid *reloid,
-				   bool *missing_ok, bool *check_alter_stickiness)
+extract_ddl_target(Node *parsetree, Oid stmt_userid, RangeVar **relation,
+				   Oid *reloid, bool *missing_ok, bool *check_alter_stickiness)
 {
 	switch (nodeTag(parsetree))
 	{
@@ -295,12 +329,27 @@ extract_ddl_target(Node *parsetree, RangeVar **relation, Oid *reloid,
 		case T_CreateSchemaStmt:
 			{
 				CreateSchemaStmt *cstmt = (CreateSchemaStmt *) parsetree;
+				char	   *nspname = create_schema_name(cstmt, stmt_userid);
 				ListCell   *cell;
 
+				/*
+				 * The elements may name their tables without a schema.  Up to
+				 * PostgreSQL 18 the server filled in the new schema in this
+				 * parse tree; from 19rc2 it does that on a copy.  Fill it in
+				 * here, on our own copy, so the lookup finds the new table
+				 * rather than one in the search path.
+				 */
 				foreach(cell, cstmt->schemaElts)
 				{
-					if (nodeTag(lfirst(cell)) == T_CreateStmt)
-						add_ddl_to_repset(lfirst(cell));
+					CreateStmt *elt;
+
+					if (!IsA(lfirst(cell), CreateStmt))
+						continue;
+
+					elt = copyObject(lfirst_node(CreateStmt, cell));
+					if (elt->relation->schemaname == NULL)
+						elt->relation->schemaname = nspname;
+					add_ddl_to_repset((Node *) elt, stmt_userid);
 				}
 				return false;
 			}
@@ -323,7 +372,8 @@ extract_ddl_target(Node *parsetree, RangeVar **relation, Oid *reloid,
 
 				if (analyze &&
 					castNode(Query, stmt->query)->commandType == CMD_UTILITY)
-					add_ddl_to_repset(castNode(Query, stmt->query)->utilityStmt);
+					add_ddl_to_repset(castNode(Query, stmt->query)->utilityStmt,
+									  stmt_userid);
 
 				return false;
 			}

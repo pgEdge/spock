@@ -329,7 +329,7 @@ the LSN alone is set for every transaction.
 ## 8. Compatibility and upgrade
 
 * The same SQL section is appended to `spock--6.0.0.sql` and to
-  `spock--5.0.13--6.0.0.sql`. Every catalog column the views reference
+  `spock--5.0.14--6.0.0.sql`. Every catalog column the views reference
   exists since 5.0.6, so an upgraded node ends with the same objects as a
   fresh install.
 * `spock.get_apply_worker_status()` is kept for existing callers, as a SQL

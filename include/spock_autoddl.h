@@ -27,6 +27,6 @@ void		spock_autoddl_process(PlannedStmt *pstmt,
 								  const char *queryString,
 								  ProcessUtilityContext context,
 								  NodeTag toplevel_stmt);
-void		add_ddl_to_repset(Node *parsetree);
+void		add_ddl_to_repset(Node *parsetree, Oid stmt_userid);
 
 #endif							/* SPOCK_AUTODDL_H */

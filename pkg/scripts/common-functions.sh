@@ -201,6 +201,58 @@ install_repo_client_cert() {
   return 0
 }
 
+# Make an extension build use the same LLVM as the PostgreSQL server it builds
+# against.
+#
+# The server's pgxs records two things: LLVM_BINPATH (versioned, e.g.
+# /usr/lib64/llvm21/bin -- used for llvm-lto/llvm-link) and CLANG (the clang
+# that compiles the extension's JIT bitcode). When the build image's default
+# LLVM moves on (AlmaLinux 9.9 / 10.3 went 21 -> 22) the two disagree: clang 22
+# writes bitcode that llvm-lto 21 cannot read, and the bitcode install step fails
+# with "Unknown attribute kind" -- or with exit 127 when llvm-lto is not even
+# installed. Bitcode must be produced and linked by the server's LLVM.
+#
+# So: read LLVM_BINPATH, install that LLVM's clang/llvm if they are missing
+# (llvmNN/clangNN, from EPEL when NN is not the distro default), and point CLANG
+# at it. CLANG goes through MAKEFLAGS because Makefile.global assigns it, which
+# beats a plain environment variable; a MAKEFLAGS assignment counts as a
+# command-line override and reaches every make that rpmbuild runs.
+align_pg_llvm_toolchain() {
+  local mk="/usr/pgsql-${PG_MAJOR_VERSION}/lib/pgxs/src/Makefile.global"
+  if [ ! -f "$mk" ]; then
+    echo "Error: $mk not found; is pgedge-postgresql${PG_MAJOR_VERSION}-devel installed?" >&2
+    return 1
+  fi
+
+  local binpath
+  binpath=$(sed -n 's/^LLVM_BINPATH *= *//p' "$mk")
+  if [ -z "$binpath" ]; then
+    echo "PostgreSQL ${PG_MAJOR_VERSION} was built without LLVM; no JIT toolchain to align."
+    return 0
+  fi
+
+  if [ ! -x "$binpath/clang" ] || [ ! -x "$binpath/llvm-lto" ]; then
+    local major
+    major=$(printf '%s' "$binpath" | sed -n 's|.*/llvm\([0-9][0-9]*\)/bin$|\1|p')
+    if [ -z "$major" ]; then
+      echo "Error: cannot tell the LLVM major from LLVM_BINPATH=$binpath" >&2
+      return 1
+    fi
+    echo "Server was built with LLVM ${major}; installing llvm${major} and clang${major}..."
+    # Compat packages first; plain llvm/clang when NN is the distro default.
+    dnf install -y "llvm${major}" "clang${major}" \
+      || dnf install -y llvm clang \
+      || return 1
+    if [ ! -x "$binpath/clang" ] || [ ! -x "$binpath/llvm-lto" ]; then
+      echo "Error: no clang/llvm-lto in $binpath after installing LLVM ${major}." >&2
+      return 1
+    fi
+  fi
+
+  export MAKEFLAGS="${MAKEFLAGS:+$MAKEFLAGS }CLANG=$binpath/clang"
+  echo "Extension bitcode will use $binpath/clang ($("$binpath/clang" --version | head -1))."
+}
+
 setup_dnf_build_env(){
 
   echo "Installing required packages..."
@@ -220,6 +272,14 @@ setup_dnf_build_env(){
 
   echo "Configuring pgEdge repository..."
   configure_pgedge_dnf_repo $REPO_TYPE
+
+  # Extensions: compile JIT bitcode with the LLVM the server was built with.
+  if [ -n "${PG_MAJOR_VERSION:-}" ] \
+     && grep -qs 'pgedge-postgresql%{pgmajorversion}-devel' "${COMPONENT_DIR:-.}"/rpm/*.spec; then
+    echo "Installing pgedge-postgresql${PG_MAJOR_VERSION}-devel to match its LLVM toolchain..."
+    dnf install -y "pgedge-postgresql${PG_MAJOR_VERSION}-devel" || return 1
+    align_pg_llvm_toolchain || return 1
+  fi
 
   echo "Setting up RPM build environment..."
   rpmdev-setuptree

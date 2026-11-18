@@ -16,9 +16,13 @@ use SpockTest qw(create_cluster destroy_cluster system_or_bail system_maybe
 #   - stream large objects created after the join,
 #   - leave the lolor tables in the new node's own default replication set,
 #     so large objects created there replicate back to the existing nodes.
-# After that, the cluster drops lolor without shipping its cleanup DDL, then
-# recreates it, migrates the native large objects back on every node, and
-# replicates a new large object again.
+# After that, the cluster drops lolor on each node, then recreates it,
+# migrates the native large objects back on every node, and replicates a new
+# large object again.
+#
+# CREATE and DROP EXTENSION lolor are node-local (the lolor extension row in
+# spock.reserved_object has replicate_ddl = false), so they are run on each
+# node rather than arriving through DDL replication.
 
 my $cfg   = get_test_config();
 my $PG    = $cfg->{pg_bin};
@@ -85,11 +89,19 @@ ok(psql_ok(3, "SELECT spock.node_drop('n3')"), 'n3 spock node registration dropp
 ok(psql_ok(3, "CREATE EXTENSION IF NOT EXISTS dblink"), 'dblink installed on n3');
 
 # lolor on the source cluster, its tables in the default replication set.
-# n1 and n2 are cross-wired with automatic DDL replication, so CREATE
-# EXTENSION on n1 arrives on n2 by itself.
-ok(psql_ok(1, "CREATE EXTENSION lolor"), 'lolor installed on n1');
-ok(wait_for_scalar(2, "SELECT count(*) FROM pg_extension WHERE extname = 'lolor'", '1'),
-   'lolor arrived on n2 via DDL replication');
+# n1 and n2 are cross-wired with automatic DDL replication, but CREATE
+# EXTENSION lolor is node-local, so it is run on each node.
+
+# The queued DDL message is a bare JSON string ("SET search_path ...; <stmt>"),
+# not an object, so #>> '{}' is how the statement text comes back out.
+my $queued = "message #>> '{}'";
+
+for my $node (1, 2) {
+    ok(psql_ok($node, "CREATE EXTENSION lolor"), "lolor installed on n$node");
+}
+is(scalar_query(1,
+    "SELECT count(*) FROM spock.queue WHERE $queued ILIKE '%CREATE EXTENSION%lolor%'"),
+   '0', 'CREATE EXTENSION lolor was not queued for replication');
 for my $node (1, 2) {
     ok(psql_ok($node, "SELECT spock.repset_add_table('default', 'lolor.pg_largeobject')"),
        "lolor.pg_largeobject in default repset on n$node");
@@ -190,27 +202,21 @@ for my $node (1, 2) {
        "metadata for the n3 large object replicated to n$node");
 }
 
-# --- DROP EXTENSION: lolor's cleanup must not replicate ---------------------
+# --- DROP EXTENSION: node-local, and so is lolor's cleanup ------------------
 #
-# lolor's ddl_command_start event trigger calls lolor.disable() through SPI,
-# which issues ~40 "ALTER FUNCTION pg_catalog.lo_*(...) RENAME TO ..."
-# statements to put the native large object API back. Those belong to the node
-# running the drop: every peer runs its own copy when it applies the
-# replicated DROP EXTENSION. Shipping them as well lands the renames on the
-# peer ahead of the drop, leaving lolor disabled out of band, and the drop
-# that follows then fails in migrate_to_native() with "lolor must be enabled
-# before migration to native" -- which stalls apply.
+# DROP EXTENSION lolor is node-local, so nothing about it may be queued:
+# neither the drop itself nor its cleanup. lolor's ddl_command_start event
+# trigger calls lolor.disable() through SPI, which issues ~40 "ALTER FUNCTION
+# pg_catalog.lo_*(...) RENAME TO ..." statements to put the native large
+# object API back. Shipping those would land the renames on a peer that still
+# has lolor, leaving it disabled out of band.
 #
 # Runs after the add_node checks: it removes the extension they depend on.
 # The section below puts it back.
 #
 # spock.allow_ddl_from_functions is enabled deliberately. With it off, DDL
-# arriving from a function is never a replication candidate, and this would
-# pass without exercising the guard at all.
-
-# The queued DDL message is a bare JSON string ("SET search_path ...; <stmt>"),
-# not an object, so #>> '{}' is how the statement text comes back out.
-my $queued = "message #>> '{}'";
+# arriving from a function is never a replication candidate, and the cleanup
+# check would pass without exercising the guard at all.
 
 # Fence table, used below to show the peers are still applying after the drop.
 ok(psql_ok(1, "CREATE TABLE public.fence (id int primary key, v text)"),
@@ -231,31 +237,45 @@ is(scalar_query(1,
     or diag("queued DDL was:\n" . (psql_capture(1,
         "SELECT message #>> '{}' FROM spock.queue ORDER BY queued_at"))[1]);
 
-isnt(scalar_query(1,
+is(scalar_query(1,
     "SELECT count(*) FROM spock.queue WHERE $queued ILIKE '%DROP EXTENSION%lolor%'"),
-   '0', 'the DROP EXTENSION itself was queued for replication');
+   '0', 'the DROP EXTENSION itself was not queued: lolor is node-local');
 
-for my $node (2, 3) {
-    ok(wait_for_scalar($node,
-        "SELECT count(*) FROM pg_extension WHERE extname = 'lolor'", '0'),
-       "DROP EXTENSION replicated: lolor is gone on n$node");
-
-    # Each peer must have run its OWN cleanup while applying the drop:
-    # disable() renames lo_open_orig back to lo_open, so the _orig name is
-    # gone afterwards. This separates "we suppressed the replication" from
-    # "we suppressed the cleanup".
-    is(scalar_query($node, "SELECT count(*) FROM pg_proc WHERE proname = 'lo_open_orig'"),
-       '0', "n$node ran its own lolor cleanup: native lo_open restored");
-    is(scalar_query($node, "SELECT count(*) FROM pg_proc WHERE proname = 'lo_open'"),
-       '1', "n$node has exactly one lo_open, the native one");
-}
-
-# Apply is still healthy on both peers.
+# Apply is still healthy on both peers, and has got past the drop.
 ok(psql_ok(1, "INSERT INTO public.fence (id, v) VALUES (1, 'after-drop')"),
    'fence row inserted on n1 after the drop');
 for my $node (2, 3) {
     ok(wait_for_scalar($node, "SELECT v FROM public.fence WHERE id = 1", 'after-drop'),
        "fence row reached n$node after the drop, so apply did not stall");
+    is(scalar_query($node, "SELECT count(*) FROM pg_extension WHERE extname = 'lolor'"),
+       '1', "lolor is still installed on n$node: the drop stayed on n1");
+}
+
+# Drop it on each peer directly.
+for my $node (2, 3) {
+    ok(psql_ok($node, "SET spock.allow_ddl_from_functions = on; DROP EXTENSION lolor"),
+       "lolor dropped on n$node");
+    is(scalar_query($node, "SELECT count(*) FROM pg_extension WHERE extname = 'lolor'"),
+       '0', "lolor is gone on n$node");
+
+    # disable() renames lo_open_orig back to lo_open, so the _orig name is
+    # gone afterwards.
+    is(scalar_query($node, "SELECT count(*) FROM pg_proc WHERE proname = 'lo_open_orig'"),
+       '0', "n$node ran its lolor cleanup: native lo_open restored");
+    is(scalar_query($node, "SELECT count(*) FROM pg_proc WHERE proname = 'lo_open'"),
+       '1', "n$node has exactly one lo_open, the native one");
+    is(scalar_query($node,
+        "SELECT count(*) FROM spock.queue WHERE $queued ILIKE '%ALTER FUNCTION%RENAME%' " .
+        "OR $queued ILIKE '%DROP EXTENSION%lolor%'"),
+       '0', "nothing from the drop on n$node was queued");
+}
+
+# Apply is still healthy after every node has dropped lolor.
+ok(psql_ok(1, "INSERT INTO public.fence (id, v) VALUES (2, 'after-all-drops')"),
+   'fence row inserted on n1 after every drop');
+for my $node (2, 3) {
+    ok(wait_for_scalar($node, "SELECT v FROM public.fence WHERE id = 2", 'after-all-drops'),
+       "fence row reached n$node after every drop");
 }
 
 # --- Recreate lolor after the drop and replicate large objects again --------
@@ -273,10 +293,8 @@ for my $node (2, 3) {
 # shows 'f'), and the apply worker then skips every later change to that
 # table on that subscription, silently. New large objects never arrive.
 
-ok(psql_ok(1, "CREATE EXTENSION lolor"), 'lolor recreated on n1');
-for my $node (2, 3) {
-    ok(wait_for_scalar($node, "SELECT count(*) FROM pg_extension WHERE extname = 'lolor'", '1'),
-       "recreated lolor arrived on n$node via DDL replication");
+for my $node (1, 2, 3) {
+    ok(psql_ok($node, "CREATE EXTENSION lolor"), "lolor recreated on n$node");
 }
 
 # Three large objects exist (deadbeefcafe, feedface, c0ffee); after the drop

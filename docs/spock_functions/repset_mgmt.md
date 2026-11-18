@@ -96,13 +96,33 @@ source of truth for three behaviours:
   that already has them would fail.
 - `block_in_repset`: a table in this schema, or belonging to this extension,
   may not be added to a replication set.
-- `replicate_ddl`: applies to schemas only. When `false`, AutoDDL keeps DDL
-  targeting this schema node-local -- it runs where issued but is not shipped
-  to other nodes. It is not meaningful for extensions, so it is required for
-  `schema` rows and is `NULL` for `extension` rows (a `CHECK` enforces this,
-  and `reserved_object_add` sets it to `NULL` automatically for an extension).
+- `replicate_ddl`: when `false`, AutoDDL keeps the object's DDL node-local
+  -- it runs where issued but is not shipped to other nodes. The default is
+  `true`.
 
-  Only DDL whose target schema Spock can identify is kept local: `CREATE`
+  For an extension, `CREATE EXTENSION`, `ALTER EXTENSION`, `DROP
+  EXTENSION`, `COMMENT ON EXTENSION` and `SECURITY LABEL ON EXTENSION` are
+  kept local; run them on each node. A `DROP EXTENSION` that names both a
+  node-local extension and a replicated one is refused while DDL replication
+  is on; drop them in separate statements. `CREATE EXTENSION ... CASCADE` of
+  a replicated extension that requires a node-local one is also refused, even
+  when every required extension is already installed; create the node-local
+  extension on each node first, then run the `CREATE EXTENSION` without
+  `CASCADE`. `spock.replicate_ddl()` refuses all of these statements for a
+  node-local extension. Whatever a statement on a node-local extension does
+  with `CASCADE` also stays on the local node: objects that depend on the
+  extension are dropped only there, and extensions that `CREATE EXTENSION
+  ... CASCADE` installs are installed only there.
+
+  A statement that removes a node-local extension without naming it is not
+  caught: `DROP EXTENSION ... CASCADE` of an extension it requires, `DROP
+  SCHEMA ... CASCADE` of a schema it was created in, or `DROP OWNED BY` its
+  owner. Such a statement replicates, and each peer must then drop the
+  node-local extension from its apply worker. Drop the node-local extension
+  on each node first.
+
+  For a schema, only DDL whose target schema Spock can identify is kept
+  local: `CREATE`
   `SCHEMA`/`TABLE`/`TABLE AS`/`SEQUENCE`/`VIEW`/`INDEX`, `ALTER TABLE`, and
   `DROP` of those object kinds. Other DDL against the schema (for example
   `GRANT`, `COMMENT`, `TRUNCATE`, or `ALTER ... SET SCHEMA`) is not classified
@@ -124,8 +144,11 @@ modified:
 
 `spock`, `snowflake`, `lolor` and `coldfront` each have both a `schema` and an
 `extension` row. The `replicate_ddl` column above is the value on the
-`schema` row; the `extension` row carries `replicate_ddl = NULL` (not
-applicable), while `exclude_from_dump`/`block_in_repset` apply to both.
+`schema` row. The `extension` rows have `replicate_ddl = true` (replicated),
+except `lolor`, whose extension row is `false`: lolor refuses to be created
+or dropped by an apply worker, so `CREATE`, `ALTER` and `DROP EXTENSION
+lolor` are run on each node instead of being replicated.
+`exclude_from_dump`/`block_in_repset` apply to both rows.
 
 `lolor` is excluded from the dump but is intentionally allowed in replication
 sets: its tables must replicate so that large objects survive a
@@ -383,7 +406,7 @@ changed.
 
 `spock.reserved_object_add(p_name name, p_kind text, p_exclude_from_dump bool
 DEFAULT true, p_block_in_repset bool DEFAULT true, p_replicate_ddl bool
-DEFAULT NULL)`
+DEFAULT true)`
 
 Parameters:
 
@@ -393,11 +416,10 @@ Parameters:
   default is `true`.
 - `p_block_in_repset` blocks the object from replication sets; the default is
   `true`.
-- `p_replicate_ddl` applies to schemas only. For a schema, leaving it unset
-  (`NULL`) defaults to `true`; pass `false` to keep the schema node-local so
-  AutoDDL does not ship its DDL to other nodes (as `pgedge_ace` is). For
-  `p_kind = 'extension'` the argument is ignored and the value is stored as
-  `NULL`.
+- `p_replicate_ddl`: pass `false` to keep the object node-local so AutoDDL
+  does not ship its DDL to other nodes (as `pgedge_ace` and the `lolor`
+  extension are). The default is `true`, and an explicit `NULL` is taken as
+  `true`.
 
 ### spock.reserved_object_remove
 

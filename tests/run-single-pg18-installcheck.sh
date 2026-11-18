@@ -681,9 +681,33 @@ wire_full_mesh() {
 # Run `make installcheck` against the target node
 # ---------------------------------------------------------------------------
 
+# rowtypes_alter and attribute_version (new in 15.20, 16.16, 17.12, 18.7 and
+# 19rc2) store composite values that can no longer be read, on purpose.
+# Decoding those INSERTs has to read them, so every output plugin, pgoutput
+# included, fails there and this node's walsenders never get past it.  Leave
+# the two tests out of the schedule in DIR.  Fails if the schedule cannot be
+# read or has no tests left, rather than running whatever is there.
+filter_parallel_schedule() {
+	local dir="$1"
+
+	awk '/^test:/ {
+			s = "test:"
+			for (i = 2; i <= NF; i++)
+				if ($i != "rowtypes_alter" && $i != "attribute_version")
+					s = s " " $i
+			if (s != "test:") print s
+			next
+		} { print }' "${dir}/parallel_schedule" >"${dir}/parallel_schedule.tmp" &&
+		grep -q '^test:' "${dir}/parallel_schedule.tmp" &&
+		mv "${dir}/parallel_schedule.tmp" "${dir}/parallel_schedule"
+}
+
 run_installcheck() {
 	local node="${TARGET_NODE}"
 	local port; port="$(node_to_port "${node}")"
+
+	filter_parallel_schedule "${SRC}/src/test/regress" ||
+		fail "could not filter ${SRC}/src/test/regress/parallel_schedule"
 
 	log "${node} (PG${PG_VER}): make installcheck-parallel"
 

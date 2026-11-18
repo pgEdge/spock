@@ -168,6 +168,7 @@ extern bool spock_auto_replicate_ddl(const char *query, List *replication_sets,
 									 Oid roleoid, Node *stmt);
 extern bool spock_schema_is_ddl_local(const char *nspname);
 extern void spock_guard_extension_owned_ddl(Node *stmt);
+extern void spock_refuse_ddl_local_extension(Node *stmt);
 extern bool name_in_list(List *names, const char *name);
 
 /* spock_readonly.c */

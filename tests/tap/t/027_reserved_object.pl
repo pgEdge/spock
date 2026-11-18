@@ -54,7 +54,7 @@ is(scalar_query(1, "SELECT exclude_from_dump FROM spock.reserved_object WHERE na
 # coldfront: excluded from the dump, allowed in replication sets
 # --------------------------------------------------------------------------
 is(scalar_query(1, "SELECT string_agg(kind || ':' || exclude_from_dump || block_in_repset || coalesce(replicate_ddl::text, '-'), ',' ORDER BY kind) FROM spock.reserved_object WHERE name='coldfront' AND builtin"),
-   'extension:truefalse-,schema:truefalsetrue',
+   'extension:truefalsetrue,schema:truefalsetrue',
    'coldfront schema and extension are built-ins excluded from the dump, not blocked');
 
 # Coldfront adds its own tables to a replication set; that must keep working.
@@ -121,25 +121,38 @@ is(scalar_query(1, "SELECT builtin FROM spock.reserved_object WHERE name='foo' A
    'f', "user-added 'foo' is not a built-in");
 
 # --------------------------------------------------------------------------
-# replicate_ddl is schema-only: NULL for extensions, enforced by a CHECK.
+# replicate_ddl applies to extensions too: true means replicated, false
+# means node-local.  The column is NOT NULL DEFAULT true.
 # --------------------------------------------------------------------------
-is(scalar_query(1, "SELECT replicate_ddl IS NULL FROM spock.reserved_object WHERE name='spock' AND kind='extension'"),
-   't', 'built-in extension row has replicate_ddl NULL (not applicable)');
+is(scalar_query(1, "SELECT replicate_ddl FROM spock.reserved_object WHERE name='spock' AND kind='extension'"),
+   't', 'built-in spock extension row has replicate_ddl=true (replicated)');
 
-# reserved_object_add coerces replicate_ddl to NULL for an extension, even
-# when a value is passed for it.
-($rc, $out) = psql_try("SELECT spock.reserved_object_add('myext','extension', p_replicate_ddl := false)");
+# lolor refuses to be created or dropped by an apply worker, so its
+# extension DDL is node-local.
+is(scalar_query(1, "SELECT replicate_ddl FROM spock.reserved_object WHERE name='lolor' AND kind='extension'"),
+   'f', 'built-in lolor extension row has replicate_ddl=false (node-local)');
+
+# reserved_object_add sets an extension's replicate_ddl to true by default...
+($rc, $out) = psql_try("SELECT spock.reserved_object_add('myext','extension')");
 is($rc, 0, 'reserved_object_add for an extension succeeds') or diag($out);
-is(scalar_query(1, "SELECT replicate_ddl IS NULL FROM spock.reserved_object WHERE name='myext' AND kind='extension'"),
-   't', "extension row's replicate_ddl is coerced to NULL");
+is(scalar_query(1, "SELECT replicate_ddl FROM spock.reserved_object WHERE name='myext' AND kind='extension'"),
+   't', "extension row's replicate_ddl defaults to true");
 
-# The CHECK rejects a non-NULL replicate_ddl on an extension row...
-($rc, $out) = psql_try("INSERT INTO spock.reserved_object (name, kind, replicate_ddl) VALUES ('badext', 'extension', true)");
-isnt($rc, 0, 'CHECK rejects a non-NULL replicate_ddl on an extension row');
+# ...and stores false when asked (the same row, updated in place).
+($rc, $out) = psql_try("SELECT spock.reserved_object_add('myext','extension', p_replicate_ddl := false)");
+is($rc, 0, 'reserved_object_add for an extension with p_replicate_ddl := false succeeds') or diag($out);
+is(scalar_query(1, "SELECT replicate_ddl FROM spock.reserved_object WHERE name='myext' AND kind='extension'"),
+   'f', "extension row round-trips replicate_ddl=false");
 
-# ...and rejects a NULL replicate_ddl on a schema row.
+# An explicit NULL is taken as the default, true.
+($rc, $out) = psql_try("SELECT spock.reserved_object_add('myext','extension', p_replicate_ddl := NULL)");
+is($rc, 0, 'reserved_object_add with p_replicate_ddl := NULL succeeds') or diag($out);
+is(scalar_query(1, "SELECT replicate_ddl FROM spock.reserved_object WHERE name='myext' AND kind='extension'"),
+   't', "an explicit NULL stores replicate_ddl=true");
+
+# The column itself rejects NULL.
 ($rc, $out) = psql_try("INSERT INTO spock.reserved_object (name, kind, replicate_ddl) VALUES ('badschema', 'schema', NULL)");
-isnt($rc, 0, 'CHECK rejects a NULL replicate_ddl on a schema row');
+isnt($rc, 0, 'NOT NULL rejects a NULL replicate_ddl');
 
 # --------------------------------------------------------------------------
 # reserved_object_remove(): drops an operator-added row, but the guard still

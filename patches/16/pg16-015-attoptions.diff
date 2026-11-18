@@ -38,7 +38,7 @@ index 9648a769580..087656983cd 100644
  	/* list terminator */
  	{{NULL}}
  };
-@@ -2081,7 +2103,9 @@ attribute_reloptions(Datum reloptions, bool validate)
+@@ -2181,7 +2203,9 @@ attribute_reloptions(Datum reloptions, bool validate)
  {
  	static const relopt_parse_elt tab[] = {
  		{"n_distinct", RELOPT_TYPE_REAL, offsetof(AttributeOpts, n_distinct)},
@@ -48,7 +48,7 @@ index 9648a769580..087656983cd 100644
 +		{"delta_apply_function", RELOPT_TYPE_STRING, offsetof(AttributeOpts, delta_apply_function)}
  	};
  
- 	return (bytea *) build_reloptions(reloptions, validate,
+ 	/*
 diff --git a/src/backend/access/heap/heapam.c b/src/backend/access/heap/heapam.c
 index b251653540e..be87929c323 100644
 --- a/src/backend/access/heap/heapam.c

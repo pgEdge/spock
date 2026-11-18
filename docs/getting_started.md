@@ -80,13 +80,13 @@ The examples use PostgreSQL 18. If you switch to 15, 16, 17, or 19, update every
 For RHEL/Rocky Linux/AlmaLinux:
 
 ```bash
-sudo dnf install -y pgedge-postgres18-server pgedge-postgres18-contrib pgedge-spock18
+sudo dnf install -y pgedge-postgres18-server pgedge-postgres18-contrib pgedge-spock50_18
 ```
 
 For Ubuntu/Debian:
 
 ```bash
-sudo apt install -y pgedge-postgres18-server pgedge-postgres18-contrib pgedge-spock18
+sudo apt install -y pgedge-postgresql-18 pgedge-postgresql-18-spock50
 ```
 
 On each node, initialize the PostgreSQL database cluster.
