@@ -928,8 +928,9 @@ jobs:
         # Real tag pushes only — never on workflow_dispatch / simulate_tag, and
         # only once the packages for this tag have actually been published.
         # daily repo_type is a test/dev tag (e.g. v6.0.0-test1) and must not
-        # get a public GitHub Release; only staging (rc/beta/final) do. A
-        # final tag becomes "Latest"; rc/beta are marked pre-release below.
+        # get a public GitHub Release; only staging (rc/beta/final) do. rc/beta
+        # tags are marked pre-release below; GitHub keeps the newest eligible
+        # final release as "Latest" on its own, so this job never forces it.
         if: >-
             github.event_name == 'push'
             && github.ref_type == 'tag'
@@ -948,14 +949,19 @@ jobs:
             - name: Build release notes from docs/spock_release_notes.md
               id: notes
               env:
-                  VERSION: ${{ needs.determine-repo-type.outputs.component-version }}
-                  TAG:     ${{ github.ref_name }}
+                  TAG: ${{ github.ref_name }}
               run: |
                   set -euo pipefail
                   notes_file="release-notes.md"
-                  # The changelog header is "## Spock <version>"; capture that
-                  # section up to the next level-2 header.
-                  awk -v hdr="## Spock ${VERSION}" '
+                  # The notes key is the tag without its leading "v", so a
+                  # pre-release tag selects its own section (e.g.
+                  # "## Spock 6.0.0-beta.2") and a final tag selects
+                  # "## Spock 6.0.0". component-version drops the suffix, so it
+                  # could not tell the beta from the final.
+                  version="${TAG#v}"
+                  # Capture the "## Spock <version>" section up to the next
+                  # level-2 header.
+                  awk -v hdr="## Spock ${version}" '
                       $0 == hdr { flag=1; next }
                       /^## / && flag { flag=0 }
                       flag { print }
@@ -963,9 +969,17 @@ jobs:
                   # Drop leading blank lines left by the header.
                   sed -i -e '/./,$!d' "$notes_file"
                   if [ -s "$notes_file" ]; then
-                      echo "Using the Spock ${VERSION} section of docs/spock_release_notes.md."
+                      echo "Using the Spock ${version} section of docs/spock_release_notes.md."
+                      # The changelog lives in docs/, so its file-relative links
+                      # (e.g. configuring.md, recovery/foo.md) break in a Release
+                      # body. Rewrite them to absolute links into docs/ at this
+                      # tag; leave absolute, anchor and root-relative links alone.
+                      perl -i -pe '
+                          s{(\]\()(?!https?://|mailto:|\#|/)([^)\s]+)(\))}
+                           {$1 . "https://github.com/$ENV{GITHUB_REPOSITORY}/blob/$ENV{TAG}/docs/" . $2 . $3}gex;
+                      ' "$notes_file"
                   else
-                      echo "::warning::No '## Spock ${VERSION}' section in docs/spock_release_notes.md; using a pointer body."
+                      echo "::warning::No '## Spock ${version}' section in docs/spock_release_notes.md; using a pointer body."
                       {
                           echo "Release ${TAG}."
                           echo
@@ -979,18 +993,25 @@ jobs:
                   TAG:      ${{ github.ref_name }}
               run: |
                   set -euo pipefail
-                  # A pre-release tag carries a suffix (e.g. v6.0.0-rc.1); mark
-                  # it so it never becomes the "Latest" release.
-                  prerelease_flag=""
+                  # A pre-release tag carries a suffix (e.g. v6.0.0-rc.1). Set
+                  # the flag explicitly both ways: on an edit the CLI leaves
+                  # --prerelease unchanged otherwise, so a final tag re-run over
+                  # an earlier manual pre-release would stay a pre-release.
                   case "$TAG" in
-                      *-*) prerelease_flag="--prerelease" ;;
+                      *-*) prerelease=true  ;;
+                      *)   prerelease=false ;;
                   esac
                   if gh release view "$TAG" >/dev/null 2>&1; then
                       echo "Release $TAG exists; updating its notes."
+                      # --latest is left untouched so a re-run for an older tag
+                      # cannot displace a newer release as "Latest".
                       gh release edit "$TAG" --title "$TAG" \
-                          --notes-file release-notes.md $prerelease_flag
+                          --notes-file release-notes.md --prerelease="$prerelease"
                   else
                       echo "Creating release $TAG."
-                      gh release create "$TAG" --title "$TAG" \
-                          --notes-file release-notes.md $prerelease_flag
+                      # --verify-tag: fail if the tag is gone rather than letting
+                      # gh recreate it at the default-branch tip, which would
+                      # point the Release at a different commit than the packages.
+                      gh release create "$TAG" --title "$TAG" --verify-tag \
+                          --notes-file release-notes.md --prerelease="$prerelease"
                   fi
