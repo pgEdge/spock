@@ -1006,7 +1006,7 @@ jobs:
                       # --latest is left untouched so a re-run for an older tag
                       # cannot displace a newer release as "Latest".
                       gh release edit "$TAG" --title "$TAG" \
-                          --notes-file release-notes.md --prerelease="$prerelease"
+                          --notes-file release-notes.md --prerelease="$prerelease" --draft=false
                   else
                       echo "Creating release $TAG."
                       # --verify-tag: fail if the tag is gone rather than letting
