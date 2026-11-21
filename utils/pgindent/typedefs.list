@@ -3674,6 +3674,13 @@ SplitTextOutputData
 SplitVar
 SPNode
 SPNodeData
+SpockStartupGate
+SpockStartupGateReason
+SpockStartupGateState
+SpockStartupShared
+SpockStartupSub
+SpockStartupSubKey
+SpockStartupSubState
 Spock_Stat_PendingSubEntry
 Spock_Stat_StatSubEntry
 Spock_Stat_Subscription
