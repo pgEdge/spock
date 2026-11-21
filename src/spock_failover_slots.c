@@ -25,6 +25,7 @@
 #include "access/table.h"
 #include "access/xact.h"
 #include "access/xlog.h"
+#include "access/xlog_internal.h"
 #include "access/xlogrecovery.h"
 #include "access/xlogutils.h"
 #include "catalog/indexing.h"
@@ -1010,6 +1011,68 @@ apply_remote_position(RemoteSlot *remote_slot)
 }
 
 /*
+ * Reserve WAL for the new copy this process has just created.
+ *
+ * Start the copy at the primary slot's restart_lsn when the standby can
+ * still keep the WAL from there on, as PostgreSQL's slot sync does (see
+ * reserve_wal_for_local_slot() in slotsync.c).  The copy then already
+ * satisfies the primary's slot and need not wait for it to move, which on
+ * an idle primary it never does.
+ *
+ * WAL older than the redo pointer may be removed by a restartpoint that is
+ * already running, and on PG16 and earlier a slot persisted there makes the
+ * next startup fail with "required WAL not available".  So when the
+ * primary's restart_lsn is older than the redo pointer, start at the redo
+ * pointer instead; the copy then stays pending until the primary's slot
+ * passes it.  PostgreSQL also accepts older WAL that another local slot
+ * holds.  That is left out here: on PG15 a slot can hold a restart_lsn
+ * whose WAL is already gone.
+ */
+static void
+reserve_wal_for_copy(XLogRecPtr remote_restart_lsn)
+{
+	ReplicationSlot *slot = MyReplicationSlot;
+	XLogRecPtr	restart_lsn;
+	XLogSegNo	segno;
+
+	Assert(slot != NULL);
+
+	/*
+	 * As in slotsync.c: a restartpoint that reads the slots' minimum LSN
+	 * after this has to wait for the reservation below.
+	 */
+	LWLockAcquire(ReplicationSlotAllocationLock, LW_EXCLUSIVE);
+
+	restart_lsn = Max(remote_restart_lsn, GetRedoRecPtr());
+	if (XLogRecPtrIsInvalid(restart_lsn))
+	{
+		/* No position from either side: reserve at the standby's own */
+		LWLockRelease(ReplicationSlotAllocationLock);
+		ReplicationSlotReserveWal();
+		return;
+	}
+
+	SpinLockAcquire(&slot->mutex);
+	slot->data.restart_lsn = restart_lsn;
+	SpinLockRelease(&slot->mutex);
+
+	ReplicationSlotsComputeRequiredLSN();
+
+	/* The copy is temporary, so the error drops it; the next pass retries */
+	XLByteToSeg(restart_lsn, segno, wal_segment_size);
+	if (XLogGetLastRemovedSegno() >= segno)
+		elog(ERROR, "WAL required by replication slot %s has been removed concurrently",
+			 NameStr(slot->data.name));
+
+	LWLockRelease(ReplicationSlotAllocationLock);
+
+	elog(DEBUG1,
+		 "spock_failover_slots: reserved WAL at %X/%X for new slot \"%s\" (primary's restart_lsn %X/%X)",
+		 LSN_FORMAT_ARGS(restart_lsn), NameStr(slot->data.name),
+		 LSN_FORMAT_ARGS(remote_restart_lsn));
+}
+
+/*
  * Slots whose invalidated copy the worker has warned about and left alone.
  * The warning is issued once, not on every pass: on PG17 a synced slot
  * stays in that state until promotion.  Returns true when the warning for
@@ -1387,46 +1450,7 @@ synchronize_one_slot(RemoteSlot *remote_slot)
 		 * It's OK if we can't guarantee their safety yet, the slot isn't
 		 * visible to anyone else at this point.
 		 */
-		ReplicationSlotReserveWal();
-
-		/*
-		 * On PG16 and earlier standbys, ReplicationSlotReserveWal() may set
-		 * restart_lsn to InvalidXLogRecPtr (zero) or to a value that is below
-		 * the standby's recovery redo pointer — the oldest WAL position the
-		 * standby actually has from the pg_basebackup checkpoint.
-		 *
-		 * When restart_lsn is zero, the unsigned comparison below
-		 * (remote_slot->own_restart_lsn < slot->data.restart_lsn) is always
-		 * FALSE for any real remote LSN, so the slot is never kept pending.
-		 * When restart_lsn is a small but non-zero value (less than the redo
-		 * pointer), the comparison still fails to fire for remote slots that
-		 * require WAL older than what the standby has.  In both cases we end
-		 * up persisting a slot with the remote's restart_lsn, which the
-		 * standby cannot satisfy, causing an immediate PANIC ("required WAL
-		 * not available") and an infinite crash loop on the next startup.
-		 *
-		 * Fix: always ensure restart_lsn is at least as high as the recovery
-		 * redo pointer (GetRedoRecPtr), which is set from the basebackup
-		 * checkpoint and represents the guaranteed minimum WAL floor on this
-		 * standby.  Any remote slot that requires WAL older than that then
-		 * correctly stays pending until the primary's slot passes it.
-		 */
-		{
-			XLogRecPtr	old_lsn = MyReplicationSlot->data.restart_lsn;
-			XLogRecPtr	redo_lsn = GetRedoRecPtr();
-
-			if (!XLogRecPtrIsInvalid(redo_lsn) && redo_lsn > old_lsn)
-			{
-				SpinLockAcquire(&slot->mutex);
-				slot->data.restart_lsn = redo_lsn;
-				SpinLockRelease(&slot->mutex);
-				elog(DEBUG1,
-					 "spock_failover_slots: bumped restart_lsn from %X/%X to"
-					 " redo pointer %X/%X for new slot \"%s\"",
-					 LSN_FORMAT_ARGS(old_lsn),
-					 LSN_FORMAT_ARGS(redo_lsn), remote_slot->name);
-			}
-		}
+		reserve_wal_for_copy(remote_slot->own_restart_lsn);
 
 		/*
 		 * Compute the safe xmin horizon and seed the new slot.
