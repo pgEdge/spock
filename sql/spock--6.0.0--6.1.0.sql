@@ -19,6 +19,10 @@ CREATE TABLE spock.toast_suspect (
     winner_subid    oid          NOT NULL,
     winner_origin   oid          NOT NULL,
     winner_ts       timestamptz  NOT NULL,
+    -- The oldest winner_ts this entry has had since it was created.  A
+    -- later detection moves winner_ts forward but not this, so a node
+    -- that must wait for this entry keeps waiting.  NULL reads as winner_ts.
+    first_winner_ts timestamptz,
     local_origin    oid,
     local_ts        timestamptz,
     detect_count    integer      NOT NULL DEFAULT 1,
@@ -26,6 +30,11 @@ CREATE TABLE spock.toast_suspect (
     verified_at     timestamptz,
     differing       int2[],
     last_error      text,
+    -- Per entry of attnums, the local value's on-disk TOAST pointer at
+    -- detection (see spock.toast_pointer()), or NULL if it was not stored
+    -- out of line.  The repair worker compares it with the current pointer
+    -- to tell whether the column was written locally since detection.
+    toast_ptrs      text[],
     -- Per entry of attnums, the version stamp the sender sent for that
     -- column (see spock.toast_stamp()), or NULL when it sent none.
     winner_stamps   text[],
@@ -72,6 +81,14 @@ SELECT n.nspname                AS schema_name,
   JOIN pg_namespace n ON n.oid = c.relnamespace
   LEFT JOIN spock.subscription sub ON sub.sub_id = s.winner_subid
   LEFT JOIN spock.node wn ON wn.node_id = sub.sub_origin;
+
+-- The on-disk TOAST pointer of a value stored out of line, as
+-- 'toastrelid/valueid/rawsize/extsize', or NULL for any other value.  A
+-- write of new contents, even the same text, gives the value a new id; an
+-- UPDATE that leaves the column alone (or sets it to itself), VACUUM FULL
+-- and CLUSTER keep it.
+CREATE FUNCTION spock.toast_pointer("any")
+RETURNS text STRICT STABLE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_toast_pointer';
 
 -- The version stamp of a value stored out of line, as
 -- 'nodeid/commit_ts_microseconds/rawsize', or NULL when it cannot be read.

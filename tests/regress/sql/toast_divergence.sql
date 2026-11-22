@@ -81,6 +81,37 @@ DROP TABLE public.td_ck;
 
 DROP TABLE public.td_t;
 
+-- spock.toast_pointer(): the repair worker relies on an out-of-line value
+-- keeping its pointer until the column itself is written.
+CREATE TABLE public.td_ptr (id int PRIMARY KEY, small text, big text);
+ALTER TABLE public.td_ptr ALTER COLUMN big SET STORAGE EXTERNAL;
+INSERT INTO public.td_ptr
+  VALUES (1, 'a', repeat('x', 10000)), (2, 'b', 'short');
+CREATE TEMP TABLE td_ptr0 AS
+  SELECT id, spock.toast_pointer(big) AS p FROM public.td_ptr;
+-- Only the out-of-line value has one; non-varlena types never do.
+SELECT id, p IS NOT NULL AS has_ptr FROM td_ptr0 ORDER BY id;
+SELECT spock.toast_pointer(1), spock.toast_pointer('short'::text);
+-- Kept by an UPDATE leaving the column alone, VACUUM FULL and CLUSTER.
+UPDATE public.td_ptr SET small = 'a2' WHERE id = 1;
+SELECT spock.toast_pointer(big) = p AS same_after_update
+  FROM public.td_ptr JOIN td_ptr0 USING (id) WHERE id = 1;
+VACUUM FULL public.td_ptr;
+SELECT spock.toast_pointer(big) = p AS same_after_vacuum_full
+  FROM public.td_ptr JOIN td_ptr0 USING (id) WHERE id = 1;
+CLUSTER public.td_ptr USING td_ptr_pkey;
+SELECT spock.toast_pointer(big) = p AS same_after_cluster
+  FROM public.td_ptr JOIN td_ptr0 USING (id) WHERE id = 1;
+-- SET big = big hands the stored pointer straight back: still the same.
+UPDATE public.td_ptr SET big = big WHERE id = 1;
+SELECT spock.toast_pointer(big) = p AS same_after_self_assign
+  FROM public.td_ptr JOIN td_ptr0 USING (id) WHERE id = 1;
+-- Any other write of the column changes it, even with the same text.
+UPDATE public.td_ptr SET big = repeat('x', 10000) WHERE id = 1;
+SELECT spock.toast_pointer(big) = p AS same_after_rewrite
+  FROM public.td_ptr JOIN td_ptr0 USING (id) WHERE id = 1;
+DROP TABLE public.td_ptr;
+
 -- spock.toast_stamp(): the version stamp of an out-of-line value, read from
 -- the commit timestamp of the transaction that wrote its first chunk.
 CREATE TABLE public.td_stamp (id int PRIMARY KEY, small text, big text);

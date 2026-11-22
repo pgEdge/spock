@@ -65,6 +65,7 @@ typedef struct SuspectRecordArg
 	char	   *pkey;			/* set by suspect_record_cb():
 								 * {"attname": "value", ...} */
 	const char *attnums;		/* int2[] literal */
+	const char *toast_ptrs;		/* text[] literal, parallel to attnums */
 	const char *winner_stamps;	/* text[] literal, parallel to attnums */
 	const char *reason;			/* stamp_mismatch, no_local_stamp, no_stamp */
 	RepOriginId local_origin;
@@ -76,9 +77,10 @@ typedef struct SuspectRecordArg
  * ON CONFLICT clause and the refresh at the cap in suspect_record_cb().
  */
 #define SUSPECT_REFRESH_SET \
-	"attnums = $3::int2[], " \
-	"winner_stamps = $10::text[], reason = $11, state = 'suspect', " \
+	"attnums = $3::int2[], toast_ptrs = $10::text[], " \
+	"winner_stamps = $11::text[], reason = $12, state = 'suspect', " \
 	"winner_subid = $4, winner_origin = $5, winner_ts = $6, " \
+	"first_winner_ts = LEAST(coalesce(spock.toast_suspect.first_winner_ts, spock.toast_suspect.winner_ts), $6), " \
 	"local_origin = $7, local_ts = $8, " \
 	"detect_count = spock.toast_suspect.detect_count + 1, " \
 	"detected_at = now(), verified_at = NULL, differing = NULL, last_error = $9"
@@ -103,13 +105,15 @@ static const char *const reason_names[] = {
 
 /*
  * The array literals of one suspect row, one element per suspect column,
- * built side by side so they stay aligned: the attnums (int2[]) and the
- * sender's version stamps (text[]).
+ * built side by side so they stay aligned: the attnums (int2[]), the TOAST
+ * pointers of the local values (text[]) and the sender's version stamps
+ * (text[]).
  */
 typedef struct SuspectColumns
 {
 	int			n;				/* columns added */
 	StringInfoData attnums;
+	StringInfoData ptrs;
 	StringInfoData stamps;
 } SuspectColumns;
 
@@ -307,10 +311,11 @@ static void
 suspect_record_cb(void *arg)
 {
 	SuspectRecordArg *a = (SuspectRecordArg *) arg;
-	Oid			argtypes[11] = {OIDOID, TEXTOID, TEXTOID, OIDOID, OIDOID,
-		TIMESTAMPTZOID, OIDOID, TIMESTAMPTZOID, TEXTOID, TEXTOID, TEXTOID};
-	Datum		values[11];
-	char		nulls[11];
+	Oid			argtypes[12] = {OIDOID, TEXTOID, TEXTOID, OIDOID, OIDOID,
+		TIMESTAMPTZOID, OIDOID, TIMESTAMPTZOID, TEXTOID, TEXTOID, TEXTOID,
+	TEXTOID};
+	Datum		values[12];
+	char		nulls[12];
 	Oid			winner_subid = MyApplyWorker->subid;
 	char	   *forward_note = NULL;
 	int			nestlevel;
@@ -367,8 +372,9 @@ suspect_record_cb(void *arg)
 	values[6] = ObjectIdGetDatum((Oid) a->local_origin);
 	values[7] = TimestampTzGetDatum(a->local_ts);
 	values[8] = forward_note ? CStringGetTextDatum(forward_note) : (Datum) 0;
-	values[9] = CStringGetTextDatum(a->winner_stamps);
-	values[10] = CStringGetTextDatum(a->reason);
+	values[9] = CStringGetTextDatum(a->toast_ptrs);
+	values[10] = CStringGetTextDatum(a->winner_stamps);
+	values[11] = CStringGetTextDatum(a->reason);
 	memset(nulls, ' ', sizeof(nulls));
 	if (forward_note == NULL)
 		nulls[8] = 'n';
@@ -382,6 +388,11 @@ suspect_record_cb(void *arg)
 	 * At the cap no row is added, but an entry the row already has is still
 	 * refreshed: left naming an older winner, the repair worker would copy
 	 * that winner's value, which has since lost, and delete the entry.
+	 *
+	 * first_winner_ts keeps the oldest winner timestamp the entry has had
+	 * since it was created.  The winner's pending-entry check compares it,
+	 * not winner_ts: a newer detection on this node does not make the older
+	 * divergence any less pending, and the other node must still wait.
 	 */
 
 	if (suspect_table_at_cap())
@@ -391,7 +402,7 @@ suspect_record_cb(void *arg)
 		if (refresh_plan == NULL)
 			refresh_plan = prepare_kept_plan("UPDATE spock.toast_suspect SET " SUSPECT_REFRESH_SET
 											 " WHERE relid = $1 AND pkey = $2::jsonb",
-											 11, argtypes, "refreshing a TOAST suspect");
+											 12, argtypes, "refreshing a TOAST suspect");
 		ret = SPI_execute_plan(refresh_plan, values, nulls, false, 0);
 		if (ret != SPI_OK_UPDATE)
 			elog(ERROR, "SPI_execute_plan failed refreshing a TOAST suspect: %d", ret);
@@ -414,12 +425,12 @@ suspect_record_cb(void *arg)
 	if (record_plan == NULL)
 		record_plan = prepare_kept_plan("INSERT INTO spock.toast_suspect "
 										"  (relid, pkey, attnums, state, winner_subid, winner_origin, winner_ts, "
-										"   local_origin, local_ts, detected_at, last_error, "
-										"   winner_stamps, reason) "
-										"VALUES ($1, $2::jsonb, $3::int2[], 'suspect', $4, $5, $6, $7, $8, now(), "
-										"        $9, $10::text[], $11) "
+										"   first_winner_ts, local_origin, local_ts, detected_at, last_error, "
+										"   toast_ptrs, winner_stamps, reason) "
+										"VALUES ($1, $2::jsonb, $3::int2[], 'suspect', $4, $5, $6, $6, $7, $8, now(), "
+										"        $9, $10::text[], $11::text[], $12) "
 										"ON CONFLICT (relid, pkey) DO UPDATE SET " SUSPECT_REFRESH_SET,
-										11, argtypes, "recording a TOAST suspect");
+										12, argtypes, "recording a TOAST suspect");
 	ret = SPI_execute_plan(record_plan, values, nulls, false, 0);
 	if (ret != SPI_OK_INSERT)
 		elog(ERROR, "SPI_execute_plan failed recording a TOAST suspect: %d", ret);
@@ -531,18 +542,22 @@ suspect_columns_init(SuspectColumns *sc)
 {
 	sc->n = 0;
 	initStringInfo(&sc->attnums);
+	initStringInfo(&sc->ptrs);
 	initStringInfo(&sc->stamps);
 	appendStringInfoChar(&sc->attnums, '{');
+	appendStringInfoChar(&sc->ptrs, '{');
 	appendStringInfoChar(&sc->stamps, '{');
 }
 
-/* Add one column; a NULL stamp is a NULL element. */
+/* Add one column; a NULL ptr or stamp is a NULL element. */
 static void
-suspect_columns_add(SuspectColumns *sc, int attnum, const char *stamp)
+suspect_columns_add(SuspectColumns *sc, int attnum, const char *ptr,
+					const char *stamp)
 {
 	const char *sep = sc->n > 0 ? "," : "";
 
 	appendStringInfo(&sc->attnums, "%s%d", sep, attnum);
+	appendStringInfo(&sc->ptrs, "%s%s", sep, ptr ? ptr : "NULL");
 	appendStringInfo(&sc->stamps, "%s%s", sep, stamp ? stamp : "NULL");
 	sc->n++;
 }
@@ -551,6 +566,7 @@ static void
 suspect_columns_close(SuspectColumns *sc)
 {
 	appendStringInfoChar(&sc->attnums, '}');
+	appendStringInfoChar(&sc->ptrs, '}');
 	appendStringInfoChar(&sc->stamps, '}');
 }
 
@@ -558,6 +574,7 @@ static void
 suspect_columns_free(SuspectColumns *sc)
 {
 	pfree(sc->attnums.data);
+	pfree(sc->ptrs.data);
 	pfree(sc->stamps.data);
 }
 
@@ -681,15 +698,23 @@ spock_toast_suspect_record(SpockRelation *rel, TupleTableSlot *newslot,
 	 * A column that arrived with a version stamp ('U') is compared with the
 	 * local value's stamp and left out when they are equal: both nodes hold
 	 * the same version.  Anything that cannot be told is kept, never assumed
-	 * equal (column_suspect_reason()).  Next to each column goes the
-	 * sender's stamp.  One open of the TOAST relation serves all of the
-	 * row's columns.
+	 * equal (column_suspect_reason()).
+	 *
+	 * Next to each column go the TOAST pointer of the local value the row
+	 * keeps, and the sender's stamp.  The repair worker compares the pointer
+	 * with the current one: if they still match, the column was not written
+	 * here since, so it still holds the value that lost and must take the
+	 * winner's even when the row has a newer local update.  The value came
+	 * from the local heap tuple (slot_modify_data() copies unchanged columns
+	 * from it), so it is still the on-disk pointer.  One open of the TOAST
+	 * relation serves all of the row's columns.
 	 */
 	suspect_columns_init(&cols);
 	toast_stamp_reader_init(&reader);
 	for (i = 0; i < rel->natts; i++)
 	{
 		int			attid = rel->attmap[i];
+		char	   *ptr = NULL;
 		SuspectReason col_reason;
 
 		if (newtup->changed[attid])
@@ -702,9 +727,14 @@ spock_toast_suspect_record(SpockRelation *rel, TupleTableSlot *newslot,
 		if (same_origin && col_reason != REASON_STAMP_MISMATCH)
 			continue;
 		reason = Max(reason, col_reason);
-		suspect_columns_add(&cols, attid + 1,
+		if (!newslot->tts_isnull[attid] &&
+			TupleDescAttr(newslot->tts_tupleDescriptor, attid)->attlen == -1)
+			ptr = toast_pointer_text(newslot->tts_values[attid]);
+		suspect_columns_add(&cols, attid + 1, ptr,
 							SPOCK_TUPLE_STAMPED(newtup, attid) ?
 							toast_stamp_to_text(&newtup->stamps[attid]) : NULL);
+		if (ptr != NULL)
+			pfree(ptr);
 	}
 	toast_stamp_reader_close(&reader);
 	suspect_columns_close(&cols);
@@ -720,6 +750,7 @@ spock_toast_suspect_record(SpockRelation *rel, TupleTableSlot *newslot,
 	arg.slot = newslot;
 	arg.pkey = NULL;
 	arg.attnums = cols.attnums.data;
+	arg.toast_ptrs = cols.ptrs.data;
 	arg.winner_stamps = cols.stamps.data;
 	arg.reason = reason_names[reason];
 	arg.local_origin = local_origin;

@@ -5,8 +5,9 @@
  *
  * Helpers the detection, verify and repair code share: running one step in a
  * subtransaction, so an error settles only that step (run_in_subxact()), this
- * node's id (cached_local_nodeid()), and reading and writing a user table as
- * its owner (spi_execute_as_owner()).
+ * node's id (cached_local_nodeid()), reading and writing a user table as its
+ * owner (spi_execute_as_owner()), and the TOAST pointer a value is stored
+ * under (toast_pointer_text()).
  * It also holds the text-output settings pinned wherever values are
  * compared across nodes (toast_pinned_output).
  *
@@ -18,11 +19,17 @@
  */
 #include "postgres.h"
 
+#include "access/detoast.h"
 #include "access/xact.h"
 #include "executor/spi.h"
+#include "utils/builtins.h"
 #include "utils/guc.h"
+#include "utils/lsyscache.h"
 #include "utils/resowner.h"
 #include "utils/syscache.h"
+#if PG_VERSION_NUM >= 160000
+#include "varatt.h"
+#endif
 
 #include "spock.h"
 #include "spock_common.h"
@@ -77,11 +84,13 @@ run_in_subxact(void (*fn) (void *arg), void *arg, char **errmsg)
 {
 	MemoryContext oldcontext = CurrentMemoryContext;
 	ResourceOwner oldowner = CurrentResourceOwner;
+	int			level;
 
 	*errmsg = NULL;
 
 	BeginInternalSubTransaction("spock_toast_divergence");
 	MemoryContextSwitchTo(oldcontext);
+	level = GetCurrentTransactionNestLevel();
 
 	PG_TRY();
 	{
@@ -97,7 +106,9 @@ run_in_subxact(void (*fn) (void *arg), void *arg, char **errmsg)
 		MemoryContextSwitchTo(oldcontext);
 		edata = CopyErrorData();
 		FlushErrorState();
-		RollbackAndReleaseCurrentSubTransaction();
+		/* fn may have left its own subtransactions open (a repair write) */
+		while (GetCurrentTransactionNestLevel() >= level)
+			RollbackAndReleaseCurrentSubTransaction();
 		MemoryContextSwitchTo(oldcontext);
 		CurrentResourceOwner = oldowner;
 
@@ -111,6 +122,53 @@ run_in_subxact(void (*fn) (void *arg), void *arg, char **errmsg)
 	PG_END_TRY();
 
 	return true;
+}
+
+/*
+ * The on-disk TOAST pointer of a value as 'toastrelid/valueid/rawsize/
+ * extsize', or NULL if the value is not stored out of line.
+ *
+ * The value id changes on every write of new contents, even the same text:
+ * the TOAST code reuses the old pointer only when the new datum is that same
+ * pointer, which is what an UPDATE leaving the column alone (or setting it to
+ * itself, a no-op on the value) produces.  VACUUM FULL and CLUSTER swap
+ * the TOAST table by content and keep both the TOAST table OID and the
+ * value ids.  So an unchanged pointer means the column was not
+ * written since it was read.  A table rewrite by ALTER TABLE assigns new ids,
+ * so the column reads as written: for healing that is the safe direction,
+ * but the kept-column repair then leaves a losing value alone (a limit the
+ * docs list).
+ */
+char *
+toast_pointer_text(Datum value)
+{
+	struct varlena *attr = (struct varlena *) DatumGetPointer(value);
+	struct varatt_external ptr;
+
+	if (!VARATT_IS_EXTERNAL_ONDISK(attr))
+		return NULL;
+	VARATT_EXTERNAL_GET_POINTER(ptr, attr);
+	return psprintf("%u/%u/%d/%u", ptr.va_toastrelid, ptr.va_valueid,
+					ptr.va_rawsize, (uint32) VARATT_EXTERNAL_GET_EXTSIZE(ptr));
+}
+
+PG_FUNCTION_INFO_V1(spock_toast_pointer);
+
+/* spock.toast_pointer("any"): see toast_pointer_text(). */
+Datum
+spock_toast_pointer(PG_FUNCTION_ARGS)
+{
+	Oid			argtype = get_fn_expr_argtype(fcinfo->flinfo, 0);
+	char	   *txt;
+
+	if (!OidIsValid(argtype))
+		elog(ERROR, "could not determine the argument type");
+	if (get_typlen(argtype) != -1)
+		PG_RETURN_NULL();
+	txt = toast_pointer_text(PG_GETARG_DATUM(0));
+	if (txt == NULL)
+		PG_RETURN_NULL();
+	PG_RETURN_TEXT_P(cstring_to_text(txt));
 }
 
 /*

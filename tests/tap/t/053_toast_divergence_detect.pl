@@ -35,6 +35,13 @@ use SpockTest qw(
 #   u  the repair worker drains past one batch without sleeping, and
 #      entries that can only wait do not block it
 #   v  the repair worker keeps its connection to the winner between passes
+#   m  a newer local update that left big alone still ends on the race
+#      winner's big; the other node waits for it (also p, both at once)
+#   w  the same after VACUUM FULL in between
+#   x  a newer local update that wrote big ends on that value
+#   y  known limit: an inline losing value ends on the losing value
+#   ab like m, but the winner updates the row again first: n1 detects the
+#      row a second time, and n2 must still wait
 #   ac a repair runs the table's triggers as the table owner
 #   ao the repair worker's reads run the column type's cast as the table
 #      owner, here and on the winner
@@ -419,6 +426,70 @@ is(scalar_query(2, "SELECT count(*) FROM spock.resolutions"), $n2_resolutions_be
 is(suspects(2), '0', '(l) no suspect on the winner');
 
 # ---------------------------------------------------------------------------
+# (m) The diverged node updates the row again, leaving big alone, before its
+#     worker repairs it.  Its row is now the newer one, but big still holds
+#     the value that lost the race, and that update reaches n2 with big
+#     unchanged.  The cluster must still end on the race winner's big:
+#       - n2 records its own suspect naming n1, but must not copy n1's big
+#         while n1 has an older pending entry for the row: it waits;
+#       - n1 repairs just big toward n2, keeping the rest of its newer row
+#         and the row's own commit timestamp and origin;
+#       - n2's entry then clears on equal hashes.
+# ---------------------------------------------------------------------------
+set_repair(1, 'off');
+my $z_md5 = scalar_query(1, "SELECT md5(repeat('z', 200000))");
+race('(m)',
+     "UPDATE public.td SET big = repeat('m', 200000) WHERE id = 3",
+     "UPDATE public.td SET small = 'm' WHERE id = 3");
+is(suspects(1, "pkey = jsonb_build_object('id', '3')"), '1', '(m) suspect on n1');
+is(scalar_query(1, "SELECT (r).confirmed FROM spock.toast_divergence_verify() r"), '1',
+   '(m) confirmed by a manual verify');
+is(scalar_query(1, "SELECT toast_ptrs[1] = spock.toast_pointer(big) "
+              . "FROM spock.toast_suspect s JOIN public.td t ON t.id = 3 "
+              . "WHERE s.pkey = jsonb_build_object('id', '3')"),
+   't', '(m) the entry recorded the pointer of the value n1 kept');
+# n1 now updates the row again: n1 is newer.  n2 applies it with big
+# unchanged, keeps its own big, and records its own suspect.
+psql_or_bail(1, "UPDATE public.td SET small = 'm2' WHERE id = 3");
+is(wait_for_value(2, "SELECT small FROM public.td WHERE id = 3", 'm2'), 'm2', '(m) n1\'s update reached n2');
+is(suspects(2, "pkey = jsonb_build_object('id', '3')"), '1', '(m) n2 recorded its own suspect');
+my $m_stamp = row_stamp(1, 3);
+
+# n2's worker alone: it must wait on n1's older entry, not copy n1's big.
+my $off_m2 = log_offset(2);
+set_repair(2, 'on');
+ok(poll_query_until(2,
+       "SELECT last_error LIKE 'waiting for node n1 to repair its older entry for this row (state confirmed, detected %' FROM spock.toast_suspect "
+     . "WHERE pkey = jsonb_build_object('id', '3')", 't', 30),
+   '(m) n2 waits while n1 has an older pending entry');
+ok(wait_for_log(2, qr/SPOCK toast repair: .*waiting [1-9]/, $off_m2, 60), '(m) n2 logged the wait');
+is(big_md5(2, 3), $z_md5, '(m) n2 did not copy n1\'s losing big');
+my $m_n2_xmin = scalar_query(2, "SELECT xmin FROM public.td WHERE id = 3");
+my $m_n2_res = scalar_query(2, "SELECT count(*) FROM spock.resolutions");
+
+my $off_m = log_offset(1);
+set_repair(1, 'on');
+ok(poll_query_until(1,
+       "SELECT count(*) FROM spock.toast_suspect WHERE pkey = jsonb_build_object('id', '3')",
+       '0', 30),
+   '(m) n1 settled its entry');
+ok(wait_for_log(1, qr/SPOCK toast repair: .*repaired [1-9]/, $off_m, 60), '(m) n1 logged the repair');
+is(big_md5(1, 3), $z_md5, '(m) n1 took the race winner\'s big');
+is(scalar_query(1, "SELECT small FROM public.td WHERE id = 3"), 'm2', '(m) n1 kept its newer small');
+is(row_stamp(1, 3), $m_stamp, '(m) n1\'s row kept its own commit timestamp and origin');
+ok(poll_query_until(2,
+       "SELECT count(*) FROM spock.toast_suspect WHERE pkey = jsonb_build_object('id', '3')",
+       '0', 30),
+   '(m) n2 settled its entry');
+is(big_md5(2, 3), $z_md5, '(m) n2 still holds the race winner\'s big');
+drain('(m)');
+is(scalar_query(2, "SELECT xmin FROM public.td WHERE id = 3"), $m_n2_xmin,
+   '(m) n1\'s repair did not replicate: n2\'s row untouched');
+is(scalar_query(2, "SELECT count(*) FROM spock.resolutions"), $m_n2_res,
+   '(m) and n2 saw no conflict');
+set_repair(2, 'off');
+
+# ---------------------------------------------------------------------------
 # (n) Winner's row changed again before repair: converge on the newer value.
 # ---------------------------------------------------------------------------
 set_repair(1, 'off');
@@ -463,6 +534,98 @@ ok(poll_query_until(1,
    '(o) entry repaired after re-enable');
 is(big_md5(1, 4), big_md5(2, 4), '(o) converged');
 set_repair(1, 'off');
+
+# ---------------------------------------------------------------------------
+# (p) Bidirectional same-row convergence.  Both nodes hold a confirmed
+#     suspect for the same row (case (m)'s shape: n2 won the race so n1
+#     diverged, then a newer small-only write on n1 made n2 diverge too), and
+#     both repair workers run at once.  n1's newer write left big alone, so
+#     they must converge on the race winner's big (n2's), not on the value
+#     n1 carried forward -- and without hitting the node-against-itself
+#     tiebreaker, whose "equal tiebreaker value" warning would mean the two
+#     nodes swapped values instead of converging.  Repeated so the
+#     interleaving where each worker reads the other's row first is hit.
+#
+#     Why it converges: n1's entry comes from the race (older winning write),
+#     n2's from n1's later write.  n2's worker sees n1's older pending entry
+#     on the winner and waits.  n1's worker finds big's pointer unchanged
+#     since detection, so it writes n2's big and keeps its newer row's stamp.
+#     n2's entry then clears on equal hashes.  Neither reaches the
+#     tiebreaker, and neither waits on the other: n1 ignores n2's newer
+#     entry.
+# ---------------------------------------------------------------------------
+psql_or_bail(1, "INSERT INTO public.td VALUES (5, 's', repeat('q', 200000))");
+is(wait_for_value(2, "SELECT count(*) FROM public.td WHERE id = 5", '1'), '1',
+   '(p) row 5 replicated to n2');
+
+my $q_big = scalar_query(1, "SELECT md5(repeat('q', 200000))");
+
+sub p_cycle {
+    my ($label) = @_;
+
+    # Clean slate: workers off, row 5 back to a common baseline, no suspects.
+    set_repair(1, 'off');
+    set_repair(2, 'off');
+    psql_or_bail(1, "UPDATE public.td SET small = 's', big = repeat('q', 200000) WHERE id = 5");
+    is(wait_for_value(2, "SELECT md5(big) FROM public.td WHERE id = 5",
+                      scalar_query(1, "SELECT md5(repeat('q', 200000))")),
+       scalar_query(1, "SELECT md5(repeat('q', 200000))"), "$label baseline on n2");
+    drain($label);
+    psql_or_bail(1, "DELETE FROM spock.toast_suspect");
+    psql_or_bail(2, "DELETE FROM spock.toast_suspect");
+
+    # n2 wins the race; n1 keeps its own big and records a suspect naming n2.
+    race($label,
+         "UPDATE public.td SET big = repeat('p', 200000) WHERE id = 5",
+         "UPDATE public.td SET small = 'p' WHERE id = 5");
+
+    # A newer small-only write on n1: n2 applies it, keeps its big, records
+    # its own suspect naming n1.  n1 is now the newer writer of this row.
+    psql_or_bail(1, "UPDATE public.td SET small = 'p2' WHERE id = 5");
+    is(wait_for_value(2, "SELECT small FROM public.td WHERE id = 5", 'p2'), 'p2',
+       "$label n1's newer write reached n2");
+
+    # Confirm both suspects before enabling repair.
+    is(scalar_query(1, "SELECT (r).confirmed FROM spock.toast_divergence_verify() r"), '1',
+       "$label n1's suspect confirmed");
+    is(scalar_query(2, "SELECT (r).confirmed FROM spock.toast_divergence_verify() r"), '1',
+       "$label n2's suspect confirmed");
+    is(suspects(1, "pkey = jsonb_build_object('id', '5') AND state = 'confirmed'"), '1',
+       "$label confirmed suspect on n1");
+    is(suspects(2, "pkey = jsonb_build_object('id', '5') AND state = 'confirmed'"), '1',
+       "$label confirmed suspect on n2");
+
+    # Both workers on at once, no ordering between them.
+    my $o1 = log_offset(1);
+    my $o2 = log_offset(2);
+    set_repair(1, 'on');
+    set_repair(2, 'on');
+
+    ok(poll_query_until(1,
+           "SELECT count(*) FROM spock.toast_suspect WHERE pkey = jsonb_build_object('id', '5')",
+           '0', 30),
+       "$label n1 settled its entry");
+    ok(poll_query_until(2,
+           "SELECT count(*) FROM spock.toast_suspect WHERE pkey = jsonb_build_object('id', '5')",
+           '0', 30),
+       "$label n2 settled its entry");
+
+    is(wait_for_value(1, "SELECT md5(big) FROM public.td WHERE id = 5", $q_big), $q_big,
+       "$label n1 converged on the race winner's big");
+    is(big_md5(1, 5), big_md5(2, 5), "$label both nodes hold the same big value");
+    is(scalar_query(1, "SELECT small FROM public.td WHERE id = 5"), 'p2',
+       "$label n1 kept its newer small");
+    unlike(log_since(1, $o1), qr/equal tiebreaker value/,
+           "$label no node-against-itself tiebreaker on n1");
+    unlike(log_since(2, $o2), qr/equal tiebreaker value/,
+           "$label no node-against-itself tiebreaker on n2");
+}
+
+p_cycle("(p) cycle 1:");
+p_cycle("(p) cycle 2:");
+p_cycle("(p) cycle 3:");
+set_repair(1, 'off');
+set_repair(2, 'off');
 
 # ---------------------------------------------------------------------------
 # (q) Hot row.  A single row that keeps re-diverging must collapse onto one
@@ -686,6 +849,104 @@ set_repair(1, 'off');
 ok(poll_query_until(2, "SELECT count(*) FROM pg_stat_activity WHERE application_name LIKE '%toastdiv%'",
                     '0', 30),
    '(v) the connection closes when the worker stops');
+
+# ---------------------------------------------------------------------------
+# Cases (w) to (y) start like (m): n2 wins a race on a new row, so n1 keeps
+# its own big, and then n1 updates the row again before any repair.  Workers
+# are off until the row is set up.
+# ---------------------------------------------------------------------------
+sub lost_update_setup {
+    my ($label, $id, $n1_big, $n1_later) = @_;
+    set_repair(1, 'off');
+    set_repair(2, 'off');
+    psql_or_bail(1, "INSERT INTO public.td VALUES ($id, 's', $BIG_Z)");
+    ok(sync_nodes(1, 2), "$label: row $id on n2");
+    race($label,
+         "UPDATE public.td SET big = $n1_big WHERE id = $id",
+         "UPDATE public.td SET small = 'r' WHERE id = $id");
+    is(suspects(1, "pkey = jsonb_build_object('id', '$id')"), '1', "$label: suspect on n1");
+    psql_or_bail(1, "UPDATE public.td SET $n1_later WHERE id = $id");
+    drain($label);
+}
+
+sub settled_on_both {
+    my ($label, $id) = @_;
+    for my $n (1, 2) {
+        ok(poll_query_until($n,
+               "SELECT count(*) FROM spock.toast_suspect WHERE pkey = jsonb_build_object('id', '$id')",
+               '0', 30),
+           "$label: n$n settled its entry");
+    }
+}
+
+# (w) VACUUM FULL on n1 between detection and repair keeps big's pointer, so
+#     n1 still knows big was not written since and takes the winner's.
+lost_update_setup('(w)', 401, "repeat('w', 200000)", "small = 'w2'");
+psql_or_bail(1, "VACUUM FULL public.td");
+is(scalar_query(1, "SELECT toast_ptrs[1] = spock.toast_pointer(big) "
+              . "FROM spock.toast_suspect s JOIN public.td t ON t.id = 401 "
+              . "WHERE s.pkey = jsonb_build_object('id', '401')"),
+   't', '(w) the pointer survived VACUUM FULL');
+set_repair(1, 'on');
+set_repair(2, 'on');
+settled_on_both('(w)', 401);
+is(big_md5(1, 401), $z_md5, '(w) n1 took the race winner\'s big');
+is(big_md5(2, 401), $z_md5, '(w) n2 kept it');
+
+# (x) n1's later update writes big itself.  That value is the newest, so n1
+#     drops its entry and both nodes end on it.  The update carried big in
+#     full, so n2 has nothing to suspect.
+lost_update_setup('(x)', 402, "repeat('x', 200000)",
+                  "small = 'x2', big = repeat('k', 200000)");
+my $k_md5 = scalar_query(1, "SELECT md5(repeat('k', 200000))");
+my $off_x = log_offset(1);
+set_repair(1, 'on');
+set_repair(2, 'on');
+settled_on_both('(x)', 402);
+ok(wait_for_log(1, qr/SPOCK toast repair: .*cleared [1-9]/, $off_x, 60),
+   '(x) n1 dropped its entry');
+is(big_md5(1, 402), $k_md5, '(x) n1 kept the big it wrote later');
+is(big_md5(2, 402), $k_md5, '(x) n2 holds it too');
+
+# (y) Known limit: the value n1 kept is small enough to be stored inline, so
+#     it has no TOAST pointer to compare.  n1's later update then carries it
+#     in full, n2 takes it with nothing to flag, and n1 drops its entry.  The
+#     nodes agree, on n1's value rather than the race winner's.
+lost_update_setup('(y)', 403, "'short'", "small = 'y2'");
+is(scalar_query(1, "SELECT toast_ptrs[1] IS NULL FROM spock.toast_suspect "
+              . "WHERE pkey = jsonb_build_object('id', '403')"),
+   't', '(y) no pointer recorded for an inline value');
+set_repair(1, 'on');
+set_repair(2, 'on');
+settled_on_both('(y)', 403);
+is(scalar_query(1, "SELECT big FROM public.td WHERE id = 403"), 'short', '(y) n1 holds its own value');
+is(scalar_query(2, "SELECT big FROM public.td WHERE id = 403"), 'short', '(y) n2 took it');
+set_repair(1, 'off');
+set_repair(2, 'off');
+
+# (ab) As in (m), then n2 updates small again, leaving big alone.  n1
+#      detects the row a second time and its entry's winner_ts moves to that
+#      newer update.  n2's wait compares the oldest winner timestamp of n1's
+#      entry, so n2 still waits instead of copying n1's losing big.
+lost_update_setup('(ab)', 404, "repeat('b', 200000)", "small = 'ab2'");
+is(suspects(2, "pkey = jsonb_build_object('id', '404')"), '1', '(ab) n2 recorded its own suspect');
+psql_or_bail(2, "UPDATE public.td SET small = 'ab3' WHERE id = 404");
+drain('(ab)');
+is(scalar_query(1, "SELECT detect_count || '/' || (first_winner_ts < winner_ts) FROM spock.toast_suspect "
+              . "WHERE pkey = jsonb_build_object('id', '404')"),
+   '2/true', '(ab) n1 detected the row again and kept its first winner timestamp');
+set_repair(2, 'on');
+ok(poll_query_until(2,
+       "SELECT last_error LIKE 'waiting for node n1 to repair its older entry for this row%' "
+     . "FROM spock.toast_suspect WHERE pkey = jsonb_build_object('id', '404')", 't', 30),
+   '(ab) n2 still waits for n1');
+is(big_md5(2, 404), $z_md5, '(ab) n2 did not copy n1\'s losing big');
+set_repair(1, 'on');
+settled_on_both('(ab)', 404);
+is(big_md5(1, 404), $z_md5, '(ab) n1 took the race winner\'s big');
+is(big_md5(2, 404), $z_md5, '(ab) n2 kept it');
+set_repair(1, 'off');
+set_repair(2, 'off');
 
 # (ac) The repair write runs as the table owner, as the apply worker does,
 #      so code it runs cannot act as the superuser the worker connects as.
@@ -1466,8 +1727,9 @@ is(suspects(1, "relid = 'public.td_at'::regclass"), '0', '(at) nothing recorded'
 #      conflict rule cannot compare the rows.  Row 1 was last written here
 #      by the winner, so the winner's row is at least as new and is
 #      repaired.  Row 2 was written here since, so which row is newer is not
-#      known: its entry is removed with a warning naming the row.  Freezing
-#      every database on n2 moves its horizon past both rows.
+#      known: the row stays, and big, which it kept from detection, takes the
+#      winner's value.  Freezing every database on n2 moves its horizon past
+#      both rows.
 set_repair(1, 'off');
 td_like('(au)', 'public.td_au', 'id int', 1, 2);
 for my $k (1, 2) {
@@ -1494,7 +1756,6 @@ for (1 .. 30) {
 }
 psql_or_bail(2, "ALTER DATABASE template0 ALLOW_CONNECTIONS false");
 ok($au_gone, '(au) n2 no longer has either row\'s commit timestamp');
-my $off_au = log_offset(1);
 set_repair(1, 'on');
 ok(poll_query_until(1, "SELECT count(*) FROM spock.toast_suspect WHERE relid = 'public.td_au'::regclass",
                     '0', 30), '(au) both entries settled')
@@ -1502,10 +1763,9 @@ ok(poll_query_until(1, "SELECT count(*) FROM spock.toast_suspect WHERE relid = '
                                               . "FROM spock.toast_suspect WHERE relid = 'public.td_au'::regclass"));
 is(scalar_query(1, "SELECT md5(big) FROM public.td_au WHERE id = 1"),
    scalar_query(2, "SELECT md5(big) FROM public.td_au WHERE id = 1"), '(au) row 1 repaired');
-ok(wait_for_log(1, qr/dropped the entry for row \{"id": "2"\} of public\.td_au unrepaired/, $off_au),
-   '(au) row 2 dropped with a warning');
-isnt(scalar_query(1, "SELECT md5(big) FROM public.td_au WHERE id = 2"),
-     scalar_query(2, "SELECT md5(big) FROM public.td_au WHERE id = 2"), '(au) row 2 left as it was');
+is(scalar_query(1, "SELECT md5(big) FROM public.td_au WHERE id = 2"),
+   scalar_query(2, "SELECT md5(big) FROM public.td_au WHERE id = 2"), '(au) row 2 kept big repaired');
+is(scalar_query(1, "SELECT small FROM public.td_au WHERE id = 2"), 'au2', '(au) row 2 keeps its own small');
 set_repair(1, 'off');
 
 # (ax) A stop request that arrives during a pass ends the worker without

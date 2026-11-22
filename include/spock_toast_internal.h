@@ -77,6 +77,8 @@ typedef enum WinnerFetchStatus
 								 * entry and report it */
 	WINNER_WAIT,				/* winner subscription disabled: leave for
 								 * later */
+	WINNER_PENDING,				/* the winner has an older pending entry for
+								 * the row: retry after it is repaired */
 	WINNER_RETRY,				/* only inside fetch_wave(): its group's query
 								 * failed, so fetch it again on its own */
 	WINNER_FAIL					/* could not fetch: mark the entry failed */
@@ -98,6 +100,8 @@ typedef struct WinnerRow
 	TimestampTz ts;				/* winner row commit timestamp */
 	RepOriginId origin;			/* winner row origin (already mapped: 0 ->
 								 * winner node id) */
+	char	   *pending;		/* WINNER_PENDING: the winner's older entry,
+								 * described for last_error */
 	char	  **stamp;			/* per suspect column: the winner's current
 								 * value stamp (spock.toast_stamp() text), or
 								 * NULL when it has none */
@@ -150,7 +154,14 @@ typedef struct RepairEntry
 								 * column is NULL */
 	int64		est_bytes;		/* sum(pg_column_size(col)) for the suspect
 								 * columns of the local row, 0 if not present */
+	char	  **stored_ptr;		/* per suspect column, attnum order: the TOAST
+								 * pointer recorded at detection, or NULL */
+	char	   *first_winner_ts;	/* the entry's oldest winner timestamp in
+									 * ISO 8601, for the winner's
+									 * pending-entry check */
+	char	   *winner_node_name;	/* for messages; NULL if unknown */
 	bool		sub_exists;		/* the winner subscription still exists */
+	char	   *reason;			/* detection's reason, or NULL */
 } RepairEntry;
 
 /*
@@ -170,6 +181,7 @@ typedef enum
 extern const char *const toast_pinned_output[][2];
 extern int	last_subxact_errcode;
 extern bool run_in_subxact(void (*fn) (void *arg), void *arg, char **errmsg);
+extern char *toast_pointer_text(Datum value);
 extern uint32 cached_local_nodeid(void);
 extern Oid	table_owner(Oid relid);
 struct UserContext;				/* utils/usercontext.h, or spock_common.h on 15 */

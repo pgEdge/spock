@@ -67,7 +67,9 @@ value frozen and left unwritten for about four billion transactions can
 instead read a newer transaction's stamp, as transaction ids wrap around:
 that records a row needlessly, and never hides one. Verification still
 hashes every entry against the winner before anything is written, so these
-cost a check, never a wrong repair.
+cost a check, never a wrong repair, and the repair worker rewrites such a
+value with the winner's stamp when it finds the values equal, so it is not
+recorded again.
 
 A rewrite on the sending node is quiet only for some rows. A `VACUUM FULL`,
 `CLUSTER`, pg_repack or a table-rewriting `ALTER TABLE` gives every value
@@ -239,8 +241,34 @@ winner row's commit timestamp, so later conflicts on it resolve against the
 right history, and the repair is not replicated: every other node already
 holds the winner's value. It also carries the winner's origin.
 
-If the local row was changed again since detection and is now the newer
-one, the row stays as it is and the entry is removed (see below).
+If the local row was changed again since detection and is now the newer one,
+the row stays as it is, except for suspect columns that newer update left
+alone. Those columns may still hold the value that lost the original
+conflict. When this node wrote that update, or the node that wrote the
+winner's current row did, they take the winner's value, and the row keeps
+its own commit timestamp and origin. When another node wrote it, that node
+may have taken a newer value for the column first, so the entry is pointed
+at that node instead and compared with it on the next pass. A suspect column
+that was written here since detection holds the newest value and is left
+alone. The worker tells the two apart by the column's TOAST pointer, which
+it records at detection: an update that leaves the column alone keeps the
+pointer, and so do `VACUUM FULL` and `CLUSTER`, while any write of new
+contents gets a new one.
+
+That newer local update reaches the other nodes with the TOAST column
+unchanged, so they record suspects of their own naming this node. They do
+not copy this node's value while it still has an older pending entry for the
+row: those entries wait until this node has repaired the row, and then clear
+because the values agree. So the cluster ends on the value that won the
+original conflict, not on the one that lost.
+
+A waiting entry's `last_error` names the node it waits for and describes
+that node's entry, including that entry's own `last_error`. Waits always
+point to an older entry, so they cannot loop, but a wait lasts as long as
+the entry it waits for cannot be repaired. A wait that does not clear points
+to a problem on the named node: its repair worker is off, its subscription
+to that entry's winner is disabled, that winner is unreachable, or the entry
+keeps failing. Fix that, and the waiting entries clear on their own.
 
 The worker reads and writes each table as the table's owner, on both nodes,
 so casts and operators the owner defined and row level security policies
@@ -248,9 +276,9 @@ never run as a superuser. On the winning node it reads the row through
 `spock.toast_read_as_owner()`, called over the subscription's connection
 string. The role in that string must be a superuser, as Spock requires, or a
 member of the table owner's role with the SET option, with `EXECUTE` on that
-function. A row that a row level security policy hides from the owner, with
-`FORCE ROW LEVEL SECURITY`, reads as missing on this node, and its entry is
-removed.
+function and `SELECT` on `spock.toast_suspect`. A row that a row level
+security policy hides from the owner, with `FORCE ROW LEVEL SECURITY`,
+reads as missing on this node, and its entry is removed.
 
 Values are copied as text: the winner's column cast to `text`, and cast
 back to the column's type here. Built-in types read back as the same value;
@@ -276,8 +304,8 @@ If the winning node no longer keeps its row's commit timestamp, because the
 row is older than that node's commit timestamp horizon, the conflict rule
 cannot compare the rows. When the local row was last written by the winning
 node, the winner's row is at least as new, and the row is repaired.
-Otherwise the entry is removed with a warning naming the row; compare it
-with ACE.
+Otherwise the local row stays, as when it is newer, and the columns it kept
+from detection take the winner's value.
 
 Entries whose winner subscription is disabled wait, and are repaired once
 it is enabled again. Entries whose winner subscription has been dropped,
@@ -313,6 +341,14 @@ stamp lookup on the sending node. Verification and repair have work only for
 rows that really differ, and for rows whose stamp could not be read. In a
 cluster with occasional conflicts, the queue is empty most of the time.
 
+Expect a burst of entries after a table is rewritten on one node, for
+example by `VACUUM FULL`, `CLUSTER` or `pg_repack`. The rewrite gives the
+table's large values new stamps, so the next update from another node that
+leaves such a value unchanged records the row. With the repair worker on,
+the worker finds the values equal and rewrites them under the winner's
+stamp, so each row is usually recorded once and the burst dies down on its
+own.
+
 ### Sending stamps
 
 The walsender for each subscriber reads a stamp for every out-of-line column
@@ -347,6 +383,10 @@ entries or `spock.toast_divergence_fetch_bytes` of values. For small values
 the round trips set the pace, so the rate falls with network latency; for
 large values, reading, hashing and copying the values set the pace.
 
+When the worker finds that a row recorded with a stamp mismatch agrees after
+all, it rewrites the row's values under the winner's stamp, which adds a
+write.
+
 A repair writes the columns that differ, plus one more version of the row
 that reuses the values just written. A backlog of repairs therefore writes
 about as much data as it copies, and competes for I/O like any other write
@@ -369,11 +409,13 @@ record of its own divergences. Once every node runs 6.1.0 or later, compare
 the replicated tables with ACE to find anything that diverged during the
 upgrade.
 
-If the node that lost a conflict updates the row again before the repair,
-leaving the TOAST column alone, its row is then the newer one and keeps the
-losing value. That update reaches the other nodes with the column
-unchanged, and they record suspects of their own naming this node, so the
-cluster can end on the value that lost.
+If the value that lost a conflict is small enough to be stored inline in the
+row, it has no TOAST pointer to compare. If the node holding it then updates
+the row again before the repair, that update sends the value in full, the
+other nodes take it, and every node ends on the losing value. The nodes
+agree, but the winning value is lost. This needs a value that is stored
+inline on one node and out of line on the winner, and a local update in the
+short time before the repair.
 
 Detection is forward-only. Rows that diverged before this feature was
 enabled, or while detection was off, are never recorded. Use ACE for a
@@ -412,6 +454,37 @@ listed in `spock.exception_log`; compare those rows with ACE.
 
 Delete divergence, where one node deleted a row another node updated, is
 not detected here beyond marking a `remote_missing` entry.
+
+In a full mesh, repair moves each recorded row toward the newest version
+the nodes have seen, but a row can need more than one pass, and some
+orderings leave a node on a losing value with no entry:
+
+- When the local row is newer than the winner's and was written by a third
+  node, the entry is pointed at that node and compared with it on the next
+  pass, since this node cannot tell whether its kept column lost. If that
+  node lost the same change and has not repaired the row yet, it holds the
+  same losing value, the two compare equal and the entry is removed. If this
+  node does not subscribe to that node, the entry stays, with a
+  `last_error` saying so, until you compare the row with ACE and remove the
+  entry with `spock.toast_divergence_clear()`.
+- When the local row and the winner's row both come from the same third
+  node (the same update, or an older one on the winner), the kept column
+  takes the winner's value. If the winner lost the column to a change this
+  node already holds, and has not repaired yet, this node copies the
+  winner's losing value over the right one and removes its entry.
+- An entry waits only for a strictly older entry on the winner. Two nodes
+  that lost the same change while holding different values have entries of
+  the same age, so if one of them updates the row again before its repair,
+  the other can copy its losing value.
+- A table rewrite here (a rewriting `ALTER TABLE` or pg_repack) between
+  detection and repair gives the kept column a new TOAST pointer. When the
+  local row is newer, the column then reads as written here and is left
+  alone, and the entry is removed.
+
+In each case the row stays wrong on that node until it is detected again,
+or until ACE finds it. A row can also briefly re-diverge after a repair and
+is corrected on its next detection. Convergence is eventual, not one-shot,
+and ACE remains the check that a cluster is consistent.
 
 When the winning change reached a node through another node, on a
 subscription with `forward_origins`, the forwarding node cannot be used to

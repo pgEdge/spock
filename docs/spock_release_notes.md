@@ -9,7 +9,10 @@
   table are recorded as they happen, and `spock.toast_divergence_verify()`
   confirms which ones did. With `spock.toast_divergence_repair = on`, a
   background worker repairs confirmed rows with the winner's values,
-  stamped with the winner row's timestamp and not replicated. Providers
+  stamped with the winner row's timestamp and not replicated. If the
+  diverged node updates the row again before the repair, leaving the TOAST
+  column alone, the cluster still ends on the winning value in most cases
+  (see the limits in *Detecting and Repairing TOAST Divergence*). Providers
   send a version stamp with each unchanged TOAST column (protocol 6,
   `spock.toast_divergence_stamps`), so only rows whose version actually
   differs are recorded.
@@ -49,6 +52,8 @@
   recorded suspects against the winning node; returns counts.
 * `spock.toast_divergence_clear(relation regclass, pkey jsonb)`: remove one
   entry after an out-of-band repair.
+* `spock.toast_pointer(value "any")`: the on-disk TOAST pointer of a
+  column value, as recorded in `spock.toast_suspect.toast_ptrs`.
 * `spock.toast_stamp(value "any")`: the version stamp of a column value.
 * `spock.toast_read_as_owner(rel, query, param, nstamp)`: called by other
   nodes' repair workers and `spock.toast_divergence_verify()` over the

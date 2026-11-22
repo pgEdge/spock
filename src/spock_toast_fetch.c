@@ -267,16 +267,16 @@ classify_entries(RepairEntry **entries, int n, WinnerRow *rows,
 
 /*
  * The winner fetch for one group (fetch_wave()).  Result columns:
- * __pkey__, per suspect column cN_diff and cN_val, then ts, origin, and
- * per suspect column cN_stamp.
+ * __pkey__, per suspect column cN_diff and cN_val, then ts, origin,
+ * pending, and per suspect column cN_stamp.
  *
  * The read hashes each column once, in a lateral subquery that OFFSET 0
  * keeps the planner from pulling up (it would copy the hash into each
  * use), and returns a value only when its hash differs, so a row that
  * has already converged costs the winner its hashes alone.
  *
- * Without for_repair (verify()) the values and the stamps come back NULL and
- * are not computed: verify() needs only the diff flags.
+ * Without for_repair (verify()) the values, the pending check and the stamps
+ * come back NULL and are not computed: verify() needs only the diff flags.
  */
 static char *
 build_fetch_sql(const RepairEntry *base, bool for_repair)
@@ -291,11 +291,13 @@ build_fetch_sql(const RepairEntry *base, bool for_repair)
 	 * winner's hash differs from the local one carried in the key row) and,
 	 * for a repair, the value as text when it differs; the row's xmin; and
 	 * for a repair each column itself, whose version stamp comes back in
-	 * its place.  Identifiers and types come from the local catalog via the
-	 * entry; only the keys and hashes cross as the one jsonb parameter.
+	 * its place.  The entry's oldest winner timestamp passes through for
+	 * the checks below.  Identifiers and types come from the local catalog
+	 * via the entry; only the keys and hashes cross as the one jsonb
+	 * parameter.
 	 */
 	initStringInfo(&inner);
-	appendStringInfoString(&inner, "SELECT x.__pkey__");
+	appendStringInfoString(&inner, "SELECT x.__pkey__, x.__wts__");
 	for (c = 0; c < base->ncols; c++)
 	{
 		appendStringInfo(&inner, ", d.d%d", c);
@@ -310,7 +312,7 @@ build_fetch_sql(const RepairEntry *base, bool for_repair)
 			appendStringInfo(&inner, ", t.%s", base->colnames[c]);
 	}
 	appendStringInfoString(&inner,
-						   " FROM jsonb_to_recordset($1::jsonb) AS x(k jsonb, __pkey__ text");
+						   " FROM jsonb_to_recordset($1::jsonb) AS x(k jsonb, __pkey__ text, __wts__ timestamptz");
 	for (c = 0; c < base->ncols; c++)
 		appendStringInfo(&inner, ", h%d text", c);
 	appendStringInfo(&inner, ") " KEY_FROM_PARAM " JOIN %s t ON %s",
@@ -322,8 +324,10 @@ build_fetch_sql(const RepairEntry *base, bool for_repair)
 	appendStringInfoString(&inner, " OFFSET 0) d");
 
 	/*
-	 * The rest runs as the connecting role, on what the read returned: the
-	 * row's commit timestamp and origin come from its xmin.
+	 * The rest runs as the connecting role, on what the read returned.  A
+	 * differing value always comes back, so a NULL one is the winner's SQL
+	 * NULL: holding it back while the entry waits would leave the worker
+	 * unable to tell the two apart.
 	 */
 	initStringInfo(&sql);
 	appendStringInfoString(&sql, "SELECT __pkey__");
@@ -334,7 +338,8 @@ build_fetch_sql(const RepairEntry *base, bool for_repair)
 		else
 			appendStringInfo(&sql, ", c%d_diff, NULL::text AS c%d_val", c, c);
 	}
-	appendStringInfoString(&sql, ", ts, origin");
+	appendStringInfoString(&sql, for_repair ? ", ts, origin, pending" :
+						   ", ts, origin, NULL::text AS pending");
 	for (c = 0; c < base->ncols; c++)
 	{
 		if (for_repair)
@@ -346,7 +351,39 @@ build_fetch_sql(const RepairEntry *base, bool for_repair)
 						   " FROM (SELECT q.*"
 						   ", (spock.xact_commit_timestamp_origin(q.xmin::xid)).timestamp::text AS ts"
 						   ", (spock.xact_commit_timestamp_origin(q.xmin::xid)).roident::text AS origin");
-	appendStringInfo(&sql, " FROM spock.toast_read_as_owner(%s::regclass, %s, $1::jsonb, %d) AS q(__pkey__ text",
+
+	if (for_repair)
+	{
+		/*
+		 * Whether the winner itself holds a pending entry for this row from
+		 * an older winning write.  Then its value for the column may be the
+		 * one that lost that older conflict, carried forward by a later local
+		 * update that left the column alone, and copying it would undo the
+		 * older winner.  The winner's worker repairs it first; this entry
+		 * waits.  Both sides compare first_winner_ts, the oldest winner
+		 * timestamp of the entry, so a later detection on either node does
+		 * not hide an older divergence.  Only older entries count: the
+		 * winner's newer entry for the same row is normally the mirror image
+		 * of this one, and waiting on it too would leave the two nodes
+		 * waiting on each other.  Entries with no winner subscription
+		 * (forwarded changes) are never settled by the worker, so they are
+		 * not waited on.
+		 *
+		 * The winner's entry comes back described, its own last_error
+		 * included, so a wait that lasts shows here what holds it up there.
+		 */
+		appendStringInfo(&sql,
+						 ", (SELECT format('state %%s, detected %%s%%s', s.state, s.detected_at,"
+						 " coalesce(', its last error: ' || s.last_error, ''))"
+						 " FROM spock.toast_suspect s"
+						 " WHERE s.relid = %s::regclass AND s.pkey = q.__pkey__::jsonb"
+						 " AND s.state IN ('suspect', 'confirmed') AND s.winner_subid <> 0"
+						 " AND coalesce(s.first_winner_ts, s.winner_ts) < q.__wts__"
+						 " ORDER BY coalesce(s.first_winner_ts, s.winner_ts) LIMIT 1) AS pending",
+						 quote_literal_cstr(base->qualname));
+	}
+
+	appendStringInfo(&sql, " FROM spock.toast_read_as_owner(%s::regclass, %s, $1::jsonb, %d) AS q(__pkey__ text, __wts__ timestamptz",
 					 quote_literal_cstr(base->qualname), quote_literal_cstr(inner.data),
 					 for_repair ? base->ncols : 0);
 	for (c = 0; c < base->ncols; c++)
@@ -459,7 +496,8 @@ parse_winner_rows(PGresult *res, FetchGroup *g, RepairEntry **entries,
 	int			ncols = entries[g->idx[0]]->ncols;
 	int			tsidx = 1 + 2 * ncols;
 	int			oidx = 2 + 2 * ncols;
-	int			sidx = 3 + 2 * ncols;
+	int			pidx = 3 + 2 * ncols;
+	int			sidx = 4 + 2 * ncols;
 	int			t;
 	int			k;
 
@@ -540,6 +578,13 @@ parse_winner_rows(PGresult *res, FetchGroup *g, RepairEntry **entries,
 		 */
 		if (w->origin == InvalidRepOriginId)
 			w->origin = (RepOriginId) e->winner_node_id;
+
+		if (!PQgetisnull(res, t, pidx))
+		{
+			w->status = WINNER_PENDING;
+			w->pending = MemoryContextStrdup(rescxt,
+											 PQgetvalue(res, t, pidx));
+		}
 	}
 }
 

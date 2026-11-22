@@ -270,6 +270,13 @@ settle_by_status(RepairEntry *e, WinnerRow *w)
 			return settle_drop(e, REPAIR_ORPHANED);
 		case WINNER_WAIT:
 			return REPAIR_WAITING;
+		case WINNER_PENDING:
+			/* Stamping verified_at sends the entry behind the queue. */
+			entry_mark(e, e->orig_state,
+					   psprintf("waiting for node %s to repair its older entry for this row (%s)",
+								e->winner_node_name ? e->winner_node_name : "(unknown)",
+								w->pending));
+			return REPAIR_WAITING;
 		case WINNER_FAIL:
 
 			/*

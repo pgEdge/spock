@@ -26,6 +26,10 @@ use SpockTest qw(
 #   g   the sender cannot lock its TOAST table: no_stamp, decoding not held
 #   h0  a value written under the initial sync's stamp: no_local_stamp
 #   h   a repair writes the value's own stamp, and the row the winner's
+#   i   the same through rule 1, the row keeping its own stamp
+#   j   after CLUSTER, an equal value is healed to the winner's stamp, its
+#       stored bytes copied as they are
+#   n   healing does not stamp a value written after the worker compared it
 #   o   decoding a change made before VACUUM FULL or TRUNCATE sends 'u'
 #   x   a row last written by the sender is recorded when the sender's
 #       value names another node and differs here
@@ -334,11 +338,164 @@ psql_or_bail(2, "UPDATE public.td SET small = 'h2' WHERE id = 71");
 drain('(h)');
 is(suspects(1, "pkey = jsonb_build_object('id', '71')"), '0', '(h) the next cross-node update records nothing');
 
+# ---------------------------------------------------------------------------
+# (i) The same through rule 1: n1 updates small before its repair, so n1's
+#     row is newer and keeps its own stamp, while big takes the winner's
+#     value with the value's own stamp.  n2 waits for n1, then clears.
+# ---------------------------------------------------------------------------
+insert_rows('(i)', 72, 72);
+race('(i)',
+     "UPDATE public.td SET big = repeat('i', 200000) WHERE id = 72",
+     "UPDATE public.td SET small = 'i' WHERE id = 72");
+psql_or_bail(1, "UPDATE public.td SET small = 'i1' WHERE id = 72");
+drain('(i)');
+is(suspects(2, "pkey = jsonb_build_object('id', '72')"), '1', '(i) n2 recorded its own suspect');
+my $i_row = row_stamp(1, 72);
+set_repair(1, 'on');
+set_repair(2, 'on');
+for my $n (1, 2) {
+    ok(poll_query_until($n, "SELECT count(*) FROM spock.toast_suspect WHERE pkey = jsonb_build_object('id', '72')",
+                        '0', 30), "(i) n$n settled its entry");
+}
+set_repair(1, 'off');
+set_repair(2, 'off');
+is(scalar_query(1, "SELECT md5(big) FROM public.td WHERE id = 72"),
+   scalar_query(2, "SELECT md5(big) FROM public.td WHERE id = 72"), '(i) both hold the winner\'s big');
+is(value_stamp(1, 72), value_stamp(2, 72), '(i) n1\'s value carries the value\'s own stamp');
+is(row_stamp(1, 72), $i_row, '(i) n1\'s row kept its own stamp');
+
+# ---------------------------------------------------------------------------
+# (j) CLUSTER on n1 rewrites its chunks under a new transaction: same bytes,
+#     a different stamp.  The next cross-node update records stamp_mismatch;
+#     the worker finds the values equal and heals the stamp, keeping the
+#     row's own stamp, so the mismatch does not come back.
+# ---------------------------------------------------------------------------
+# The rows are written compressed, for the stored-bytes check below.
+for my $n (1, 2) {
+    psql_or_bail($n, "SET spock.enable_ddl_replication = off; "
+                   . "ALTER TABLE public.td ALTER COLUMN big SET STORAGE EXTENDED");
+}
+insert_rows('(j)', 81, 82);
+# On n1 only: replicated by AutoDDL, n2 would run the same CLUSTER under
+# n1's origin and commit time, and both nodes would get the same new stamp.
+psql_or_bail(1, "SET spock.enable_ddl_replication = off; CLUSTER public.td USING td_pkey");
+isnt(value_stamp(1, 81), value_stamp(2, 81), '(j) CLUSTER gave n1\'s value a new stamp');
+psql_or_bail(2, "UPDATE public.td SET small = 'j' WHERE id IN (81, 82)");
+drain('(j)');
+is(reason_of(1, 81), 'stamp_mismatch', '(j) recorded as stamp_mismatch');
+my $j_md5 = scalar_query(1, "SELECT md5(big) FROM public.td WHERE id = 81");
+my $j_row = row_stamp(1, 81);
+# Healing copies the stored bytes, never a re-encoding of the value: with
+# the column switched to uncompressed storage, a value rebuilt from its text
+# form would be stored uncompressed.
+my $j_ext = "SELECT split_part(spock.toast_pointer(big), '/', 4) || ' ' "
+          . "|| coalesce(pg_column_compression(big), 'none') FROM public.td WHERE id = 81";
+my $j_stored = scalar_query(1, $j_ext);
+like($j_stored, qr/^\d+(pglz|lz4)$/, '(j) value stored compressed');
+psql_or_bail(1, "SET spock.enable_ddl_replication = off; "
+              . "ALTER TABLE public.td ALTER COLUMN big SET STORAGE EXTERNAL");
+psql_or_bail(1, "DELETE FROM spock.toast_suspect WHERE pkey = jsonb_build_object('id', '82')");
+my $j_n2_xmin = scalar_query(2, "SELECT xmin FROM public.td WHERE id = 81");
+my $j_n2_res = scalar_query(2, "SELECT count(*) FROM spock.resolutions");
+set_repair(1, 'on');
+ok(poll_query_until(1, "SELECT count(*) FROM spock.toast_suspect WHERE pkey = jsonb_build_object('id', '81')",
+                    '0', 30), '(j) entry cleared');
+set_repair(1, 'off');
+drain('(j)');
+is(scalar_query(2, "SELECT xmin FROM public.td WHERE id = 81"), $j_n2_xmin,
+   '(j) the heal did not replicate: n2\'s row untouched');
+is(scalar_query(2, "SELECT count(*) FROM spock.resolutions"), $j_n2_res,
+   '(j) and n2 saw no conflict');
+psql_or_bail(2, "SET spock.enable_ddl_replication = off; "
+              . "ALTER TABLE public.td ALTER COLUMN big SET STORAGE EXTERNAL");
+is(scalar_query(1, $j_ext), $j_stored, '(j) healing kept the stored bytes');
+is(scalar_query(1, "SELECT md5(big) FROM public.td WHERE id = 81"), $j_md5, '(j) value unchanged');
+is(value_stamp(1, 81), value_stamp(2, 81), '(j) stamp healed to n2\'s');
+is(row_stamp(1, 81), $j_row, '(j) row kept its own stamp');
+psql_or_bail(1, "UPDATE public.td SET small = 'j1' WHERE id = 81");
+drain('(j)');
+psql_or_bail(2, "UPDATE public.td SET small = 'j2' WHERE id = 81");
+drain('(j)');
+is(suspects(1, "pkey = jsonb_build_object('id', '81')"), '0', '(j) the mismatch does not come back');
+
+# ---------------------------------------------------------------------------
+# (j2) The same, on a table whose trigger rejects the healing rewrite.  The
+#      values agree, so the entry is dropped anyway, and the failure is
+#      logged instead of failing the entry on every pass.
+# ---------------------------------------------------------------------------
+psql_or_bail(1, "CREATE TABLE public.td_heal (id int PRIMARY KEY, small text, big text); "
+              . "ALTER TABLE public.td_heal ALTER COLUMN big SET STORAGE EXTERNAL");
+ok(poll_query_until(2, "SELECT count(*) FROM pg_class WHERE oid = to_regclass('public.td_heal')", '1', 30),
+   '(j2) td_heal replicated to n2');
+psql_or_bail(1, "INSERT INTO public.td_heal VALUES (1, 's', $BIG_Z)");
+drain('(j2)');
+psql_or_bail(1, "SET spock.enable_ddl_replication = off; CLUSTER public.td_heal USING td_heal_pkey");
+psql_or_bail(2, "UPDATE public.td_heal SET small = 'j2' WHERE id = 1");
+drain('(j2)');
+is(scalar_query(1, "SELECT reason FROM spock.toast_suspect WHERE relid = 'public.td_heal'::regclass"),
+   'stamp_mismatch', '(j2) recorded as stamp_mismatch');
+psql_or_bail(1, "SET spock.enable_ddl_replication = off; "
+              . "CREATE FUNCTION public.td_heal_no() RETURNS trigger LANGUAGE plpgsql AS "
+              . "\$f\$BEGIN RAISE EXCEPTION 'td_heal rejects the rewrite'; END\$f\$; "
+              . "CREATE TRIGGER td_heal_no BEFORE UPDATE ON public.td_heal "
+              . "FOR EACH ROW EXECUTE FUNCTION public.td_heal_no(); "
+              . "ALTER TABLE public.td_heal ENABLE ALWAYS TRIGGER td_heal_no");
+my $off_j2 = log_offset(1);
+set_repair(1, 'on');
+ok(poll_query_until(1, "SELECT count(*) FROM spock.toast_suspect WHERE relid = 'public.td_heal'::regclass",
+                    '0', 30), '(j2) entry dropped');
+set_repair(1, 'off');
+my $j2_log = log_since(1, $off_j2);
+like($j2_log, qr/could not restamp the equal values of a row of relation \d+: .*rejects the rewrite/,
+     '(j2) the rejected rewrite is logged');
+unlike($j2_log, qr/"id": "1"/, '(j2) the log does not carry the row\'s key');
+psql_or_bail(1, "SET spock.enable_ddl_replication = off; DROP TRIGGER td_heal_no ON public.td_heal");
+
 sub suspect_gone {
     my ($id) = @_;
     return poll_query_until(1, "SELECT count(*) FROM spock.toast_suspect "
                              . "WHERE pkey = jsonb_build_object('id', '$id')", '0', 30);
 }
+
+# ---------------------------------------------------------------------------
+# (n) Healing must not stamp a value that changed after the worker compared
+#     it.  Row 87 is recorded as stamp_mismatch with equal values (CLUSTER on
+#     n1).  A session locks the row, so the worker compares, fetches and then
+#     waits to settle; the session then writes a new value of the same size
+#     and commits.  The worker must not give that new value the winner's
+#     old stamp.
+# ---------------------------------------------------------------------------
+psql_or_bail(1, "DELETE FROM spock.toast_suspect");
+psql_or_bail(2, "DELETE FROM spock.toast_suspect");
+insert_rows('(n)', 87, 87);
+psql_or_bail(1, "SET spock.enable_ddl_replication = off; CLUSTER public.td USING td_pkey");
+psql_or_bail(1, "UPDATE public.td SET small = 'n0' WHERE id = 87");
+drain('(n)');
+psql_or_bail(2, "DELETE FROM spock.toast_suspect");
+psql_or_bail(2, "UPDATE public.td SET small = 'n' WHERE id = 87");
+drain('(n)');
+is(reason_of(1, 87), 'stamp_mismatch', '(n) recorded as stamp_mismatch');
+my $n_winner = value_stamp(2, 87);
+my ($n_in, $n_out, $n_err) = ('', '', '');
+my $n_timer = IPC::Run::timer(30);
+my $n_sess = IPC::Run::start(
+    [ "$cfg->{pg_bin}/psql", '-X', '-q', '-p', $cfg->{node_ports}->[0], '-d', $cfg->{db_name} ],
+    '<', \$n_in, '>', \$n_out, '2>', \$n_err, $n_timer);
+$n_in .= "BEGIN; SELECT 1 FROM public.td WHERE id = 87 FOR UPDATE;\n";
+$n_timer->start;
+$n_sess->pump while $n_out !~ /1/ && $n_sess->pumpable && !$n_timer->is_expired;
+like($n_out, qr/1/, '(n) the row is locked') or diag("locking session: $n_err");
+set_repair(1, 'on');
+ok(poll_query_until(1, "SELECT count(*) FROM pg_stat_activity "
+                     . "WHERE application_name LIKE 'spock toast repair%' AND wait_event_type = 'Lock'",
+                    '1', 30),
+   '(n) the worker compared the row and waits to settle it');
+$n_in .= "UPDATE public.td SET big = repeat('y', 200000) WHERE id = 87; COMMIT;\n\\q\n";
+$n_sess->finish;
+ok(poll_query_until(1, "SELECT count(*) FROM spock.toast_suspect WHERE pkey = jsonb_build_object('id', '87')",
+                    '0', 30), '(n) entry settled');
+set_repair(1, 'off');
+isnt(value_stamp(1, 87), $n_winner, '(n) the new value did not get the winner\'s old stamp');
 
 # ---------------------------------------------------------------------------
 # (x) A row last written by the sender is recorded when the sender's value

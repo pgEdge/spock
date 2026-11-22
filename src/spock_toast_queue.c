@@ -118,7 +118,11 @@ typedef enum EntryColumn
 	EC_KEY_VALUES,
 	EC_KEY_TYPIDS,
 	EC_STATE,
+	EC_STORED_PTRS,
+	EC_FIRST_WINNER_TS,
+	EC_WINNER_NODE_NAME,
 	EC_SUB_EXISTS,
+	EC_REASON,
 	EC_DETECTED_AT
 } EntryColumn;
 
@@ -302,9 +306,9 @@ entry_needs_hash(const RepairEntry *e, bool for_repair)
  * Append one entry's row of a batched query's $1 array: "k", its key object
  * (already jsonb text, values as JSON strings), and "__pkey__", a copy of
  * that text, so a returned row can be matched back to its entry.  For the
- * winner fetch, also "h0".."hN", its local hashes, null for a NULL column.
- * The key is nested so that no key column name can clash with these fields
- * (KEY_FROM_PARAM).
+ * winner fetch, also "__wts__", the entry's oldest winner timestamp, and
+ * "h0".."hN", its local hashes, null for a NULL column.  The key is nested
+ * so that no key column name can clash with these fields (KEY_FROM_PARAM).
  */
 void
 append_key_object(StringInfo buf, const RepairEntry *e, bool for_fetch)
@@ -317,6 +321,8 @@ append_key_object(StringInfo buf, const RepairEntry *e, bool for_fetch)
 	{
 		int			c;
 
+		appendStringInfoString(buf, ",\"__wts__\":");
+		escape_json(buf, e->first_winner_ts);
 		for (c = 0; c < e->ncols; c++)
 		{
 			appendStringInfo(buf, ",\"h%d\":", c);
@@ -596,7 +602,28 @@ entry_from_tuple(RepairEntry *e, HeapTuple row, TupleDesc desc)
 	/* fetch_wave() runs without SPI, so the entry carries the clauses. */
 	entry_key_clauses(e, row, desc);
 	e->orig_state = SPI_getvalue(row, desc, EC_STATE);
+
+	/*
+	 * Aligned with colnames: both list the live suspect columns in attnum
+	 * order.  An entry without pointers (written before they were recorded,
+	 * or by hand) gets all NULLs.
+	 */
+	if (e->ncols > 0)
+	{
+		e->stored_ptr = palloc0(e->ncols * sizeof(char *));
+		d = SPI_getbinval(row, desc, EC_STORED_PTRS, &isnull);
+		if (!isnull)
+		{
+			char	  **ptrs = text_array_cstrings(d, true, &n);
+
+			for (i = 0; i < n && i < e->ncols; i++)
+				e->stored_ptr[i] = ptrs[i];
+		}
+	}
+	e->first_winner_ts = SPI_getvalue(row, desc, EC_FIRST_WINNER_TS);
+	e->winner_node_name = SPI_getvalue(row, desc, EC_WINNER_NODE_NAME);
 	e->sub_exists = DatumGetBool(SPI_getbinval(row, desc, EC_SUB_EXISTS, &isnull));
+	e->reason = SPI_getvalue(row, desc, EC_REASON);
 	d = SPI_getbinval(row, desc, EC_DETECTED_AT, &isnull);
 	e->detected_at = isnull ? 0 : DatumGetTimestampTz(d);
 }
@@ -735,7 +762,15 @@ read_entries(int max_rows, bool for_repair, MemoryContext destcxt,
 								"       CASE WHEN kc.ok THEN kc.vals END AS key_values, "
 								"       CASE WHEN kc.ok THEN kc.typids END AS key_typids, "
 								"       s.state, "
+								"       (SELECT array_agg(s.toast_ptrs[i] ORDER BY s.attnums[i]) "
+								"          FROM generate_subscripts(s.attnums, 1) i "
+								"          JOIN pg_attribute a ON a.attrelid = s.relid "
+								"           AND a.attnum = s.attnums[i] AND NOT a.attisdropped) AS stored_ptrs, "
+								"       to_json(coalesce(s.first_winner_ts, s.winner_ts)) #>> '{}' "
+								"         AS first_winner_ts, "
+								"       wn.node_name AS winner_node_name, "
 								"       sub.sub_id IS NOT NULL AS sub_exists, "
+								"       s.reason, "
 								"       s.detected_at "
 								"  FROM spock.toast_suspect s "
 								"  LEFT JOIN pg_class c ON c.oid = s.relid "
@@ -748,6 +783,7 @@ read_entries(int max_rows, bool for_repair, MemoryContext destcxt,
 								"      FROM pg_attribute a WHERE a.attrelid = s.relid "
 								"       AND a.attnum = ANY (s.attnums) AND NOT a.attisdropped) cols ON true "
 								"  LEFT JOIN spock.subscription sub ON sub.sub_id = s.winner_subid "
+								"  LEFT JOIN spock.node wn ON wn.node_id = sub.sub_origin "
 								" WHERE s.state IN ('suspect', $2) "
 								" ORDER BY ($3 AND (c.oid IS NULL OR coalesce(sub.sub_enabled, false) "
 								"           OR (s.winner_subid <> 0 AND sub.sub_id IS NULL))) DESC, "
