@@ -14,7 +14,15 @@
   the promoted node had no slot and the subscriber failed with `replication
   slot ... does not exist`. A new copy now starts at the primary slot's
   `restart_lsn`, as PostgreSQL's own slot sync does, and is made permanent
-  on the same pass when the standby still has that WAL.
+  on the same pass when the standby still has that WAL. A copy is created
+  only once the standby has received that position.
+* Where the standby could not decode a slot copy's WAL, the failover slot
+  worker could move an existing copy's `restart_lsn` past the end of the WAL
+  the standby had received. A promotion then left the slot pointing at WAL
+  the node never had, and until the standby caught up the worker logged
+  `synchronization would move it backward`. The copy's `restart_lsn` now
+  stays where it is until the standby has received the position it would
+  move to.
 * After one failed connection to `spock.failover_slots_database`, the
   failover slot worker synchronized slot copies without the consistent
   snapshot check until the server was restarted, even when the cause was
