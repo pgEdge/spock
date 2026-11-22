@@ -5,10 +5,11 @@
  *
  * PostgreSQL does not WAL-log a TOAST value an UPDATE left unchanged, so
  * the replicated message carries a marker instead and the apply worker
- * keeps whatever the local row holds.  When the UPDATE came from another
- * origin and won a conflict, the local value may differ from the winner's,
- * and nothing else records that.  spock_toast_suspect_record() writes such
- * rows to spock.toast_suspect.
+ * keeps whatever the local row holds.  When the UPDATE won a conflict on a
+ * row another origin wrote, or its version stamps show the column differs,
+ * the local value may differ from the winner's, and nothing else records
+ * that.  spock_toast_suspect_record() writes such rows to
+ * spock.toast_suspect.
  *
  * Copyright (c) 2022-2026, pgEdge, Inc.
  * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
@@ -19,6 +20,7 @@
 #include "postgres.h"
 
 #include "access/commit_ts.h"
+#include "access/detoast.h"
 #include "access/xact.h"
 #include "catalog/namespace.h"
 #include "executor/spi.h"
@@ -26,10 +28,14 @@
 #include "utils/builtins.h"
 #include "utils/json.h"
 #include "utils/lsyscache.h"
+#if PG_VERSION_NUM >= 160000
+#include "varatt.h"
+#endif
 
 #include "spock.h"
 #include "spock_toast_divergence.h"
 #include "spock_toast_internal.h"
+#include "spock_toast_stamp.h"
 #include "spock_worker.h"
 
 /* Last: it redefines core macros such as WaitLatch() on some majors. */
@@ -58,6 +64,8 @@ typedef struct SuspectRecordArg
 	char	   *pkey;			/* set by suspect_record_cb():
 								 * {"attname": "value", ...} */
 	const char *attnums;		/* int2[] literal */
+	const char *winner_stamps;	/* text[] literal, parallel to attnums */
+	const char *reason;			/* stamp_mismatch, no_local_stamp, no_stamp */
 	RepOriginId local_origin;
 	TimestampTz local_ts;
 } SuspectRecordArg;
@@ -67,11 +75,42 @@ typedef struct SuspectRecordArg
  * ON CONFLICT clause and the refresh at the cap in suspect_record_cb().
  */
 #define SUSPECT_REFRESH_SET \
-	"attnums = $3::int2[], state = 'suspect', " \
+	"attnums = $3::int2[], " \
+	"winner_stamps = $10::text[], reason = $11, state = 'suspect', " \
 	"winner_subid = $4, winner_origin = $5, winner_ts = $6, " \
 	"local_origin = $7, local_ts = $8, " \
 	"detect_count = spock.toast_suspect.detect_count + 1, " \
 	"detected_at = now(), verified_at = NULL, differing = NULL, last_error = $9"
+
+/*
+ * Whether one unchanged column may hold a different version from the
+ * sender's, and how sure that is, weakest first so a row takes the
+ * strongest of its columns.  Every uncertain case is a suspect: a wrong
+ * "same version" would hide a divergence.
+ */
+typedef enum SuspectReason
+{
+	REASON_NONE,				/* the same version, not a suspect */
+	REASON_NO_STAMP,			/* the sender sent no stamp */
+	REASON_NO_LOCAL_STAMP,		/* the local stamp cannot be read or compared */
+	REASON_STAMP_MISMATCH		/* the stamps or sizes differ */
+} SuspectReason;
+
+static const char *const reason_names[] = {
+	NULL, "no_stamp", "no_local_stamp", "stamp_mismatch"
+};
+
+/*
+ * The array literals of one suspect row, one element per suspect column,
+ * built side by side so they stay aligned: the attnums (int2[]) and the
+ * sender's version stamps (text[]).
+ */
+typedef struct SuspectColumns
+{
+	int			n;				/* columns added */
+	StringInfoData attnums;
+	StringInfoData stamps;
+} SuspectColumns;
 
 /*
  * Pin fixed text-output settings for the rest of the current GUC nest
@@ -266,10 +305,10 @@ static void
 suspect_record_cb(void *arg)
 {
 	SuspectRecordArg *a = (SuspectRecordArg *) arg;
-	Oid			argtypes[9] = {OIDOID, TEXTOID, TEXTOID, OIDOID, OIDOID,
-		TIMESTAMPTZOID, OIDOID, TIMESTAMPTZOID, TEXTOID};
-	Datum		values[9];
-	char		nulls[9];
+	Oid			argtypes[11] = {OIDOID, TEXTOID, TEXTOID, OIDOID, OIDOID,
+		TIMESTAMPTZOID, OIDOID, TIMESTAMPTZOID, TEXTOID, TEXTOID, TEXTOID};
+	Datum		values[11];
+	char		nulls[11];
 	Oid			winner_subid = MyApplyWorker->subid;
 	char	   *forward_note = NULL;
 	int			nestlevel;
@@ -326,6 +365,8 @@ suspect_record_cb(void *arg)
 	values[6] = ObjectIdGetDatum((Oid) a->local_origin);
 	values[7] = TimestampTzGetDatum(a->local_ts);
 	values[8] = forward_note ? CStringGetTextDatum(forward_note) : (Datum) 0;
+	values[9] = CStringGetTextDatum(a->winner_stamps);
+	values[10] = CStringGetTextDatum(a->reason);
 	memset(nulls, ' ', sizeof(nulls));
 	if (forward_note == NULL)
 		nulls[8] = 'n';
@@ -347,7 +388,7 @@ suspect_record_cb(void *arg)
 		if (refresh_plan == NULL)
 			refresh_plan = prepare_kept_plan("UPDATE spock.toast_suspect SET " SUSPECT_REFRESH_SET
 											 " WHERE relid = $1 AND pkey = $2::jsonb",
-											 9, argtypes, "refreshing a TOAST suspect");
+											 11, argtypes, "refreshing a TOAST suspect");
 		ret = SPI_execute_plan(refresh_plan, values, nulls, false, 0);
 		if (ret != SPI_OK_UPDATE)
 			elog(ERROR, "SPI_execute_plan failed refreshing a TOAST suspect: %d", ret);
@@ -370,16 +411,113 @@ suspect_record_cb(void *arg)
 	if (record_plan == NULL)
 		record_plan = prepare_kept_plan("INSERT INTO spock.toast_suspect "
 										"  (relid, pkey, attnums, state, winner_subid, winner_origin, winner_ts, "
-										"   local_origin, local_ts, detected_at, last_error) "
-										"VALUES ($1, $2::jsonb, $3::int2[], 'suspect', $4, $5, $6, $7, $8, now(), $9) "
+										"   local_origin, local_ts, detected_at, last_error, "
+										"   winner_stamps, reason) "
+										"VALUES ($1, $2::jsonb, $3::int2[], 'suspect', $4, $5, $6, $7, $8, now(), $9, "
+										"        $10::text[], $11) "
 										"ON CONFLICT (relid, pkey) DO UPDATE SET " SUSPECT_REFRESH_SET,
-										9, argtypes, "recording a TOAST suspect");
+										11, argtypes, "recording a TOAST suspect");
 	ret = SPI_execute_plan(record_plan, values, nulls, false, 0);
 	if (ret != SPI_OK_INSERT)
 		elog(ERROR, "SPI_execute_plan failed recording a TOAST suspect: %d", ret);
 
 	AtEOXact_GUC(true, nestlevel);
 	SPI_finish();
+}
+
+static SuspectReason
+column_suspect_reason(TupleTableSlot *newslot, SpockTupleData *newtup,
+					  int attid, ToastStampReader *reader,
+					  uint32 same_origin_id)
+{
+	SpockToastStamp *remote;
+	SpockToastStamp local;
+	Datum		value;
+
+	if (!SPOCK_TUPLE_STAMPED(newtup, attid))
+		return REASON_NO_STAMP;
+	remote = &newtup->stamps[attid];
+
+	/* The sender has an out-of-line value; a NULL here is another version. */
+	if (newslot->tts_isnull[attid])
+		return REASON_STAMP_MISMATCH;
+	/* The provider marks only varlenas unchanged; do not trust that. */
+	if (TupleDescAttr(newslot->tts_tupleDescriptor, attid)->attlen != -1)
+		return REASON_NO_LOCAL_STAMP;
+
+	value = newslot->tts_values[attid];
+
+	/*
+	 * The row was last written by the sender (same_origin_id), and the
+	 * sender's value is its own write: compare only the size, which the
+	 * local TOAST pointer gives without reading the chunks.  Had this node
+	 * lost one of the sender's writes in a conflict, its row was then last
+	 * written by another node, and the first later update from the sender
+	 * to win here compared the full stamps.  A sender's write this node
+	 * threw away after an apply error (spock.exception_behaviour discard or
+	 * transdiscard) leaves the row the sender's; the size catches that when
+	 * the write changed it.  The node and time are not compared: a VACUUM
+	 * FULL, CLUSTER, rewriting ALTER TABLE or pg_repack on the sender gives
+	 * every value there a new stamp naming the sender, with the same size,
+	 * and comparing them would put every later update of the table in the
+	 * queue.  That includes a value the sender took from a third node, so
+	 * after such a rewrite a divergence of equal size is missed.
+	 */
+	if (same_origin_id != 0 && remote->nodeid == same_origin_id)
+		return (int32) toast_raw_datum_size(value) == remote->rawsize ?
+			REASON_NONE : REASON_STAMP_MISMATCH;
+
+	if (VARATT_IS_EXTERNAL_ONDISK(DatumGetPointer(value)))
+	{
+		if (!toast_stamp_read_with(reader, value, cached_local_nodeid(), &local))
+			return REASON_NO_LOCAL_STAMP;
+
+		/* Equal stamps name the same version. */
+		return toast_stamp_equal(&local, remote) ? REASON_NONE : REASON_STAMP_MISMATCH;
+	}
+
+	/*
+	 * Stored inline here, out of line on the sender.  Values of different
+	 * sizes differ; equal sizes cannot be told apart.
+	 */
+	if ((int32) toast_raw_datum_size(value) != remote->rawsize)
+		return REASON_STAMP_MISMATCH;
+	return REASON_NO_LOCAL_STAMP;
+}
+
+static void
+suspect_columns_init(SuspectColumns *sc)
+{
+	sc->n = 0;
+	initStringInfo(&sc->attnums);
+	initStringInfo(&sc->stamps);
+	appendStringInfoChar(&sc->attnums, '{');
+	appendStringInfoChar(&sc->stamps, '{');
+}
+
+/* Add one column; a NULL stamp is a NULL element. */
+static void
+suspect_columns_add(SuspectColumns *sc, int attnum, const char *stamp)
+{
+	const char *sep = sc->n > 0 ? "," : "";
+
+	appendStringInfo(&sc->attnums, "%s%d", sep, attnum);
+	appendStringInfo(&sc->stamps, "%s%s", sep, stamp ? stamp : "NULL");
+	sc->n++;
+}
+
+static void
+suspect_columns_close(SuspectColumns *sc)
+{
+	appendStringInfoChar(&sc->attnums, '}');
+	appendStringInfoChar(&sc->stamps, '}');
+}
+
+static void
+suspect_columns_free(SuspectColumns *sc)
+{
+	pfree(sc->attnums.data);
+	pfree(sc->stamps.data);
 }
 
 /*
@@ -394,14 +532,15 @@ suspect_record_cb(void *arg)
  *      are matched by a full scan; they are not recorded;
  *   2. (the caller found the row: this function runs only then);
  *   3. at least one column arrived unchanged, i.e. an out-of-line TOAST
- *      value the UPDATE did not touch; 'u' on the wire is emitted only
- *      for such a datum, so !changed[] needs no column-type test;
+ *      value the UPDATE did not touch; 'u' or 'U' on the wire is emitted
+ *      only for such a datum, so !changed[] needs no column-type test;
  *   4. (the remote tuple won: the caller is in that branch);
- *   5. the local row's last writer is not the sending origin.  A row last
- *      written by the same origin usually agrees with it on every column,
- *      but not always: in a mesh the sender may have taken the column from
- *      a third node whose change has not reached this node yet, and that
- *      change then loses here to the sender's newer one.  That case is not
+ *   5. the local row's last writer is not the sending origin, or a version
+ *      stamp proves a column differs.  A row last written by the same origin
+ *      usually agrees with it on every column, but not always: in a mesh the
+ *      sender may have taken the column from a third node whose change has
+ *      not reached this node yet, and that change then loses here to the
+ *      sender's newer one.  Stamps catch that case; without them it is not
  *      recorded;
  *   6. the local row's commit timestamp can still be read, and it was last
  *      written after the subscription was created (see below).
@@ -416,11 +555,13 @@ spock_toast_suspect_record(SpockRelation *rel, TupleTableSlot *newslot,
 						   SpockTupleData *newtup, bool local_origin_found,
 						   RepOriginId local_origin, TimestampTz local_ts)
 {
-	StringInfoData attnums;
+	SuspectColumns cols;
+	ToastStampReader reader;
 	int			i;
-	bool		any = false;
+	SuspectReason reason = REASON_NONE;
 	SuspectRecordArg arg;
 	char	   *record_err;
+	bool		same_origin;
 
 	if (!spock_toast_divergence_detection)
 		return;
@@ -449,8 +590,9 @@ spock_toast_suspect_record(SpockRelation *rel, TupleTableSlot *newslot,
 	if (!OidIsValid(RelationGetReplicaIndex(rel->rel)))
 		return;
 
-	/* 5 */
-	if (local_origin_found && local_origin == replorigin_session_origin)
+	/* 5: with no stamps there is nothing to prove a same-origin row differs */
+	same_origin = local_origin_found && local_origin == replorigin_session_origin;
+	if (same_origin && newtup->stamps == NULL)
 		return;
 
 	/*
@@ -489,25 +631,43 @@ spock_toast_suspect_record(SpockRelation *rel, TupleTableSlot *newslot,
 		local_ts < MySubscription->created_at)
 		return;
 
-	/* 3: collect the unchanged columns as an int2[] literal. */
-	initStringInfo(&attnums);
-	appendStringInfoChar(&attnums, '{');
+	/*
+	 * 3: collect the unchanged columns that may differ as an int2[] literal.
+	 * A column that arrived with a version stamp ('U') is compared with the
+	 * local value's stamp and left out when they are equal: both nodes hold
+	 * the same version.  Anything that cannot be told is kept, never assumed
+	 * equal (column_suspect_reason()).
+	 *
+	 * Next to each column goes the sender's stamp.  One open of the TOAST
+	 * relation serves all of the row's columns.
+	 */
+	suspect_columns_init(&cols);
+	toast_stamp_reader_init(&reader);
 	for (i = 0; i < rel->natts; i++)
 	{
 		int			attid = rel->attmap[i];
+		SuspectReason col_reason;
 
 		if (newtup->changed[attid])
 			continue;
-		if (any)
-			appendStringInfoChar(&attnums, ',');
-		appendStringInfo(&attnums, "%d", attid + 1);
-		any = true;
+		col_reason = column_suspect_reason(newslot, newtup, attid, &reader,
+										   same_origin ? (uint32) replorigin_session_origin : 0);
+		if (col_reason == REASON_NONE)
+			continue;
+		/* 5: a same-origin row is recorded only on proof */
+		if (same_origin && col_reason != REASON_STAMP_MISMATCH)
+			continue;
+		reason = Max(reason, col_reason);
+		suspect_columns_add(&cols, attid + 1,
+							SPOCK_TUPLE_STAMPED(newtup, attid) ?
+							toast_stamp_to_text(&newtup->stamps[attid]) : NULL);
 	}
-	appendStringInfoChar(&attnums, '}');
+	toast_stamp_reader_close(&reader);
+	suspect_columns_close(&cols);
 
-	if (!any || !suspect_table_exists())
+	if (cols.n == 0 || !suspect_table_exists())
 	{
-		pfree(attnums.data);
+		suspect_columns_free(&cols);
 		return;
 	}
 
@@ -515,13 +675,19 @@ spock_toast_suspect_record(SpockRelation *rel, TupleTableSlot *newslot,
 	arg.rel = rel->rel;
 	arg.slot = newslot;
 	arg.pkey = NULL;
-	arg.attnums = attnums.data;
+	arg.attnums = cols.attnums.data;
+	arg.winner_stamps = cols.stamps.data;
+	arg.reason = reason_names[reason];
 	arg.local_origin = local_origin;
 	arg.local_ts = local_ts;
 
 	/*
-	 * Everything that can fail runs in a subtransaction, and a failure is
-	 * only warned about.  This hook runs in the middle of applying a
+	 * Recording runs in a subtransaction, and a failure is only warned
+	 * about.  The stamp reads above do not: they take only conditional locks
+	 * and fail only on an I/O error reading the TOAST index or heap or
+	 * pg_commit_ts, or on pg_commit_ts truncated under the read
+	 * (spock_toast_stamp.c), and such an error is treated like any other
+	 * error applying the change.  This hook runs in the middle of applying a
 	 * replicated transaction, and with spock.exception_behaviour set to
 	 * transdiscard, the default, an error escaping it would discard that
 	 * whole transaction: a full disk, or a key too large for the index, must
@@ -534,7 +700,7 @@ spock_toast_suspect_record(SpockRelation *rel, TupleTableSlot *newslot,
 				(errmsg("could not record TOAST suspect for relation %u: %s",
 						arg.relid, record_err)));
 
-	pfree(attnums.data);
+	suspect_columns_free(&cols);
 	if (arg.pkey)
 		pfree(arg.pkey);
 }

@@ -202,7 +202,24 @@ Abbreviated tuple value fields are nothing but the message kind:
 
 | Message | Type/Size | Notes |
 |---------|-----------|-------|
-| kind | signed char | **n**ull (0x6e) field |
+| kind | signed char | **n**ull (0x6e) field, or **u**nchanged (0x75) TOAST field |
+
+An unchanged field is an out-of-line TOAST value the UPDATE did not change;
+the downstream keeps its own value for it.
+
+From protocol version 6, an unchanged out-of-line TOAST value may instead be
+sent with its version stamp, so the downstream can tell whether it holds the
+same version:
+
+| Message | Type/Size | Notes |
+|---------|-----------|-------|
+| kind | signed char | **U**nchanged with stamp (0x55) field |
+| node id | uint32 | Spock node id of the transaction that wrote the value (at most 65535) |
+| commit timestamp | int64 | Commit timestamp of that transaction, microseconds since 2000-01-01 |
+| raw size | int32 | The value's raw size, header included |
+
+The upstream sends **U** only when protocol 6 or later was negotiated, and
+falls back to **u** whenever it cannot read the stamp.
 
 Full tuple value fields have a length and datum:
 
@@ -365,7 +382,7 @@ Since all parameter values are sent as strings, the value types given below spec
 
 | Key name | Value type | Description |
 |----------|-----------|-------------|
-| max_proto_version | integer | Newest version of the protocol supported by output plugin. Currently 5. |
+| max_proto_version | integer | Newest version of the protocol supported by output plugin. Currently 6. |
 | min_proto_version | integer | Oldest protocol version supported by server. Currently 4. |
 | proto_version | integer | The negotiated protocol version selected by the server based on the overlap between client and server ranges. |
 | coltypes | boolean | Column types will be sent in table metadata. Currently always false. |
@@ -431,15 +448,15 @@ Two parameters `max_proto_version` and `min_proto_version`, which clients must a
 
 The protocol version is only incremented when there are major breaking changes that all or most clients must be modified to accommodate. Most changes are done by adding new optional messages and/or by having clients advertise capabilities to opt in to features.
 
-The current protocol version range is 4 (min) to 5 (max). Both nodes must be running Spock version >= 50000 to use protocol versions 4 and 5.
+The current protocol version range is 4 (min) to 6 (max). Both nodes must be running Spock version >= 50000 to use protocol versions 4 and 5. Protocol 6 (Spock 6.1.0) adds the **U** tuple field kind.
 
 The `startup_params_format` parameter identifies the format of the startup parameter set itself (currently always "1"). Parameters are looked up by name and may appear in any order.
 
 | Key | Type | Value(s) | Notes |
 |-----|------|----------|-------|
 | startup_params_format | uint32 | 1 | The format version of this startup parameter set. Currently always 1. **Required**, ERROR if missing. |
-| max_proto_version | uint32 | 4-5 | Newest version of the protocol supported by client. Output plugin must ERROR if supported version too old. **Required**, ERROR if missing. |
-| min_proto_version | uint32 | 4-5 | Oldest version of the protocol supported by client. Output plugin must ERROR if supported version too old. **Required**, ERROR if missing. |
+| max_proto_version | uint32 | 4-6 | Newest version of the protocol supported by client. Output plugin must ERROR if supported version too old. **Required**, ERROR if missing. |
+| min_proto_version | uint32 | 4-6 | Oldest version of the protocol supported by client. Output plugin must ERROR if supported version too old. **Required**, ERROR if missing. |
 
 #### Client Requirements and Capabilities
 

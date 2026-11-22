@@ -6,7 +6,9 @@
 
 * **TOAST divergence detection.** Rows whose out-of-line TOAST columns may
   have diverged after a conflict on a `REPLICA IDENTITY DEFAULT` table are
-  recorded as they happen.
+  recorded as they happen. Providers send a version stamp with each
+  unchanged TOAST column (protocol 6, `spock.toast_divergence_stamps`), so
+  only rows whose version actually differs are recorded.
   Detection is forward-only: rows that diverged before upgrading are not
   found. See *Detecting TOAST Divergence*.
 
@@ -14,6 +16,8 @@
 
 * `spock.toast_divergence_detection` (bool, default `on`, `USERSET`):
   record rows whose TOAST columns may have diverged after a conflict.
+* `spock.toast_divergence_stamps` (bool, default `on`, `SIGHUP`): send
+  the version stamp of each unchanged TOAST column.
 * `spock.toast_divergence_max_suspects` (int, default `100000`, `SIGHUP`):
   cap on `spock.toast_suspect`; `0` removes it.
 
@@ -21,6 +25,7 @@
 
 * `spock.toast_divergence_clear(relation regclass, pkey jsonb)`: remove one
   entry after an out-of-band repair.
+* `spock.toast_stamp(value "any")`: the version stamp of a column value.
 * `spock.toast_suspect` table and `spock.toast_divergence` view. Local to
   each node, never replicated.
 

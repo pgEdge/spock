@@ -2,7 +2,7 @@ CREATE EXTENSION spock;
 SELECT spock.spock_max_proto_version();
  spock_max_proto_version 
 -------------------------
-                       5
+                       6
 (1 row)
 
 SELECT spock.spock_min_proto_version();

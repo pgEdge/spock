@@ -28,5 +28,6 @@
 /* spock_toast_util.c */
 extern const char *const toast_pinned_output[][2];
 extern bool run_in_subxact(void (*fn) (void *arg), void *arg, char **errmsg);
+extern uint32 cached_local_nodeid(void);
 
 #endif							/* SPOCK_TOAST_INTERNAL_H */

@@ -17,6 +17,7 @@
 #include "utils/timestamp.h"
 
 #include "spock_output_plugin.h"
+#include "spock_toast_stamp.h"
 #include "spock_output_proto.h"
 #include "spock_relcache.h"
 
@@ -28,7 +29,16 @@ typedef struct SpockTupleData
 	Datum		values[MaxTupleAttributeNumber];
 	bool		nulls[MaxTupleAttributeNumber];
 	bool		changed[MaxTupleAttributeNumber];
+	/*
+	 * Version stamps of unchanged TOAST columns that arrived as 'U', indexed
+	 * by local attid and sized to the relation; NULL when the tuple carried
+	 * none.  An entry with rawsize -1 has no stamp.
+	 */
+	SpockToastStamp *stamps;
 } SpockTupleData;
+
+#define SPOCK_TUPLE_STAMPED(tup, attid) \
+	((tup)->stamps != NULL && (tup)->stamps[(attid)].rawsize >= 0)
 
 extern void spock_write_commit_order(StringInfo out,
 									 TimestampTz last_commit_ts);

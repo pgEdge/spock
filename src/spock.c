@@ -173,6 +173,7 @@ bool		spock_enable_ddl_replication = false;
 bool		spock_include_ddl_repset = false;
 bool		spock_toast_divergence_detection = true;
 int			spock_toast_divergence_max_suspects = 100000;
+bool		spock_toast_divergence_stamps = true;
 bool		allow_ddl_from_functions = false;
 int			restart_delay_default;
 int			restart_delay_on_exception;
@@ -1346,6 +1347,18 @@ _PG_init(void)
 							 &spock_toast_divergence_detection,
 							 true,
 							 PGC_USERSET,
+							 0,
+							 NULL, NULL, NULL);
+
+	DefineCustomBoolVariable("spock.toast_divergence_stamps",
+							 "Send the version stamp of each unchanged TOAST value",
+							 "With protocol 6 or later, the provider sends with each unchanged "
+							 "out-of-line TOAST column the node and commit timestamp of the "
+							 "transaction that wrote it, so subscribers record a suspect only "
+							 "when their version differs.  Off sends plain unchanged markers.",
+							 &spock_toast_divergence_stamps,
+							 true,
+							 PGC_SIGHUP,
 							 0,
 							 NULL, NULL, NULL);
 

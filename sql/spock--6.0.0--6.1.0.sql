@@ -25,6 +25,15 @@ CREATE TABLE spock.toast_suspect (
     verified_at     timestamptz,
     differing       int2[],
     last_error      text,
+    -- Per entry of attnums, the version stamp the sender sent for that
+    -- column (see spock.toast_stamp()), or NULL when it sent none.
+    winner_stamps   text[],
+    -- How sure detection was that the row differs: stamp_mismatch (the
+    -- stamps or sizes differ; after a rewrite or initial sync on either node
+    -- the values can still agree), no_local_stamp (the local version
+    -- could not be read or compared) or no_stamp (the sender sent none).
+    reason          text
+                    CHECK (reason IN ('stamp_mismatch', 'no_local_stamp', 'no_stamp')),
     PRIMARY KEY (relid, pkey)
 )
 -- The queue churns: one insert per divergence detected, one delete when it
@@ -55,12 +64,18 @@ SELECT n.nspname                AS schema_name,
        s.detect_count,
        s.detected_at,
        s.verified_at,
-       s.last_error
+       s.last_error,
+       s.reason
   FROM spock.toast_suspect s
   JOIN pg_class c ON c.oid = s.relid
   JOIN pg_namespace n ON n.oid = c.relnamespace
   LEFT JOIN spock.subscription sub ON sub.sub_id = s.winner_subid
   LEFT JOIN spock.node wn ON wn.node_id = sub.sub_origin;
+
+-- The version stamp of a value stored out of line, as
+-- 'nodeid/commit_ts_microseconds/rawsize', or NULL when it cannot be read.
+CREATE FUNCTION spock.toast_stamp("any")
+RETURNS text STRICT STABLE LANGUAGE c AS 'MODULE_PATHNAME', 'spock_toast_stamp';
 
 -- Remove one entry after repairing the row by other means.  The function
 -- pins search_path, so an object another user created in a schema on the

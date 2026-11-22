@@ -634,8 +634,11 @@ remove it from replication.
 
 When on, the apply worker records rows whose out-of-line TOAST columns may
 have diverged from the node that won a conflict: an `UPDATE` from another
-origin won, it carried a TOAST column it did not change, and the local row
-was last written by a different origin. Entries go to `spock.toast_suspect`.
+origin won, it carried a TOAST column it did not change, and the column's
+version stamp differs from the provider's. When the stamps cannot be
+compared (see `spock.toast_divergence_stamps`), the row is recorded only if
+the local row was last written by a different origin. Entries go to
+`spock.toast_suspect`.
 See [Detecting TOAST Divergence](toast_divergence.md).
 
 Default `on`. The cost is a few comparisons per applied `UPDATE`, and for
@@ -643,11 +646,46 @@ each row recorded (or recorded again) a subtransaction with its own
 transaction id and one catalog row. A remote transaction that records many
 rows therefore uses many subtransactions; past 64 in one transaction,
 PostgreSQL's per-backend subtransaction cache overflows and snapshots on the
-node get slower until it commits. Suspects are bounded by how often a row
-is updated from a node other than the one that last wrote it, not by the
-conflict rate; see [Detecting TOAST Divergence](toast_divergence.md). Tables at
+node get slower until it commits. Without version stamps, suspects are
+bounded by how often a row is updated from a node other than the one that
+last wrote it, not by the conflict rate. With stamps (the default) they are
+mostly real differences, but a table rewrite run on the receiving node alone
+(`VACUUM FULL`, `CLUSTER`, a rewriting `ALTER TABLE` that is not replicated)
+gives its values new stamps, and the rows are then recorded as they are next
+updated from other nodes, until they are cleared. A rewrite on the
+sending node does the same for the rows the receiving node last got from
+another node, and for every row a forwarding node passes on after rewriting
+the table. A rewriting statement replicated by AutoDDL gives every node the
+same stamps instead, which hides a difference between values of the same
+size; see [Detecting TOAST Divergence](toast_divergence.md). Tables at
 `REPLICA IDENTITY FULL` are never recorded. Nothing is recorded with
 `track_commit_timestamp` off.
+
+### `spock.toast_divergence_stamps`
+
+When on, a provider sends with each unchanged out-of-line TOAST column the
+column's version stamp (the node and commit timestamp of the transaction
+that wrote the value, and its size), so subscribers record a TOAST suspect
+only when their own version differs. Needs protocol 6 on both sides
+(Spock 6.1.0); older subscribers get plain unchanged markers. Off sends
+plain unchanged markers to everyone, and subscribers fall back to recording
+every candidate row.
+
+Default `on`. Reading stamps costs the provider about 2.5 microseconds per
+`UPDATE` that leaves an out-of-line column unchanged, plus about 1.5 for
+each further such column, and the subscriber about as much to read its own.
+With updates from more than one node, stamps save more than that on the
+subscriber, which no longer records rows that did not diverge. Stamps are
+also the only way to detect a divergence on a row last written by the
+sending node itself, which happens in a mesh of three or more nodes when
+changes from two nodes arrive out of order; with stamps off, such rows are
+not recorded, and with stamps on they are recorded only when both stamps can
+be read. `SIGHUP`. Stamps are read from `pg_commit_ts`, so they last only as
+long as PostgreSQL keeps commit timestamps for the transaction that wrote a
+value: values older than about `autovacuum_freeze_max_age` transactions have
+none and fall back to the older rule, though after about four billion
+transactions a frozen value can read a newer transaction's stamp, which
+records a row needlessly.
 
 ### `spock.toast_divergence_max_suspects`
 

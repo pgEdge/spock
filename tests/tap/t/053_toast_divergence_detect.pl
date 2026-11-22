@@ -102,6 +102,14 @@ sub restart_apply {
 
 # --- setup -----------------------------------------------------------------
 
+# Some cases need entries for rows that did not diverge (sequential updates
+# from two nodes).  With version stamps those are no longer recorded, so stamps
+# are off here and every entry is a no_stamp one; 056 covers stamps.
+for my $n (1, 2) {
+    psql_or_bail($n, "ALTER SYSTEM SET spock.toast_divergence_stamps = off");
+    psql_or_bail($n, "SELECT pg_reload_conf()");
+}
+
 # Auto-DDL is on in this cluster: the CREATE replicates and the table joins
 # 'default' on both nodes at REPLICA IDENTITY DEFAULT.
 psql_or_bail(1, "CREATE TABLE public.td (id int PRIMARY KEY, small text, big text); "
@@ -318,7 +326,7 @@ psql_or_bail(1, "SET spock.enable_ddl_replication = off; "
               . "ALTER TABLE public.td_agc ADD CONSTRAINT td_agc_v CHECK (v > 0)");
 psql_or_bail(2, "UPDATE public.td_ag SET small = 'ag0' WHERE id = 1");
 ok(sync_nodes(2, 1), '(ag) n1 holds n2\'s row');
-# That update was itself a cross-origin one, so it was recorded.
+# That update was itself a cross-origin one, recorded with stamps off.
 psql_or_bail(1, "DELETE FROM spock.toast_suspect");
 psql_or_bail(1, "ALTER SYSTEM SET spock.exception_behaviour = 'discard'");
 restart_apply('(ag)');
@@ -362,7 +370,8 @@ for my $n (1, 2) {
 #      has no key to name it by.  Nothing is recorded, and the update
 #      applies.  n1 rewrites big
 #      with its own value without replicating it, so the full old row n2
-#      sends still matches and the row's last writer here is n1.
+#      sends still matches, the row's last writer here is n1, and big's
+#      stamp differs from n2's.
 td_like('(al)', 'public.td_al', 'id int', 1);
 psql_or_bail(2, "SET spock.enable_ddl_replication = off; "
               . "ALTER TABLE public.td_al REPLICA IDENTITY FULL");

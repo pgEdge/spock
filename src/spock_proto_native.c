@@ -79,7 +79,7 @@ static void spock_write_attrs(StringInfo out, Relation rel,
 							  Bitmapset *att_list);
 static void spock_write_tuple(StringInfo out, SpockOutputData *data,
 							  Relation rel, HeapTuple tuple,
-							  Bitmapset *att_list);
+							  Bitmapset *att_list, bool stamps);
 static char decide_datum_transfer(Form_pg_attribute att,
 								  Form_pg_type typclass,
 								  bool allow_internal_basetypes,
@@ -391,7 +391,7 @@ spock_write_insert(StringInfo out, SpockOutputData *data,
 	pq_sendint(out, RelationGetRelid(rel), 4);
 
 	pq_sendbyte(out, 'N');		/* new tuple follows */
-	spock_write_tuple(out, data, rel, newtuple, att_list);
+	spock_write_tuple(out, data, rel, newtuple, att_list, false);
 }
 
 /*
@@ -428,11 +428,12 @@ spock_write_update(StringInfo out, SpockOutputData *data,
 	if (oldtuple != NULL)
 	{
 		pq_sendbyte(out, 'K');	/* old key follows */
-		spock_write_tuple(out, data, rel, oldtuple, att_list);
+		spock_write_tuple(out, data, rel, oldtuple, att_list, false);
 	}
 
+	/* Only an UPDATE's new tuple carries unchanged TOAST columns. */
 	pq_sendbyte(out, 'N');		/* new tuple follows */
-	spock_write_tuple(out, data, rel, newtuple, att_list);
+	spock_write_tuple(out, data, rel, newtuple, att_list, true);
 }
 
 /*
@@ -463,7 +464,7 @@ spock_write_delete(StringInfo out, SpockOutputData *data,
 	 * See notes on update for details
 	 */
 	pq_sendbyte(out, 'K');		/* old key follows */
-	spock_write_tuple(out, data, rel, oldtuple, att_list);
+	spock_write_tuple(out, data, rel, oldtuple, att_list, false);
 }
 
 /*
@@ -501,15 +502,18 @@ write_startup_message(StringInfo out, List *msg)
  */
 static void
 spock_write_tuple(StringInfo out, SpockOutputData *data,
-				  Relation rel, HeapTuple tuple, Bitmapset *att_list)
+				  Relation rel, HeapTuple tuple, Bitmapset *att_list,
+				  bool stamps)
 {
 	TupleDesc	desc;
 	Datum		values[MaxTupleAttributeNumber];
 	bool		isnull[MaxTupleAttributeNumber];
 	int			i;
 	uint16		nliveatts = 0;
+	ToastStampReader stamp_reader;
 
 	desc = RelationGetDescr(rel);
+	toast_stamp_reader_init(&stamp_reader);
 
 	pq_sendbyte(out, 'T');		/* sending TUPLE */
 
@@ -560,7 +564,26 @@ spock_write_tuple(StringInfo out, SpockOutputData *data,
 		}
 		else if (att->attlen == -1 && VARATT_IS_EXTERNAL_ONDISK(DatumGetPointer(values[i])))
 		{
-			pq_sendbyte(out, 'u');	/* unchanged toast column */
+			SpockToastStamp stamp;
+
+			/*
+			 * An unchanged toast column.  From protocol 6, send the version
+			 * stamp of the value too, so the receiver can tell whether it
+			 * holds the same version.  Any failure to read it sends plain
+			 * 'u', and the receiver falls back to its older rule.
+			 */
+			if (stamps && spock_toast_divergence_stamps &&
+				data->negotiated_proto_version >= 6 &&
+				toast_stamp_read_with(&stamp_reader, values[i],
+									  data->local_node_id, &stamp))
+			{
+				pq_sendbyte(out, 'U');
+				pq_sendint32(out, stamp.nodeid);
+				pq_sendint64(out, stamp.ts);
+				pq_sendint32(out, (uint32) stamp.rawsize);
+			}
+			else
+				pq_sendbyte(out, 'u');
 			continue;
 		}
 
@@ -657,6 +680,8 @@ spock_write_tuple(StringInfo out, SpockOutputData *data,
 
 		ReleaseSysCache(typtup);
 	}
+
+	toast_stamp_reader_close(&stamp_reader);
 }
 
 void
@@ -1020,9 +1045,10 @@ spock_read_cstring(StringInfo in, int len, const char *what)
  *		The datum is stored as it stands and the tuple routines trust its
  *		header, so the header must describe exactly the bytes that arrived,
  *		and the datum must be inline.  The sender writes VARSIZE_ANY()
- *		bytes of an inline datum and never a TOAST pointer -- an unchanged
- *		toast column travels as 'u' and an indirect one is expanded inline --
- *		so anything else means the two nodes disagree about the column.
+ *		bytes of an inline datum and never a TOAST pointer (an unchanged
+ *		toast column travels as 'u' or 'U' and an indirect one is expanded
+ *		inline), so anything else means the two nodes disagree about the
+ *		column.
  *
  *		Does not return if the datum is unacceptable.
  */
@@ -1145,6 +1171,7 @@ spock_read_tuple(StringInfo in, SpockRelation *rel,
 
 	memset(tuple->nulls, 1, sizeof(tuple->nulls));
 	memset(tuple->changed, 0, sizeof(tuple->changed));
+	tuple->stamps = NULL;
 
 	natts = pq_getmsgint(in, 2);
 	if (rel->natts != natts)
@@ -1171,6 +1198,29 @@ spock_read_tuple(StringInfo in, SpockRelation *rel,
 			case 'u':			/* unchanged column */
 				tuple->values[attid] = 0xfbadbeef;	/* make bad usage more
 													 * obvious */
+				break;
+			case 'U':			/* unchanged column, with its version stamp */
+				{
+					uint32		nodeid = pq_getmsgint(in, 4);
+					int64		ts = pq_getmsgint64(in);
+					int32		rawsize = (int32) pq_getmsgint(in, 4);
+
+					if (nodeid > PG_UINT16_MAX || rawsize < 0)
+						elog(ERROR, "invalid TOAST version stamp for column \"%s\" of relation \"%s\"",
+							 NameStr(att->attname), rel->relname);
+					if (tuple->stamps == NULL)
+					{
+						int			j;
+
+						tuple->stamps = palloc(desc->natts * sizeof(SpockToastStamp));
+						for (j = 0; j < desc->natts; j++)
+							tuple->stamps[j].rawsize = -1;
+					}
+					tuple->stamps[attid].nodeid = nodeid;
+					tuple->stamps[attid].ts = (TimestampTz) ts;
+					tuple->stamps[attid].rawsize = rawsize;
+					tuple->values[attid] = 0xfbadbeef;
+				}
 				break;
 			case 'i':			/* internal binary format */
 				tuple->nulls[attid] = false;

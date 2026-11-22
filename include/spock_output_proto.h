@@ -32,8 +32,12 @@
  *
  * SPOCK_MIN_VERSION_NUM_FOR_NODE_INFO_PROPAGATION prevents sending node-info
  * messages to subscribers that cannot decode them. The feature ships in 6.0.0.
+ *
+ * Protocol 6 adds the 'U' column kind: an unchanged out-of-line TOAST value
+ * followed by its version stamp (spock_toast_stamp.h).  It is sent only when
+ * 6 was negotiated, so older receivers never see it.
  */
-#define SPOCK_PROTO_VERSION_NUM 5
+#define SPOCK_PROTO_VERSION_NUM 6
 #define SPOCK_PROTO_MIN_VERSION_NUM 4
 #define SPOCK_MIN_VERSION_NUM_FOR_MULTI_PROTO 50000
 #define SPOCK_MIN_VERSION_NUM_FOR_NODE_INFO_PROPAGATION 60000

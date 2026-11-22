@@ -46,6 +46,7 @@ extern bool spock_deny_ddl;
 extern bool spock_enable_ddl_replication;
 extern bool spock_include_ddl_repset;
 extern bool spock_toast_divergence_detection;
+extern bool spock_toast_divergence_stamps;
 extern int	spock_toast_divergence_max_suspects;
 extern bool allow_ddl_from_functions;
 extern int	restart_delay_default;

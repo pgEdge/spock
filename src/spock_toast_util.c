@@ -4,7 +4,8 @@
  *		Helpers shared by the TOAST divergence code
  *
  * Helpers the TOAST divergence code shares: running one step in a
- * subtransaction, so an error settles only that step (run_in_subxact()).
+ * subtransaction, so an error settles only that step (run_in_subxact()) and
+ * this node's id (cached_local_nodeid()).
  * It also holds the text-output settings pinned while a row's key is
  * rendered (toast_pinned_output).
  *
@@ -20,6 +21,7 @@
 #include "utils/resowner.h"
 
 #include "spock.h"
+#include "spock_node.h"
 #include "spock_toast_internal.h"
 
 /* Last: it redefines core macros such as WaitLatch() on some majors. */
@@ -90,4 +92,24 @@ run_in_subxact(void (*fn) (void *arg), void *arg, char **errmsg)
 	PG_END_TRY();
 
 	return true;
+}
+
+/*
+ * This node's Spock node id, for mapping origin 0 in a local stamp.  Read
+ * once per process; 0 until a local node exists.  Needs a transaction the
+ * first time.
+ */
+uint32
+cached_local_nodeid(void)
+{
+	static uint32 nodeid = 0;
+
+	if (nodeid == 0)
+	{
+		SpockLocalNode *node = get_local_node(false, true);
+
+		if (node != NULL)
+			nodeid = node->node->id;
+	}
+	return nodeid;
 }

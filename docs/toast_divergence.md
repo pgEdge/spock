@@ -26,16 +26,73 @@ The apply worker recognizes the moment of divergence from facts it already
 holds. When an `UPDATE` from another node wins a conflict, and it carries at
 least one large column it did not change, and the local row was last written
 by a different origin, the row is written to `spock.toast_suspect`. A row
-updated again by the node that last wrote it is not recorded: both sides
-usually agree on the column, except in the mesh case listed under "What
-this does not cover". Tables at `REPLICA IDENTITY FULL` are
-never recorded, because the whole old row travels with the change, and
-neither are tables with no replica identity key on the receiving node,
-since there is nothing to name the row by.
+updated again by the node that last wrote it is recorded only when version
+stamps (below) show that the column differs: both sides usually agree on
+it, except in a mesh where the sending node took the column from a third
+node whose change has not arrived here yet. Tables at
+`REPLICA IDENTITY FULL` are never recorded, because the whole old row
+travels with the change, and neither are tables with no replica identity
+key on the receiving node, since there is nothing to name the row by.
 
-The "last written by a different origin" test cannot tell a concurrent
-update from a later one: if node A writes a row and node B updates it an
-hour later, nothing conflicted, but the row is recorded.
+On its own, the "last written by a different origin" test cannot tell a
+concurrent update from a later one: if node A writes a row and node B
+updates it an hour later, nothing conflicted, but the test matches. Version
+stamps settle this. With each unchanged large column, the sending node also
+sends the column's version stamp: the node and commit timestamp of the
+transaction that wrote the value, and its size. A value is never changed in
+place, and Spock applies a change under the originating node's id and commit
+timestamp, so every node that holds the same version of a value holds it
+under the same stamp. The receiving node compares the stamp with its own
+value's and records the row only when they differ, or when it cannot tell.
+With stamps, sequential updates from different nodes are no longer recorded.
+
+Each entry's `reason` says how sure detection was:
+
+- `stamp_mismatch`: the local value is a different version from the sender's.
+  Usually a real divergence, except after a table rewrite (below).
+- `no_local_stamp`: the sender sent a stamp, but the local value's stamp
+  could not be read, or cannot be trusted (see below).
+- `no_stamp`: the sender sent no stamp, so the older rule applied.
+
+Some rows are still recorded although their values agree, because something
+rewrote a value under a new transaction without changing it: the initial
+table sync on a new node, `CLUSTER`, `VACUUM FULL`, pg_repack or a
+table-rewriting `ALTER TABLE` run on the receiving node alone. Values whose
+commit timestamp PostgreSQL no longer keeps have no readable stamp either.
+Commit timestamps are kept only for transactions newer than the database's
+frozen transaction id, so on a busy cluster values older than about
+`autovacuum_freeze_max_age` transactions fall back to the older rule. A
+value frozen and left unwritten for about four billion transactions can
+instead read a newer transaction's stamp, as transaction ids wrap around:
+that records a row needlessly, and never hides one.
+
+A rewrite on the sending node is quiet only for some rows. A `VACUUM FULL`,
+`CLUSTER`, pg_repack or a table-rewriting `ALTER TABLE` gives every value
+there a new stamp naming that node, with the same size. When the receiving
+row was last written by the sender and the sender's stamp names the sender
+itself, detection compares only the sizes, so such rows are not recorded.
+Rows this node last got from another node are recorded as the sender next
+updates them, as they would be with stamps off. So are the rows a forwarding
+node passes on after it rewrote the table: their stamps name the forwarding
+node, not the node the change came from. If this node had lost one of the
+sender's writes in a conflict, its row was then last written by another
+node, and the next update from the sender to win here compared the full
+stamps and recorded it. A value the sender took from a third node is
+compared in full, unless a rewrite on the sender has since given it the
+sender's own stamp: then only the sizes are compared, and a divergence
+between values of equal size is missed.
+
+Stamps need protocol 6, which both nodes negotiate from Spock 6.1.0, and
+`spock.toast_divergence_stamps` on at the provider, which is the default.
+The walsender reads the stamps while it decodes: it opens the TOAST table
+once per row, then for each such column finds the value's first chunk
+through the TOAST index and reads that chunk's commit timestamp. Each column
+costs about as much as reading one row by its primary key, and more when the
+TOAST table's pages are not in shared buffers. The subscriber reads its own
+stamp at the same cost, except for a row the sender last wrote with a value
+the sender wrote itself, where it compares sizes only. With stamps off,
+every candidate row is recorded, and a row last written by the sending node
+is never recorded (see below).
 
 A row last written before the subscription the change arrives on was created
 is not recorded. That covers the rows copied by the initial table sync when
@@ -85,7 +142,8 @@ so a failure to record it only logs a warning and never discards the change
 being applied. Each such subtransaction takes a transaction id. A remote
 transaction that records more than 64 rows overflows PostgreSQL's
 per-backend subtransaction cache, which slows snapshots on the node until
-that transaction commits.
+that transaction commits. With version stamps only rows that really differ
+are recorded, so this needs many divergent rows in one transaction.
 
 Detection is on by default and can be switched off with
 `spock.toast_divergence_detection`.
@@ -123,15 +181,37 @@ baseline comparison; from then on this feature finds what diverges. An
 empty list does not mean a consistent cluster unless the cluster was
 consistent when detection started.
 
+With `spock.toast_divergence_stamps` off at a provider, a row last written
+by that provider is never recorded on its subscribers. In a mesh of three or
+more nodes that misses one case: node A takes a large column from node C,
+then updates another column of the row, and A's update reaches node B before
+C's change does. B keeps its old value, and C's change then loses to A's
+newer row on B. Keep stamps on in a mesh, or compare with ACE. With stamps
+on, the same case is missed when B cannot read its own value's stamp (a
+value copied by the initial sync and not written since, a value older than
+PostgreSQL keeps commit timestamps for, or a TOAST table locked at that
+moment), or when A sent no stamp (its TOAST table was locked, the value was
+replaced and vacuumed before A decoded the change, or A rewrote the table
+since). Sizes are not compared then either.
+
+A statement replicated as a statement, such as a table-rewriting
+`ALTER TABLE` sent by AutoDDL or DML run through `spock.replicate_ddl()`,
+runs on every node under the originating node's id and commit timestamp.
+Afterwards every node holds the rewritten column under the same stamp,
+whatever its contents, so a difference between values of the same size that
+exists at that moment, including a write still on its way that then loses to
+the rewritten row, is no longer recorded. Compare the table with ACE after
+such a statement.
+
+A change that fails to apply on a node and is thrown away under
+`spock.exception_behaviour` `discard` or `transdiscard`, or skipped by LSN,
+leaves that row on the older version, and the next update from the same
+node keeps its large columns as they are. Detection records the row only
+when the lost write changed a column's size. The thrown-away changes are
+listed in `spock.exception_log`; compare those rows with ACE.
+
 Delete divergence, where one node deleted a row another node updated, is
 not detected here.
-
-In a mesh of three or more nodes, a node can take a large column from a
-third node, then update another column of the row. When that update
-reaches this node before the third node's change, the row here was last
-written by the sending node, so it is not recorded, and the third node's
-change then loses here to the newer update. This node keeps its old value
-of the column.
 
 When the winning change reached a node through another node, on a
 subscription with `forward_origins`, the forwarding node cannot be used to

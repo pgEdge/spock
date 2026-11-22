@@ -122,5 +122,27 @@ is(scalar_query(1, "SELECT last_error LIKE '%was forwarded by subscription sub_n
 is(big_md5(1, 1), $md5_x, 'n1 diverged to x');
 is(big_md5(3, 1), $md5_z, 'n3 still holds z');
 
+# ---------------------------------------------------------------------------
+# Stamps across the chain.  n3 writes row 3's big; n2 then updates small, so
+# every node's row was last written by a node other than the next sender.
+# n3 then updates small: n2 applies it directly and n1 through n2's
+# forwarding.  Each node holds the same version of big (written by n3), so
+# with stamps no node records anything.
+# ---------------------------------------------------------------------------
+psql_or_bail(3, "INSERT INTO public.td VALUES (3, 's', repeat('z', 200000))");
+ok(poll_query_until(1, "SELECT count(*) FROM public.td WHERE id = 3", '1', 60), 'row 3 forwarded to n1');
+psql_or_bail(2, "UPDATE public.td SET small = 'st2' WHERE id = 3");
+for my $n (1, 3) {
+    ok(poll_query_until($n, "SELECT small FROM public.td WHERE id = 3", 'st2', 60), "n2's update on n$n");
+}
+psql_or_bail(3, "UPDATE public.td SET small = 'st3' WHERE id = 3");
+for my $n (1, 2) {
+    ok(poll_query_until($n, "SELECT small FROM public.td WHERE id = 3", 'st3', 60), "n3's update on n$n");
+}
+for my $n (1, 2, 3) {
+    is(suspects($n, "pkey = jsonb_build_object('id', '3')"), '0',
+       "stamps: nothing recorded on n$n for the same version across two hops");
+}
+
 destroy_cluster('Destroy cluster');
 done_testing();
