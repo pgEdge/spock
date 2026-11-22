@@ -70,6 +70,11 @@ silently applied without any conflict reporting.
 replication flow, the event is not written to `spock.resolutions`
 regardless of which side wins.
 
+When the winning UPDATE carries a TOAST column it did not change, the losing
+node keeps its own value for that column and may now differ from the winner.
+Spock records such rows in `spock.toast_suspect`; see
+[Detecting TOAST Divergence](toast_divergence.md).
+
 ---
 
 ### `update_exists`

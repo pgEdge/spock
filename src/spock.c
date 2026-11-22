@@ -171,6 +171,8 @@ static char *spock_country_code;
 bool		spock_deny_ddl = false;
 bool		spock_enable_ddl_replication = false;
 bool		spock_include_ddl_repset = false;
+bool		spock_toast_divergence_detection = true;
+int			spock_toast_divergence_max_suspects = 100000;
 bool		allow_ddl_from_functions = false;
 int			restart_delay_default;
 int			restart_delay_on_exception;
@@ -1334,6 +1336,27 @@ _PG_init(void)
 							 PGC_USERSET,
 							 0,
 							 NULL, NULL, NULL);
+
+	DefineCustomBoolVariable("spock.toast_divergence_detection",
+							 "Record rows whose TOAST columns may have diverged after a conflict",
+							 "When an UPDATE from another node wins a conflict and carries a TOAST "
+							 "column it did not change, this node keeps its own value for that "
+							 "column, which may differ from the winner's.  Such rows are recorded "
+							 "in spock.toast_suspect.",
+							 &spock_toast_divergence_detection,
+							 true,
+							 PGC_USERSET,
+							 0,
+							 NULL, NULL, NULL);
+
+	DefineCustomIntVariable("spock.toast_divergence_max_suspects",
+							"Stop recording suspects once spock.toast_suspect holds this many rows",
+							"0 means no cap.",
+							&spock_toast_divergence_max_suspects,
+							100000, 0, INT_MAX,
+							PGC_SIGHUP,
+							0,
+							NULL, NULL, NULL);
 
 	DefineCustomBoolVariable("spock.allow_ddl_from_functions",
 							 "Allow replication of DDL statements from within functions",

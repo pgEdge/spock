@@ -58,6 +58,7 @@ nav:
   - Logical Slot Failover (HA Standby): logical_slot_failover.md
   - Upgrading a Spock Installation: upgrading_spock.md
   - Conflict Types and Resolution: conflict_types.md
+  - Detecting TOAST Divergence: toast_divergence.md
   - Spock's Conflict Avoidance Options: conflicts.md
   - Spock's Management Features:
     - Managing a Spock Installation: managing/index.md
@@ -114,6 +115,7 @@ nav:
       - spock.repset_remove_seq(): spock_functions/functions/spock_repset_remove_seq.md
       - spock.repset_remove_table(): spock_functions/functions/spock_repset_remove_table.md
       - spock.repset_show_table(): spock_functions/functions/spock_repset_show_table.md
+      - spock.toast_divergence_clear(): spock_functions/functions/spock_toast_divergence_clear.md
       - spock.table_wait_for_sync(): spock_functions/functions/spock_table_wait_for_sync.md
       - spock.sync_seq(): spock_functions/functions/spock_sync_seq.md
       - spock.sub_add_repset(): spock_functions/functions/spock_sub_add_repset.md

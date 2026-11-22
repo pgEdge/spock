@@ -80,6 +80,7 @@
 #include "spock_repset.h"
 #include "spock_rpc.h"
 #include "spock_sync.h"
+#include "spock_toast_divergence.h"
 #include "spock_worker.h"
 #include "spock_apply_heap.h"
 #include "spock_apply.h"
@@ -655,6 +656,21 @@ spock_handle_conflict_and_apply(SpockRelation *rel, EState *estate,
 	if (apply && applytuple == remotetuple)
 	{
 		slot_modify_data(remoteslot, localslot, rel, newtup);
+
+		/*
+		 * The row about to be written keeps the local value for every column
+		 * that arrived unchanged.  If this UPDATE came from another origin,
+		 * that value may not be the winner's; record the row so it can be
+		 * checked against the winner.  INSERTs never carry an unchanged
+		 * column, so only UPDATEs are looked at.  A row this transaction
+		 * already wrote was checked when the earlier change was applied.
+		 * spock_toast_suspect_record() would skip it too (conditions 5 and
+		 * 6), so this test only saves the work.
+		 */
+		if (!is_insert && !TransactionIdIsCurrentTransactionId(xmin))
+			spock_toast_suspect_record(rel, remoteslot, newtup,
+									   local_origin_found, local_origin,
+									   local_ts);
 	}
 
 	/*

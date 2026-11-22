@@ -630,6 +630,34 @@ adjustment to which replication set the table is part of. Setting a table to
 unlogged will remove it from replication. Detaching a partition will not
 remove it from replication.
 
+### `spock.toast_divergence_detection`
+
+When on, the apply worker records rows whose out-of-line TOAST columns may
+have diverged from the node that won a conflict: an `UPDATE` from another
+origin won, it carried a TOAST column it did not change, and the local row
+was last written by a different origin. Entries go to `spock.toast_suspect`.
+See [Detecting TOAST Divergence](toast_divergence.md).
+
+Default `on`. The cost is a few comparisons per applied `UPDATE`, and for
+each row recorded (or recorded again) a subtransaction with its own
+transaction id and one catalog row. A remote transaction that records many
+rows therefore uses many subtransactions; past 64 in one transaction,
+PostgreSQL's per-backend subtransaction cache overflows and snapshots on the
+node get slower until it commits. Suspects are bounded by how often a row
+is updated from a node other than the one that last wrote it, not by the
+conflict rate; see [Detecting TOAST Divergence](toast_divergence.md). Tables at
+`REPLICA IDENTITY FULL` are never recorded. Nothing is recorded with
+`track_commit_timestamp` off.
+
+### `spock.toast_divergence_max_suspects`
+
+The most rows `spock.toast_suspect` may hold, though the cap is approximate:
+each apply worker checks the row count at most once every 10 seconds, so the
+table can briefly hold more than this many rows. At the cap the apply
+worker adds no new rows until the table drains below it, and logs a warning
+once an hour; rows already in the table are still updated when detected
+again. `0` removes the cap. Default `100000`.
+
 ### `spock.log_origin_change`
 
 `spock.log_origin_change` indicates whether changes to a row's

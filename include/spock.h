@@ -24,8 +24,8 @@
 #include "spock_fe.h"
 #include "spock_node.h"
 
-#define SPOCK_VERSION "6.0.0"
-#define SPOCK_VERSION_NUM 60000
+#define SPOCK_VERSION "6.1.0"
+#define SPOCK_VERSION_NUM 60100
 
 #define EXTENSION_NAME "spock"
 
@@ -45,6 +45,8 @@ extern bool spock_ch_stats;
 extern bool spock_deny_ddl;
 extern bool spock_enable_ddl_replication;
 extern bool spock_include_ddl_repset;
+extern bool spock_toast_divergence_detection;
+extern int	spock_toast_divergence_max_suspects;
 extern bool allow_ddl_from_functions;
 extern int	restart_delay_default;
 extern int	restart_delay_on_exception;

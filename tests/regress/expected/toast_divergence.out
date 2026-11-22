@@ -1,0 +1,132 @@
+-- toast_divergence: catalog shape, GUC defaults and clear().  Detection
+-- itself needs two nodes and lives in TAP 053.
+SELECT * FROM spock_regress_variables()
+\gset
+\c :provider_dsn
+SHOW spock.toast_divergence_detection;
+ spock.toast_divergence_detection 
+----------------------------------
+ on
+(1 row)
+
+SHOW spock.toast_divergence_max_suspects;
+ spock.toast_divergence_max_suspects 
+-------------------------------------
+ 100000
+(1 row)
+
+SELECT column_name, data_type, is_nullable
+  FROM information_schema.columns
+ WHERE table_schema = 'spock' AND table_name = 'toast_suspect'
+ ORDER BY ordinal_position;
+  column_name  |        data_type         | is_nullable 
+---------------+--------------------------+-------------
+ relid         | oid                      | NO
+ pkey          | jsonb                    | NO
+ attnums       | ARRAY                    | NO
+ state         | text                     | NO
+ winner_subid  | oid                      | NO
+ winner_origin | oid                      | NO
+ winner_ts     | timestamp with time zone | NO
+ local_origin  | oid                      | YES
+ local_ts      | timestamp with time zone | YES
+ detect_count  | integer                  | NO
+ detected_at   | timestamp with time zone | NO
+ verified_at   | timestamp with time zone | YES
+ differing     | ARRAY                    | YES
+ last_error    | text                     | YES
+(14 rows)
+
+SELECT conname, contype
+  FROM pg_constraint
+ WHERE conrelid = 'spock.toast_suspect'::regclass
+ ORDER BY conname;
+          conname          | contype 
+---------------------------+---------
+ toast_suspect_pkey        | p
+ toast_suspect_state_check | c
+(2 rows)
+
+SELECT column_name
+  FROM information_schema.columns
+ WHERE table_schema = 'spock' AND table_name = 'toast_divergence'
+ ORDER BY ordinal_position;
+     column_name     
+---------------------
+ schema_name
+ table_name
+ pkey
+ columns
+ differing_columns
+ state
+ winner_subscription
+ winner_node
+ winner_ts
+ local_ts
+ detect_count
+ detected_at
+ verified_at
+ last_error
+(14 rows)
+
+-- The queue is not replicated: it belongs to no replication set.
+SELECT count(*) FROM spock.replication_set_table
+ WHERE set_reloid = 'spock.toast_suspect'::regclass;
+ count 
+-------
+     0
+(1 row)
+
+-- clear() on a row that is not there.
+CREATE TABLE public.td_t (id int PRIMARY KEY, small text, big text);
+SELECT spock.toast_divergence_clear('public.td_t', '{"id": "1"}');
+ toast_divergence_clear 
+------------------------
+ f
+(1 row)
+
+-- A synthetic entry, visible through the view, then cleared.
+INSERT INTO spock.toast_suspect
+       (relid, pkey, attnums, winner_subid, winner_origin, winner_ts)
+VALUES ('public.td_t'::regclass, '{"id": "1"}', '{3}', 0, 0, now());
+SELECT schema_name, table_name, pkey, columns, state, detect_count
+  FROM spock.toast_divergence;
+ schema_name | table_name |    pkey     | columns |  state  | detect_count 
+-------------+------------+-------------+---------+---------+--------------
+ public      | td_t       | {"id": "1"} | {big}   | suspect |            1
+(1 row)
+
+SELECT spock.toast_divergence_clear('public.td_t', '{"id": "1"}');
+ toast_divergence_clear 
+------------------------
+ t
+(1 row)
+
+SELECT count(*) FROM spock.toast_suspect;
+ count 
+-------
+     0
+(1 row)
+
+-- The state check.
+\set VERBOSITY terse
+INSERT INTO spock.toast_suspect
+       (relid, pkey, attnums, state, winner_subid, winner_origin, winner_ts)
+VALUES ('public.td_t'::regclass, '{"id": "2"}', '{3}', 'bogus', 0, 0, now());
+ERROR:  new row for relation "toast_suspect" violates check constraint "toast_suspect_state_check"
+DROP TABLE public.td_t;
+-- The queue holds row keys, so neither it, its view nor
+-- spock.toast_divergence_clear() is open to PUBLIC.  USAGE on the schema is granted so that each
+-- object's own check is the one tested.
+CREATE ROLE td_noaccess;
+GRANT USAGE ON SCHEMA spock TO td_noaccess;
+SET ROLE td_noaccess;
+SELECT count(*) FROM spock.toast_suspect;
+ERROR:  permission denied for table toast_suspect
+SELECT count(*) FROM spock.toast_divergence;
+ERROR:  permission denied for view toast_divergence
+SELECT spock.toast_divergence_clear('pg_class', '{}');
+ERROR:  permission denied for function toast_divergence_clear
+RESET ROLE;
+REVOKE USAGE ON SCHEMA spock FROM td_noaccess;
+DROP ROLE td_noaccess;

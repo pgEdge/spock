@@ -62,7 +62,7 @@ all: spock.control
 # -----------------------------------------------------------------------------
 REGRESS = preseed infofuncs init_fail init preseed_check basic monitor conflict_secondary_unique \
 		  excluded_schema conflict_stat \
-		  toasted replication_set exception_row_capture wire_tuple_sanity \
+		  toasted replication_set toast_divergence exception_row_capture wire_tuple_sanity \
 		  matview bidirectional primary_key \
 		  interfaces foreign_key copy sequence triggers parallel functions row_filter \
 		  row_filter_sampling att_list column_filter apply_delay alter_options \

@@ -1,5 +1,38 @@
 # Spock Release Notes
 
+## Spock 6.1.0
+
+### Highlights
+
+* **TOAST divergence detection.** Rows whose out-of-line TOAST columns may
+  have diverged after a conflict on a `REPLICA IDENTITY DEFAULT` table are
+  recorded as they happen.
+  Detection is forward-only: rows that diverged before upgrading are not
+  found. See *Detecting TOAST Divergence*.
+
+### New GUCs
+
+* `spock.toast_divergence_detection` (bool, default `on`, `USERSET`):
+  record rows whose TOAST columns may have diverged after a conflict.
+* `spock.toast_divergence_max_suspects` (int, default `100000`, `SIGHUP`):
+  cap on `spock.toast_suspect`; `0` removes it.
+
+### New functions, tables and views
+
+* `spock.toast_divergence_clear(relation regclass, pkey jsonb)`: remove one
+  entry after an out-of-band repair.
+* `spock.toast_suspect` table and `spock.toast_divergence` view. Local to
+  each node, never replicated.
+
+### Upgrading
+
+* The Spock manager updates the extension from 6.0.0 at startup, running
+  `spock--6.0.0--6.1.0.sql`, which adds the objects above.
+* A node still on 6.0.0-beta.1 must finish the beta 2 update (below) on
+  beta 2 or 6.0.0 binaries before it runs 6.1.0: there is no update path
+  from the beta 1 catalog, and the manager would label it 6.1.0 at
+  startup.
+
 ## Spock 6.0.0-beta.2
 
 This section lists what changed since 6.0.0-beta.1, for those testing the
