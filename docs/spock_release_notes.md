@@ -6,9 +6,10 @@
 
 * **TOAST divergence detection.** Rows whose out-of-line TOAST columns may
   have diverged after a conflict on a `REPLICA IDENTITY DEFAULT` table are
-  recorded as they happen. Providers send a version stamp with each
-  unchanged TOAST column (protocol 6, `spock.toast_divergence_stamps`), so
-  only rows whose version actually differs are recorded.
+  recorded as they happen, and `spock.toast_divergence_verify()` confirms
+  which ones did. Providers send a version stamp with each unchanged TOAST
+  column (protocol 6, `spock.toast_divergence_stamps`), so only rows whose
+  version actually differs are recorded.
   Detection is forward-only: rows that diverged before upgrading are not
   found. See *Detecting TOAST Divergence*.
 
@@ -23,6 +24,8 @@
 
 ### New functions, tables and views
 
+* `spock.toast_divergence_verify(max_rows integer DEFAULT 1000)`: check
+  recorded suspects against the winning node; returns counts.
 * `spock.toast_divergence_clear(relation regclass, pkey jsonb)`: remove one
   entry after an out-of-band repair.
 * `spock.toast_stamp(value "any")`: the version stamp of a column value.

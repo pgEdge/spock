@@ -1,5 +1,5 @@
--- toast_divergence: catalog shape, GUC defaults and clear().  Detection
--- itself needs two nodes and lives in TAP 053.
+-- toast_divergence: catalog shape, GUC defaults, clear() and verify() on an
+-- empty queue.  Detection itself needs two nodes and lives in TAP 053.
 SELECT * FROM spock_regress_variables()
 \gset
 
@@ -47,6 +47,31 @@ INSERT INTO spock.toast_suspect
        (relid, pkey, attnums, state, winner_subid, winner_origin, winner_ts)
 VALUES ('public.td_t'::regclass, '{"id": "2"}', '{3}', 'bogus', 0, 0, now());
 
+-- verify() on an empty queue does nothing and reports zeros.
+SELECT * FROM spock.toast_divergence_verify();
+SELECT * FROM spock.toast_divergence_verify(10);
+-- An entry for a table that no longer exists is cleared.
+CREATE TABLE public.td_gone (id int PRIMARY KEY, big text);
+INSERT INTO spock.toast_suspect (relid, pkey, attnums, winner_subid, winner_origin, winner_ts)
+VALUES ('public.td_gone'::regclass, '{"id": "1"}', '{2}', 0, 0, now());
+DROP TABLE public.td_gone;
+SELECT * FROM spock.toast_divergence_verify();
+SELECT count(*) FROM spock.toast_suspect;
+
+-- A renamed key column: the entry's key no longer names every column of the
+-- table, so the entry is reported as failed rather than compared against
+-- whatever row a partial key happens to match.
+CREATE TABLE public.td_ck (a int, b int, big text, PRIMARY KEY (a, b));
+INSERT INTO spock.toast_suspect (relid, pkey, attnums, winner_subid, winner_origin, winner_ts)
+VALUES ('public.td_ck'::regclass, '{"a": "1", "b": "2"}', '{3}', 0, 0, now());
+ALTER TABLE public.td_ck RENAME COLUMN b TO b2;
+SELECT * FROM spock.toast_divergence_verify();
+SELECT state, last_error, verified_at IS NOT NULL AS attempted
+  FROM spock.toast_suspect
+ WHERE relid = 'public.td_ck'::regclass;
+SELECT spock.toast_divergence_clear('public.td_ck', '{"a": "1", "b": "2"}');
+DROP TABLE public.td_ck;
+
 DROP TABLE public.td_t;
 
 -- spock.toast_stamp(): the version stamp of an out-of-line value, read from
@@ -83,8 +108,8 @@ VACUUM FULL public.td_stamp;
 SELECT spock.toast_stamp(big) IS NOT NULL AS readable_after_vacuum_full FROM public.td_stamp WHERE id = 1;
 DROP TABLE public.td_stamp;
 
--- The queue holds row keys, so neither it, its view nor
--- spock.toast_divergence_clear() is open to PUBLIC.  USAGE on the schema is granted so that each
+-- The queue holds row keys and the functions read or change user tables,
+-- so none is open to PUBLIC.  USAGE on the schema is granted so that each
 -- object's own check is the one tested.
 CREATE ROLE td_noaccess;
 GRANT USAGE ON SCHEMA spock TO td_noaccess;
@@ -92,6 +117,7 @@ SET ROLE td_noaccess;
 SELECT count(*) FROM spock.toast_suspect;
 SELECT count(*) FROM spock.toast_divergence;
 SELECT spock.toast_divergence_clear('pg_class', '{}');
+SELECT * FROM spock.toast_divergence_verify();
 RESET ROLE;
 REVOKE USAGE ON SCHEMA spock FROM td_noaccess;
 DROP ROLE td_noaccess;

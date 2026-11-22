@@ -18,8 +18,8 @@ use SpockTest qw(
 #
 # Cases (lettered in the order they were written, so the list has gaps):
 #   a   sequential cross-node updates record nothing
-#   b   the race records stamp_mismatch with the winner's stamp
-#   c   equal bytes written separately: stamp_mismatch
+#   b   the race records stamp_mismatch with the winner's stamp, confirmed
+#   c   equal bytes written separately: stamp_mismatch, cleared by verify
 #   d   stamps off on the sender: plain 'u', every entry no_stamp
 #   e   local value inline, remote out of line: stamp_mismatch
 #   f   local chunks frozen keep their stamp: nothing recorded
@@ -32,6 +32,8 @@ use SpockTest qw(
 #   z   after VACUUM FULL on the sender its later updates are not recorded
 #   z2  a write of the sender's thrown away here that changed the size is
 #       recorded on the sender's next update
+#   p   hashes do not depend on lc_monetary
+#   w   a key that fails the batched local read fails only its own entry
 
 create_cluster(2, 'Create 2-node cluster for TOAST version stamps');
 cross_wire(2, ['n1', 'n2'], 'Cross-wire n1 and n2');
@@ -108,6 +110,12 @@ sub reason_of {
         "SELECT reason FROM spock.toast_suspect WHERE pkey = jsonb_build_object('id', '$id')");
 }
 
+sub verify_counts {
+    my ($node) = @_;
+    return scalar_query($node, "SELECT (r).cleared || '/' || (r).confirmed || '/' || (r).failed "
+                             . "FROM spock.toast_divergence_verify() r");
+}
+
 # --- setup -----------------------------------------------------------------
 
 psql_or_bail(1, "CREATE TABLE public.td (id int PRIMARY KEY, small text, big text); "
@@ -140,16 +148,21 @@ is(reason_of(1, 21), 'stamp_mismatch', '(b) reason stamp_mismatch');
 is(scalar_query(1, "SELECT winner_stamps[1] FROM spock.toast_suspect WHERE pkey = jsonb_build_object('id', '21')"),
    scalar_query(2, "SELECT spock.toast_stamp(big) FROM public.td WHERE id = 21"),
    '(b) the entry carries n2\'s stamp for big');
+is(verify_counts(1), '0/1/0', '(b) verify confirms it');
 
 # ---------------------------------------------------------------------------
 # (c) Equal bytes written separately: n1 writes the value n2 already has.
-#     The versions differ, so it is recorded.
+#     The versions differ, so it is recorded; verification clears it without
+#     writing anything.
 # ---------------------------------------------------------------------------
 insert_rows('(c)', 22, 22);
 race('(c)',
      "UPDATE public.td SET big = $BIG_Z WHERE id = 22",
      "UPDATE public.td SET small = 'c' WHERE id = 22");
 is(reason_of(1, 22), 'stamp_mismatch', '(c) recorded as stamp_mismatch');
+my $xmin_c = scalar_query(1, "SELECT xmin FROM public.td WHERE id = 22");
+is(verify_counts(1), '1/0/0', '(c) verify clears it');
+is(scalar_query(1, "SELECT xmin FROM public.td WHERE id = 22"), $xmin_c, '(c) the row was not rewritten');
 
 # ---------------------------------------------------------------------------
 # (d) Stamps off on the sender: plain 'u', today's rule, every entry no_stamp.
@@ -378,6 +391,86 @@ for my $op ('VACUUM FULL public.td', 'TRUNCATE public.td') {
     unlike(log_since(2, $off_o), qr/could not read blocks|could not read block/,
            "(o) after $op: no read error on the sender");
 }
+
+# ---------------------------------------------------------------------------
+# (p) Hashes do not depend on lc_monetary, which changes how money prints:
+#     equal money[] values written separately, compared while n1 uses
+#     another lc_monetary and n2 the default, are found equal.
+# ---------------------------------------------------------------------------
+my $MONEY = "array_fill(1234.5::numeric::money, ARRAY[40000])";
+psql_or_bail(1, "CREATE TABLE public.tm (id int PRIMARY KEY, small text, m money[]); "
+              . "ALTER TABLE public.tm ALTER COLUMN m SET STORAGE EXTERNAL");
+ok(poll_query_until(2, "SELECT count(*) FROM pg_class WHERE oid = to_regclass('public.tm')", '1', 30),
+   '(p) table replicated to n2');
+psql_or_bail(1, "INSERT INTO public.tm VALUES (1, 's', $MONEY)");
+drain('(p)');
+stop_apply(1, 'sub_n1_n2', '(p)');
+stop_apply(2, 'sub_n2_n1', '(p)');
+psql_or_bail(1, "UPDATE public.tm SET m = $MONEY WHERE id = 1");
+psql_or_bail(2, "UPDATE public.tm SET small = 'p' WHERE id = 1");
+start_apply(1, 'sub_n1_n2', '(p)');
+start_apply(2, 'sub_n2_n1', '(p)');
+drain('(p)');
+psql_or_bail(1, "DELETE FROM spock.toast_suspect WHERE relid <> 'public.tm'::regclass");
+is(scalar_query(1, "SELECT reason FROM spock.toast_suspect WHERE relid = 'public.tm'::regclass"),
+   'stamp_mismatch', '(p) recorded as stamp_mismatch');
+# Any installed locale that prints money differently from C will do; the
+# check skips only on a machine with none.  scalar_query() returns psql's
+# "SET" tag in front of the value.
+sub money_under {
+    my ($l) = @_;
+    my $m = scalar_query(1, "SET lc_monetary = '$l'; SELECT 1234.5::money::text");
+    $m =~ s/^SET//;
+    return $m;
+}
+my $c_money = money_under('C');
+my $p_locale = '';
+for my $l (sort { ($b =~ /^de_DE/ ? 1 : 0) <=> ($a =~ /^de_DE/ ? 1 : 0) || $a cmp $b }
+           split /,/, scalar_query(1,
+               "SELECT string_agg(collcollate, ',') FROM pg_collation "
+             . "WHERE collprovider = 'c' AND collcollate ~ '^[a-z]{2}_[A-Z]{2}\\.utf-?8\$'")) {
+    my $m = money_under($l);
+    if ($m ne '' && $m ne $c_money) {
+        $p_locale = $l;
+        last;
+    }
+}
+SKIP: {
+    diag('(p) SKIPPED: no installed locale prints money differently from C')
+        if $p_locale eq '';
+    skip 'no installed locale prints money differently from C', 2 if $p_locale eq '';
+    psql_or_bail(1, "ALTER DATABASE $cfg->{db_name} SET lc_monetary = '$p_locale'");
+    isnt(scalar_query(1, "SELECT (m)[1]::text FROM public.tm"), $c_money,
+         "(p) n1 prints money under $p_locale, not as C does");
+    is(verify_counts(1), '1/0/0', '(p) verify finds the values equal');
+    psql_or_bail(1, "ALTER DATABASE $cfg->{db_name} RESET lc_monetary");
+}
+
+# Hand-made suspect entries on n1 naming sub_n1_n2 as the winner.
+sub add_entries {
+    my (@keys) = @_;
+    my $values = join(', ', map { "('public.td'::regclass, '{\"id\": \"$_\"}'::jsonb, '{3}'::int2[], s.sub_id, "
+                                . "s.sub_origin, now())" } @keys);
+    psql_or_bail(1, "INSERT INTO spock.toast_suspect "
+                  . "(relid, pkey, attnums, winner_subid, winner_origin, winner_ts) "
+                  . "SELECT v.* FROM spock.subscription s, LATERAL (VALUES $values) "
+                  . "v(relid, pkey, attnums, winner_subid, winner_origin, winner_ts) "
+                  . "WHERE s.sub_name = 'sub_n1_n2'");
+}
+
+# ---------------------------------------------------------------------------
+# (w) A key that fails the batched local read (not an integer) fails only
+#     its own entry: the rest of its group is read row by row and checked.
+# ---------------------------------------------------------------------------
+insert_rows('(w)', 131, 132);
+add_entries(131, 132, 'x');
+is(scalar_query(1, "SELECT (r).cleared || '/' || (r).confirmed || '/' || (r).remote_missing || '/' || (r).failed "
+                 . "FROM spock.toast_divergence_verify() r"),
+   '2/0/0/1', '(w) verify clears the good keys and fails the bad one');
+is(scalar_query(1, "SELECT count(*) FROM spock.toast_suspect WHERE pkey = jsonb_build_object('id', 'x') "
+                 . "AND state = 'suspect' AND last_error LIKE '%invalid input syntax for type integer%'"),
+   '1', '(w) the bad key keeps its state and records the error');
+psql_or_bail(1, "DELETE FROM spock.toast_suspect");
 
 destroy_cluster('Destroy cluster');
 done_testing();

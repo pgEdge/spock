@@ -15,7 +15,8 @@ spock.toast_divergence_clear (relation regclass, pkey jsonb)
 ### DESCRIPTION
 
 Removes one row's entry from `spock.toast_suspect`, for use after the row
-has been repaired by other means, for example with ACE's table repair.
+has been repaired by other means, for example with ACE's table repair, or
+after a `remote_missing` entry has been dealt with.
 
 The key is the JSON object shown in the `pkey` column of
 `spock.toast_divergence`: the replica identity key columns (normally the

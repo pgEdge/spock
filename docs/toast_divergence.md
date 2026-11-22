@@ -13,7 +13,8 @@ nodes. A installs B's small column but keeps its own large value, because
 B's message did not carry one. The two nodes now agree who won and hold
 different rows, and nothing corrects it.
 
-Spock records the rows that may have diverged.
+Spock records the rows that may have diverged and lets you confirm which
+ones did.
 
 Switching the table to `REPLICA IDENTITY FULL` is no way around it: Spock
 does not support FULL on its own for `UPDATE` and `DELETE` (see
@@ -64,7 +65,9 @@ frozen transaction id, so on a busy cluster values older than about
 `autovacuum_freeze_max_age` transactions fall back to the older rule. A
 value frozen and left unwritten for about four billion transactions can
 instead read a newer transaction's stamp, as transaction ids wrap around:
-that records a row needlessly, and never hides one.
+that records a row needlessly, and never hides one. Verification still
+hashes every entry against the winner, so these cost a check, never a wrong
+answer.
 
 A rewrite on the sending node is quiet only for some rows. A `VACUUM FULL`,
 `CLUSTER`, pg_repack or a table-rewriting `ALTER TABLE` gives every value
@@ -91,8 +94,9 @@ costs about as much as reading one row by its primary key, and more when the
 TOAST table's pages are not in shared buffers. The subscriber reads its own
 stamp at the same cost, except for a row the sender last wrote with a value
 the sender wrote itself, where it compares sizes only. With stamps off,
-every candidate row is recorded, and a row last written by the sending node
-is never recorded (see below).
+every candidate row is recorded and verification clears the ones that did
+not diverge, and a row last written by the sending node is never recorded
+(see below).
 
 A row last written before the subscription the change arrives on was created
 is not recorded. That covers the rows copied by the initial table sync when
@@ -109,7 +113,8 @@ had not yet applied, can still be lost to a newer change from the sender and
 is not recorded, so let a node catch up before other nodes subscribe to it
 while it takes writes. A subscription created before Spock 5.0.6 has no
 recorded creation time, so this test does not apply to it: the rows its
-initial sync copied are recorded on their first such update.
+initial sync copied are recorded on their first such update, and
+verification clears them.
 
 A row whose commit timestamp can no longer be read is not recorded either.
 Its last write is older than PostgreSQL keeps commit timestamps for, which
@@ -119,8 +124,10 @@ recent local write. The same gap applies: a write made here just before a
 a sender had not applied yet can be lost to that sender's newer change and
 is not recorded.
 
-Detection needs `track_commit_timestamp = on`, which `last_update_wins`
-conflict resolution already requires. With it off, nothing is recorded.
+Detection and verification need `track_commit_timestamp = on`, which
+`last_update_wins` conflict resolution already requires. With it off,
+nothing is recorded and `spock.toast_divergence_verify()` raises an error. A
+winning node with it off is reported as a connection error on its entries.
 
 One entry is kept per row. A repeat detection replaces it and increments its
 count, at the cap too. The table is approximately capped by
@@ -134,8 +141,9 @@ the primary key unless `REPLICA IDENTITY USING INDEX` names another. An
 naming a row that no longer exists; remove it with
 `spock.toast_divergence_clear()`. An entry for a table that has since been
 dropped no longer shows in `spock.toast_divergence` but still counts toward
-the cap until it is removed; delete it from `spock.toast_suspect` by its
-`relid`.
+the cap. `spock.toast_divergence_verify()` removes it while it is in state
+`suspect`; an entry in another state stays until you delete it from
+`spock.toast_suspect`.
 
 Each row recorded, or recorded again, is written in its own subtransaction,
 so a failure to record it only logs a warning and never discards the change
@@ -152,21 +160,54 @@ The queue is local to the node that recorded the entries. It is not
 replicated, and `pg_dump` does not include it, since its entries key on the
 local OIDs of the tables they name.
 
+## Confirming a suspect
+
+A recorded row is only a suspect. Most suspects turn out to hold the same
+value as the winner, because the local node had not changed the column. Run
+
+```sql
+SELECT * FROM spock.toast_divergence_verify();
+```
+
+on the node holding the suspects. It connects to the node that won each
+conflict, using the subscription's connection string, and compares a hash
+of each suspect column on both sides. Entries whose values agree are
+deleted. Entries that differ move to state `confirmed` and record which
+columns differ. A row that no longer exists on the winner is marked
+`remote_missing` and left for you, since deciding whether a deleted row
+should come back is not this feature's call. An entry the verifier could
+not check keeps its state and shows the reason in `last_error`.
+
+The function runs its SQL with `search_path` set to `pg_catalog, pg_temp`,
+on this node and on the winner, so a function or operator another user
+created in a schema such as `public` is never called in place of a built-in
+one. Key columns are compared with their type's own equality operator,
+named with its schema, so a key of a type such as `citext` still matches as
+that type. When that operator is outside `pg_catalog`, both sides are cast
+to the operator's own type first, so an operator created on a domain over
+that type is not used either. The type must be in the same schema on both
+nodes.
+
+The result is a count of entries that went each way.
+
 ## Reading the list
 
 ```sql
-SELECT schema_name, table_name, pkey, columns, winner_node, detect_count,
-       detected_at
-  FROM spock.toast_divergence;
+SELECT schema_name, table_name, pkey, differing_columns, state,
+       winner_node, detect_count, detected_at
+  FROM spock.toast_divergence
+ WHERE state = 'confirmed';
 ```
 
-Each row may differ from the winner in the named columns. The winner holds
-the value that row-level last-update-wins says every node should converge
-on.
+A `confirmed` row differed from the winner in the named columns when it was
+checked. The winner holds the value that row-level last-update-wins says
+every node should converge on. A row checked while this node was behind the
+winner can be `confirmed` although the change still on its way will make
+the two agree.
 
 ## Repairing
 
-To repair a row, for example with ACE's table repair using
+To repair a confirmed row, for example with ACE's table repair using
 `--preserve-origin`, remove the entry afterwards:
 
 ```sql
@@ -211,12 +252,13 @@ when the lost write changed a column's size. The thrown-away changes are
 listed in `spock.exception_log`; compare those rows with ACE.
 
 Delete divergence, where one node deleted a row another node updated, is
-not detected here.
+not detected here beyond marking a `remote_missing` entry.
 
 When the winning change reached a node through another node, on a
 subscription with `forward_origins`, the forwarding node cannot be used to
 check it: it applied the same unchanged column and may hold a stale value
 itself. Spock does not allow a direct subscription to the originating node
 while forwarding is active, so such an entry is kept with no winner
-subscription and a `last_error` saying so. Use ACE to compare the row with
-the originating node, then `spock.toast_divergence_clear()`.
+subscription and a `last_error` saying so, and
+`spock.toast_divergence_verify()` reports it as failed. Use ACE to compare
+the row with the originating node, then `spock.toast_divergence_clear()`.

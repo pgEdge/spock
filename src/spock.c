@@ -1343,7 +1343,7 @@ _PG_init(void)
 							 "When an UPDATE from another node wins a conflict and carries a TOAST "
 							 "column it did not change, this node keeps its own value for that "
 							 "column, which may differ from the winner's.  Such rows are recorded "
-							 "in spock.toast_suspect.",
+							 "in spock.toast_suspect for spock.toast_divergence_verify().",
 							 &spock_toast_divergence_detection,
 							 true,
 							 PGC_USERSET,

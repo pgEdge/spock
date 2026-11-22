@@ -116,6 +116,7 @@ nav:
       - spock.repset_remove_table(): spock_functions/functions/spock_repset_remove_table.md
       - spock.repset_show_table(): spock_functions/functions/spock_repset_show_table.md
       - spock.toast_divergence_clear(): spock_functions/functions/spock_toast_divergence_clear.md
+      - spock.toast_divergence_verify(): spock_functions/functions/spock_toast_divergence_verify.md
       - spock.toast_stamp(): spock_functions/functions/spock_toast_stamp.md
       - spock.table_wait_for_sync(): spock_functions/functions/spock_table_wait_for_sync.md
       - spock.sync_seq(): spock_functions/functions/spock_sync_seq.md

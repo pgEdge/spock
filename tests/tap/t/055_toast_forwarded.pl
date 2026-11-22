@@ -17,7 +17,8 @@ use SpockTest qw(
 # n3's UPDATEs reach n1 through n2.  n2 applied the same unchanged TOAST
 # column, so its own value proves nothing, and Spock does not allow n1 a
 # direct subscription to n3 while sub_n1_n2 forwards.  So the entry must be
-# recorded with no winner subscription and a last_error saying why.
+# recorded with no winner subscription and a last_error saying why, and
+# verify() must report it failed rather than settle it from the forwarder.
 #
 # Every n1 write in this test loses its conflict on n2, so n2 never applies
 # one and nothing loops back to n1 through the {all} subscription.
@@ -121,6 +122,13 @@ is(scalar_query(1, "SELECT last_error LIKE '%was forwarded by subscription sub_n
    't', 'last_error names the forwarding subscription');
 is(big_md5(1, 1), $md5_x, 'n1 diverged to x');
 is(big_md5(3, 1), $md5_z, 'n3 still holds z');
+
+is(scalar_query(1, "SELECT (r).cleared || '/' || (r).confirmed || '/' || (r).failed "
+                 . "FROM spock.toast_divergence_verify() r"),
+   '0/0/1', 'verify reports the entry failed');
+is(scalar_query(1, "SELECT state || '/' || (last_error LIKE '%forwarded%')::text "
+                 . "FROM spock.toast_suspect WHERE pkey = jsonb_build_object('id', '1')"),
+   'suspect/true', 'entry kept as suspect, last_error explains');
 
 # ---------------------------------------------------------------------------
 # Stamps across the chain.  n3 writes row 3's big; n2 then updates small, so

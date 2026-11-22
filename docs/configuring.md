@@ -638,8 +638,9 @@ origin won, it carried a TOAST column it did not change, and the column's
 version stamp differs from the provider's. When the stamps cannot be
 compared (see `spock.toast_divergence_stamps`), the row is recorded only if
 the local row was last written by a different origin. Entries go to
-`spock.toast_suspect`.
-See [Detecting TOAST Divergence](toast_divergence.md).
+`spock.toast_suspect`
+for [`spock.toast_divergence_verify()`](spock_functions/functions/spock_toast_divergence_verify.md)
+to confirm or clear. See [Detecting TOAST Divergence](toast_divergence.md).
 
 Default `on`. The cost is a few comparisons per applied `UPDATE`, and for
 each row recorded (or recorded again) a subtransaction with its own
@@ -652,7 +653,7 @@ last wrote it, not by the conflict rate. With stamps (the default) they are
 mostly real differences, but a table rewrite run on the receiving node alone
 (`VACUUM FULL`, `CLUSTER`, a rewriting `ALTER TABLE` that is not replicated)
 gives its values new stamps, and the rows are then recorded as they are next
-updated from other nodes, until they are cleared. A rewrite on the
+updated from other nodes, until verified or repaired. A rewrite on the
 sending node does the same for the rows the receiving node last got from
 another node, and for every row a forwarding node passes on after rewriting
 the table. A rewriting statement replicated by AutoDDL gives every node the
@@ -675,9 +676,9 @@ Default `on`. Reading stamps costs the provider about 2.5 microseconds per
 `UPDATE` that leaves an out-of-line column unchanged, plus about 1.5 for
 each further such column, and the subscriber about as much to read its own.
 With updates from more than one node, stamps save more than that on the
-subscriber, which no longer records rows that did not diverge. Stamps are
-also the only way to detect a divergence on a row last written by the
-sending node itself, which happens in a mesh of three or more nodes when
+subscriber, which no longer records and clears rows that did not diverge.
+Stamps are also the only way to detect a divergence on a row last written by
+the sending node itself, which happens in a mesh of three or more nodes when
 changes from two nodes arrive out of order; with stamps off, such rows are
 not recorded, and with stamps on they are recorded only when both stamps can
 be read. `SIGHUP`. Stamps are read from `pg_commit_ts`, so they last only as

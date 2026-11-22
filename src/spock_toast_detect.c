@@ -113,10 +113,10 @@ typedef struct SuspectColumns
 } SuspectColumns;
 
 /*
- * Pin fixed text-output settings for the rest of the current GUC nest
- * level, so a stored key reads back the same whatever the session's own
- * settings.  Returns the level for AtEOXact_GUC().  An error before that
- * call is fine: the (sub)transaction abort unwinds the level.
+ * Pin the text-output settings that spock.toast_divergence_verify() uses,
+ * for the rest of the current GUC nest level.  Returns the level for
+ * AtEOXact_GUC().  An error before that call is fine: the
+ * (sub)transaction abort unwinds the level.
  */
 static int
 pin_text_output(void)
@@ -216,9 +216,10 @@ prepare_kept_plan(const char *sql, int nargs, Oid *argtypes, const char *what)
  * which is too much to run on every detection: detections happen on
  * routine cross-origin UPDATEs, not rare events, and this runs in the
  * apply hot path.  So the answer is cached for CAP_PROBE_INTERVAL_USEC.
- * The table changes slowly, and the cap is already approximate; caching
- * it just adds one more way it can be overshot, by however many
- * detections land inside one interval.
+ * The table drains through spock.toast_divergence_verify(), so the answer
+ * changes slowly, and the cap is already approximate; caching it just
+ * adds one more way it can be overshot, by however many detections land
+ * inside one interval.
  */
 static bool
 suspect_table_at_cap(void)
@@ -252,7 +253,7 @@ suspect_table_at_cap(void)
 	return last_at_cap;
 }
 
-/* Render the row key under the pinned text-output settings. */
+/* Render the row key under the settings verify() parses it with. */
 static char *
 pinned_pkey_json(Relation rel, TupleTableSlot *slot)
 {
@@ -315,9 +316,9 @@ suspect_record_cb(void *arg)
 	int			ret;
 
 	/*
-	 * The key is read back later as SQL, so render it under pinned settings.
-	 * Otherwise a date key written as '03/11/2026' under a DMY datestyle
-	 * would name another row.
+	 * The key is parsed back later under pinned settings, by verify(), so
+	 * render it under the same ones.  Otherwise a date key written as
+	 * '03/11/2026' under a DMY datestyle would name another row.
 	 */
 	a->pkey = pinned_pkey_json(a->rel, a->slot);
 	if (a->pkey == NULL)
@@ -400,7 +401,7 @@ suspect_record_cb(void *arg)
 			ereport(WARNING,
 					(errmsg("spock.toast_suspect has reached the cap of %d rows; not recording more suspects",
 							spock_toast_divergence_max_suspects),
-					 errhint("Remove entries with spock.toast_divergence_clear(), or raise spock.toast_divergence_max_suspects.")));
+					 errhint("Run spock.toast_divergence_verify() to clear entries that did not diverge, or raise spock.toast_divergence_max_suspects.")));
 			last_cap_warning = now;
 		}
 		AtEOXact_GUC(true, nestlevel);
@@ -691,9 +692,11 @@ spock_toast_suspect_record(SpockRelation *rel, TupleTableSlot *newslot,
 	 * replicated transaction, and with spock.exception_behaviour set to
 	 * transdiscard, the default, an error escaping it would discard that
 	 * whole transaction: a full disk, or a key too large for the index, must
-	 * not cost the user the data being applied.  The subtransaction commits
-	 * inside the apply transaction, so the entry still disappears if the
-	 * apply transaction later aborts.
+	 * not cost the user the data being applied.  A query cancel is the
+	 * exception: run_in_subxact() raises it again, as a cancel anywhere else
+	 * in apply would.  The subtransaction commits inside the apply
+	 * transaction, so the entry still disappears if the apply transaction
+	 * later aborts.
 	 */
 	if (!run_in_subxact(suspect_record_cb, &arg, &record_err))
 		ereport(WARNING,

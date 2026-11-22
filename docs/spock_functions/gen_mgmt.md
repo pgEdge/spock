@@ -8,6 +8,7 @@ You can use the following settings to manage your replication clusters.
 | [spock_max_proto_version](functions/spock_max_proto_version.md) | Returns the maximum protocol version supported by Spock. Defined in the public schema so invoked without the `spock.` prefix. |
 | [spock_min_proto_version](functions/spock_min_proto_version.md) | Returns the minimum protocol version supported by Spock. Defined in the public schema, so invoked without the `spock.` prefix. |
 | [spock.node_info](functions/spock_node_info.md) | Returns information about the local Spock node. |
+| [spock.toast_divergence_verify](functions/spock_toast_divergence_verify.md) | Confirm or clear rows recorded as possibly diverged on a TOAST column. |
 | [spock.toast_divergence_clear](functions/spock_toast_divergence_clear.md) | Remove one recorded row after repairing it by other means. |
 | [spock.toast_stamp](functions/spock_toast_stamp.md) | Show the version stamp of a column value. |
 | [spock_version](functions/spock_version.md) | Returns the version string of the Spock extension. Defined in the public schema so invoked without the `spock.` prefix. |

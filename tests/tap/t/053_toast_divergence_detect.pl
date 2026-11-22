@@ -2,6 +2,8 @@ use strict;
 use warnings;
 use Test::More;
 use lib '.';
+use IPC::Run;
+use Time::HiRes qw(time);
 use SpockTest qw(
     create_cluster cross_wire destroy_cluster get_test_config
     psql_or_bail scalar_query poll_query_until
@@ -14,7 +16,8 @@ use SpockTest qw(
 # it did not change ('u' on the wire), this node keeps its own value for that
 # column.  If this node had changed that column itself, the two nodes now
 # disagree and nothing else records it.  The apply worker writes such rows to
-# spock.toast_suspect.
+# spock.toast_suspect; spock.toast_divergence_verify() checks them against the
+# winner.
 #
 # Cases:
 #   a  the race leaves a suspect on the node that applied the win, none on
@@ -24,9 +27,17 @@ use SpockTest qw(
 #   d  the cap stops recording and warns once, but an existing entry is
 #      still refreshed
 #   e  detection off records nothing
-#   t  a date key under a non-ISO DateStyle is stored in ISO form
+#   f  verify() confirms a real divergence
+#   g  verify() clears a suspect whose values agree
+#   h  verify() marks a row deleted on the winner
+#   i  verify() keeps and reports an entry it cannot check
+#   t  a date key under a non-ISO DateStyle is confirmed, not cleared
 #   ad without spock.toast_suspect (a failed extension update) the apply
 #      worker records nothing and warns once
+#   ae a key of a type the winner's search_path does not reach is checked
+#   bc functions and operators another role planted in public are not
+#      called
+#   af verify() stops while the winner does not answer
 #   bd a row is recorded although replicated DDL left the apply worker a
 #      search_path that reaches a planted now()
 #   ag a row a remote transaction updates twice, retried in discard mode,
@@ -35,6 +46,13 @@ use SpockTest qw(
 #   al a table with no replica identity key here is not recorded, and its
 #      update applies
 #   ai a failure to record a row is a warning; the change still applies
+#   aj a key the winner cannot read fails only its own entry
+#   ak key columns named like the query's own fields, and a key of a domain
+#      over jsonb, are verified
+#   am verify() leaves an entry another session holds locked
+#   an a local lock timeout fails a group's entries after one wait
+#   ar verify() leaves an entry recorded again while it compared the row
+#   aw a key matching more than one row on the winner fails its entry
 #   aa a row last written before the subscription existed (initial sync)
 #      is not recorded
 #   at a row whose commit timestamp can no longer be read is not recorded
@@ -102,9 +120,9 @@ sub restart_apply {
 
 # --- setup -----------------------------------------------------------------
 
-# Some cases need entries for rows that did not diverge (sequential updates
-# from two nodes).  With version stamps those are no longer recorded, so stamps
-# are off here and every entry is a no_stamp one; 056 covers stamps.
+# This test covers the queue and verify(), and several cases need entries
+# for rows that did not diverge (sequential updates from two nodes).  With
+# version stamps those are no longer recorded, so stamps are off here and every entry is a no_stamp one; 056 covers stamps.
 for my $n (1, 2) {
     psql_or_bail($n, "ALTER SYSTEM SET spock.toast_divergence_stamps = off");
     psql_or_bail($n, "SELECT pg_reload_conf()");
@@ -202,10 +220,79 @@ psql_or_bail(1, "ALTER SYSTEM RESET spock.toast_divergence_detection");
 restart_apply('(e) reset');
 
 # ---------------------------------------------------------------------------
+# (f) verify() confirms the real divergence from (a)/(c): n1 holds 'y'*200000
+#     in big, n2 holds 'z'*200000.
+# ---------------------------------------------------------------------------
+is(scalar_query(1, "SELECT (r).cleared || '/' || (r).confirmed || '/' || (r).remote_missing || '/' || (r).failed "
+                 . "FROM spock.toast_divergence_verify() r"),
+   '0/1/0/0', '(f) verify confirms one entry');
+is(scalar_query(1, "SELECT state || '/' || differing::text FROM spock.toast_suspect WHERE pkey = jsonb_build_object('id', '1')"),
+   'confirmed/{3}', '(f) state confirmed, big differs');
+is(scalar_query(1, "SELECT differing_columns::text FROM spock.toast_divergence WHERE pkey = jsonb_build_object('id', '1')"),
+   '{big}', '(f) the view names the differing column');
+ok(scalar_query(1, "SELECT verified_at IS NOT NULL FROM spock.toast_suspect WHERE pkey = jsonb_build_object('id', '1')") eq 't',
+   '(f) verified_at set');
+
+# ---------------------------------------------------------------------------
+# (g) A suspect whose values agree is cleared.  Both nodes update small on
+#     row 4; neither touches big, so n1 records a suspect (different origin,
+#     big unchanged) that verification finds equal.
+# ---------------------------------------------------------------------------
+race('(g)',
+     "UPDATE public.td SET small = 'g1' WHERE id = 4",
+     "UPDATE public.td SET small = 'g2' WHERE id = 4");
+is(suspects(1, "pkey = jsonb_build_object('id', '4')"), '1', '(g) suspect recorded for row 4');
+is(scalar_query(1, "SELECT (r).cleared || '/' || (r).confirmed FROM spock.toast_divergence_verify() r"),
+   '1/0', '(g) verify clears it');
+is(suspects(1, "pkey = jsonb_build_object('id', '4')"), '0', '(g) entry gone');
+
+# ---------------------------------------------------------------------------
+# (h) The winner deleted the row.  Stop n1's apply from n2 first so the
+#     DELETE does not reach n1 before verification looks.
+# ---------------------------------------------------------------------------
+race('(h)',
+     "UPDATE public.td SET big = $BIG_X WHERE id = 2",
+     "UPDATE public.td SET small = 'h' WHERE id = 2");
+is(suspects(1, "pkey = jsonb_build_object('id', '2') AND state = 'suspect'"), '1', '(h) suspect recorded for row 2');
+psql_or_bail(1, "SELECT spock.sub_disable('sub_n1_n2', true)");
+ok(wait_for_sub_status(1, 'sub_n1_n2', 'disabled'), '(h) n1 apply from n2 stopped');
+psql_or_bail(2, "DELETE FROM public.td WHERE id = 2");
+is(scalar_query(1, "SELECT (r).remote_missing FROM spock.toast_divergence_verify() r"),
+   '1', '(h) verify reports the row missing on the winner');
+is(scalar_query(1, "SELECT state FROM spock.toast_suspect WHERE pkey = jsonb_build_object('id', '2')"),
+   'remote_missing', '(h) entry kept as remote_missing');
+psql_or_bail(1, "SELECT spock.sub_enable('sub_n1_n2', true)");
+ok(wait_for_sub_status(1, 'sub_n1_n2', 'replicating'), '(h) n1 apply resumed');
+is(wait_for_value(1, "SELECT count(*) FROM public.td WHERE id = 2", '0'), '0', '(h) the DELETE has now arrived');
+is(scalar_query(1, "SELECT (r).cleared || '/' || (r).confirmed || '/' || (r).remote_missing || '/' || (r).failed "
+                 . "FROM spock.toast_divergence_verify() r"),
+   '0/0/0/0', '(h) remote_missing entries are not re-verified');
+is(scalar_query(1, "SELECT spock.toast_divergence_clear('public.td', jsonb_build_object('id', '2'))"), 't',
+   '(h) operator clears it by hand');
+
+# ---------------------------------------------------------------------------
+# (i) An entry the verifier cannot check is kept and reported: a winner
+#     subscription that does not exist.
+# ---------------------------------------------------------------------------
+psql_or_bail(1, "INSERT INTO spock.toast_suspect (relid, pkey, attnums, winner_subid, winner_origin, winner_ts) "
+              . "VALUES ('public.td'::regclass, '{\"id\": \"3\"}', '{3}', 4242, 0, now())");
+is(scalar_query(1, "SELECT (r).failed FROM spock.toast_divergence_verify() r"), '1',
+   '(i) verify reports one failure');
+is(scalar_query(1, "SELECT state || '/' || (last_error IS NOT NULL) FROM spock.toast_suspect WHERE pkey = jsonb_build_object('id', '3')"),
+   'suspect/true', '(i) entry kept as suspect with last_error set');
+# scalar_query() squeezes out whitespace, which would hide the space this
+# regex needs; run_on_node() (not exported, called by its full name) keeps
+# it since this query has no embedded double quotes to trip its shell quoting.
+like(SpockTest::run_on_node(1, "SELECT last_error FROM spock.toast_suspect WHERE pkey = jsonb_build_object('id', '3')"),
+     qr/subscription 4242/, '(i) last_error names the subscription');
+psql_or_bail(1, "DELETE FROM spock.toast_suspect WHERE pkey = '{\"id\": \"3\"}'");
+
+# ---------------------------------------------------------------------------
 # (t) A date key under a non-ISO DateStyle.  n1's apply worker runs with
 #     DateStyle 'SQL, DMY', so the key would render as '11/03/2026' and be
-#     read back under 'ISO, MDY' as 3 November: no such row.  The key must
-#     be stored in ISO form.
+#     read back by verify() under 'ISO, MDY' as 3 November: no such row, and
+#     the real divergence would be cleared.  The key must be stored in ISO
+#     form and the divergence confirmed.
 # ---------------------------------------------------------------------------
 psql_or_bail(1, "ALTER SYSTEM SET datestyle = 'SQL, DMY'");
 restart_apply('(t)');
@@ -221,6 +308,8 @@ race('(t)',
      "UPDATE public.tdd SET small = 't' WHERE d = '2026-03-11'");
 is(suspects(1, "relid = 'public.tdd'::regclass AND pkey = jsonb_build_object('d', '2026-03-11')"),
    '1', '(t) key stored in ISO form despite the DMY DateStyle');
+is(scalar_query(1, "SELECT (r).cleared || '/' || (r).confirmed FROM spock.toast_divergence_verify() r"),
+   '0/1', '(t) verify confirms the divergence rather than clearing it');
 psql_or_bail(1, "ALTER SYSTEM RESET datestyle");
 restart_apply('(t) reset');
 psql_or_bail(1, "DELETE FROM spock.toast_suspect");
@@ -269,6 +358,158 @@ my @warn_ad = $log_ad =~ /spock\.toast_suspect does not exist/g;
 is(scalar(@warn_ad), 1, '(ad) the apply worker warned once');
 unlike($log_ad, qr/could not record TOAST suspect/, '(ad) no failure per row');
 psql_or_bail(1, "ALTER TABLE spock.toast_suspect_away RENAME TO toast_suspect");
+
+# (ae) The key column's type, an enum in schema tds, is on the caller's
+#      search_path but not on the winner session's.  verify() must name it
+#      with its schema in the query it sends to the winner.
+for my $n (1, 2) {
+    psql_or_bail($n, "SET spock.enable_ddl_replication = off; "
+                   . "CREATE SCHEMA tds; CREATE TYPE tds.k AS ENUM ('a', 'b')");
+}
+psql_or_bail(1, "CREATE TABLE public.td_enum (id tds.k PRIMARY KEY, small text, big text); "
+              . "ALTER TABLE public.td_enum ALTER COLUMN big SET STORAGE EXTERNAL");
+is(wait_for_value(2, "SELECT count(*) FROM pg_class WHERE oid = to_regclass('public.td_enum')", '1'),
+   '1', '(ae) td_enum replicated to n2');
+psql_or_bail(1, "INSERT INTO public.td_enum VALUES ('a', 's', $BIG_Z)");
+ok(sync_nodes(1, 2), '(ae) row on n2');
+race('(ae)',
+     "UPDATE public.td_enum SET big = $BIG_X WHERE id = 'a'",
+     "UPDATE public.td_enum SET small = 'ae' WHERE id = 'a'");
+is(suspects(1, "relid = 'public.td_enum'::regclass"), '1', '(ae) suspect on n1');
+my $ae_res = scalar_query(1, "SET search_path = tds, public; "
+                         . "SELECT (r).confirmed || '/' || (r).failed FROM spock.toast_divergence_verify() r");
+$ae_res =~ s/^SET//;
+is($ae_res, '1/0', '(ae) verify() confirmed it instead of failing on the type name');
+psql_or_bail(1, "DELETE FROM spock.toast_suspect");
+
+# (bc) public is made writable, as on a cluster upgraded from PostgreSQL 14
+#      or older, and td_planter creates there a convert_to(text, text) and
+#      an = on varchar, both of which fail when called.  Plain SQL under the
+#      default search_path calls them in place of the built-in ones;
+#      verify() pins search_path, here and on the winner, and must not.
+psql_or_bail(1, "CREATE TABLE public.td_vc (id varchar(10) PRIMARY KEY, small text, big text); "
+              . "ALTER TABLE public.td_vc ALTER COLUMN big SET STORAGE EXTERNAL");
+is(wait_for_value(2, "SELECT count(*) FROM pg_class WHERE oid = to_regclass('public.td_vc')", '1'),
+   '1', '(bc) td_vc replicated to n2');
+psql_or_bail(1, "INSERT INTO public.td_vc VALUES ('a', 's', $BIG_Z)");
+ok(sync_nodes(1, 2), '(bc) row on n2');
+race('(bc)',
+     "UPDATE public.td_vc SET big = $BIG_X WHERE id = 'a'",
+     "UPDATE public.td_vc SET small = 'bc' WHERE id = 'a'");
+is(suspects(1, "relid = 'public.td_vc'::regclass"), '1', '(bc) suspect on n1');
+my $cfg_bc = get_test_config();
+for my $n (1, 2) {
+    psql_or_bail($n, "SET spock.enable_ddl_replication = off; "
+                   . "CREATE ROLE td_planter; GRANT CREATE ON SCHEMA public TO td_planter; "
+                   . "SET ROLE td_planter; "
+                   . "CREATE FUNCTION public.convert_to(text, text) RETURNS bytea LANGUAGE plpgsql AS "
+                   . "\$f\$BEGIN RAISE EXCEPTION 'planted convert_to called by %', current_user; END\$f\$; "
+                   . "CREATE FUNCTION public.td_vc_eq(varchar, varchar) RETURNS boolean LANGUAGE plpgsql AS "
+                   . "\$f\$BEGIN RAISE EXCEPTION 'planted = called by %', current_user; END\$f\$; "
+                   . "CREATE OPERATOR public.= (LEFTARG = varchar, RIGHTARG = varchar, "
+                   . "FUNCTION = public.td_vc_eq)");
+    my $psql = "$cfg_bc->{pg_bin}/psql -X -p $cfg_bc->{node_ports}->[$n - 1] -d $cfg_bc->{db_name}";
+    like(`$psql -c "SELECT convert_to('a', 'UTF8')" 2>&1`, qr/planted convert_to called/,
+         "(bc) n$n: plain SQL calls the planted convert_to");
+    like(`$psql -c "SELECT 'a'::varchar = 'a'::varchar" 2>&1`, qr/planted = called/,
+         "(bc) n$n: plain SQL calls the planted =");
+}
+is(scalar_query(1, "SELECT (r).confirmed || '/' || (r).failed FROM spock.toast_divergence_verify() r"),
+   '1/0', '(bc) verify() confirmed it without calling them')
+    or diag('(bc) last_error: ' . scalar_query(1, "SELECT last_error FROM spock.toast_suspect "
+                                                 . "WHERE relid = 'public.td_vc'::regclass"));
+for my $n (1, 2) {
+    psql_or_bail($n, "SET spock.enable_ddl_replication = off; "
+                   . "DROP OPERATOR public.= (varchar, varchar); "
+                   . "DROP FUNCTION public.td_vc_eq(varchar, varchar), public.convert_to(text, text); "
+                   . "REVOKE CREATE ON SCHEMA public FROM td_planter; DROP ROLE td_planter");
+}
+psql_or_bail(1, "DELETE FROM spock.toast_suspect");
+
+# (be) The key is a domain over citext, so its equality operator is
+#      citext's, outside pg_catalog.  td_planter creates an = on the domain
+#      itself in public, which an exact match on the domain type would pick
+#      over citext's even when the operator is named OPERATOR(public.=).
+#      verify() cast the key to citext first and must not call it.
+my $has_citext = scalar_query(1, "SELECT count(*) FROM pg_available_extensions WHERE name = 'citext'");
+SKIP: {
+    skip '(be) citext is not installed', 12 unless $has_citext eq '1';
+    for my $n (1, 2) {
+        psql_or_bail($n, "SET spock.enable_ddl_replication = off; "
+                       . "CREATE EXTENSION citext SCHEMA public; "
+                       . "CREATE DOMAIN public.td_dk AS public.citext");
+    }
+    psql_or_bail(1, "CREATE TABLE public.td_dom (id public.td_dk PRIMARY KEY, small text, big text); "
+                  . "ALTER TABLE public.td_dom ALTER COLUMN big SET STORAGE EXTERNAL");
+    is(wait_for_value(2, "SELECT count(*) FROM pg_class WHERE oid = to_regclass('public.td_dom')", '1'),
+       '1', '(be) td_dom replicated to n2');
+    psql_or_bail(1, "INSERT INTO public.td_dom VALUES ('a', 's', $BIG_Z)");
+    ok(sync_nodes(1, 2), '(be) row on n2');
+    race('(be)',
+         "UPDATE public.td_dom SET big = $BIG_X WHERE id = 'a'",
+         "UPDATE public.td_dom SET small = 'be' WHERE id = 'a'");
+    is(suspects(1, "relid = 'public.td_dom'::regclass"), '1', '(be) suspect on n1');
+    my $cfg_be = get_test_config();
+    for my $n (1, 2) {
+        psql_or_bail($n, "SET spock.enable_ddl_replication = off; "
+                       . "CREATE ROLE td_planter; GRANT CREATE ON SCHEMA public TO td_planter; "
+                       . "SET ROLE td_planter; "
+                       . "CREATE FUNCTION public.td_dk_eq(public.td_dk, public.td_dk) RETURNS boolean "
+                       . "LANGUAGE plpgsql AS "
+                       . "\$f\$BEGIN RAISE EXCEPTION 'planted domain = called by %', current_user; END\$f\$; "
+                       . "CREATE OPERATOR public.= (LEFTARG = public.td_dk, RIGHTARG = public.td_dk, "
+                       . "FUNCTION = public.td_dk_eq)");
+        my $psql = "$cfg_be->{pg_bin}/psql -X -p $cfg_be->{node_ports}->[$n - 1] -d $cfg_be->{db_name}";
+        like(`$psql -c "SET search_path = pg_catalog, pg_temp; SELECT 'a'::public.td_dk OPERATOR(public.=) 'a'::public.td_dk" 2>&1`,
+             qr/planted domain = called/,
+             "(be) n$n: the domain operands alone call the planted =");
+    }
+    is(scalar_query(1, "SELECT (r).confirmed || '/' || (r).failed FROM spock.toast_divergence_verify() r"),
+       '1/0', '(be) verify() confirmed it without calling it')
+        or diag('(be) last_error: ' . scalar_query(1, "SELECT last_error FROM spock.toast_suspect "
+                                                     . "WHERE relid = 'public.td_dom'::regclass"));
+    for my $n (1, 2) {
+        psql_or_bail($n, "SET spock.enable_ddl_replication = off; "
+                       . "DROP TABLE public.td_dom CASCADE; DROP OPERATOR public.= (public.td_dk, public.td_dk); "
+                       . "DROP FUNCTION public.td_dk_eq(public.td_dk, public.td_dk); "
+                       . "DROP DOMAIN public.td_dk; DROP EXTENSION citext; "
+                       . "REVOKE CREATE ON SCHEMA public FROM td_planter; DROP ROLE td_planter");
+    }
+    psql_or_bail(1, "DELETE FROM spock.toast_suspect");
+}
+
+# (af) The winner's table is locked, so the query on it does not return.
+#      verify() still stops on its statement_timeout, without waiting for
+#      the lock.
+my $cfg = get_test_config();
+psql_or_bail(1, "INSERT INTO public.td VALUES (901, 's', $BIG_Z)");
+ok(sync_nodes(1, 2), '(af) row 901 on n2');
+race('(af)',
+     "UPDATE public.td SET big = $BIG_X WHERE id = 901",
+     "UPDATE public.td SET small = 'af' WHERE id = 901");
+is(suspects(1, "pkey = jsonb_build_object('id', '901')"), '1', '(af) suspect on n1');
+my $af_locker = IPC::Run::start(
+    [ "$cfg->{pg_bin}/psql", '-X', '-p', $cfg->{node_ports}->[1], '-d', $cfg->{db_name}, '-c',
+      "SET application_name = 'td_locker'; BEGIN; LOCK TABLE public.td IN ACCESS EXCLUSIVE MODE; "
+    . "SELECT pg_sleep(120);" ],
+    '>', \my $af_out, '2>', \my $af_err);
+ok(poll_query_until(2, "SELECT count(*) FROM pg_stat_activity WHERE application_name = 'td_locker' "
+                     . "AND state = 'active' AND query LIKE '%pg_sleep%'", '1', 30),
+   '(af) public.td locked on n2') or diag("locking session: $af_err");
+my $af_t0 = time();
+my $af_res = `$cfg->{pg_bin}/psql -X -p $cfg->{node_ports}->[0] -d $cfg->{db_name} -c "SET statement_timeout = '2s'; SELECT spock.toast_divergence_verify()" 2>&1`;
+cmp_ok(time() - $af_t0, '<', 30, '(af) verify() returned while the winner was blocked');
+like($af_res, qr/statement timeout/, '(af) on its statement_timeout');
+psql_or_bail(2, "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE application_name = 'td_locker'");
+$af_locker->finish;
+psql_or_bail(1, "DELETE FROM spock.toast_suspect");
+
+# verify()'s counts as cleared/confirmed/remote_missing/failed.
+sub vcounts {
+    my ($node) = @_;
+    return scalar_query($node, "SELECT format('%s/%s/%s/%s', (r).cleared, (r).confirmed, "
+                             . "(r).remote_missing, (r).failed) FROM spock.toast_divergence_verify() r");
+}
 
 # A table shaped like public.td, created on n1 and replicated, with rows.
 sub td_like {
@@ -406,6 +647,161 @@ is(scalar_query(1, "SELECT string_agg(pkey->>'id', ',') FROM spock.toast_suspect
 like(log_since(1, $off_ai), qr/could not record TOAST suspect/, '(ai) the failure was a warning');
 psql_or_bail(1, "SET spock.enable_ddl_replication = off; "
               . "ALTER TABLE spock.toast_suspect DROP CONSTRAINT td_ai_block");
+psql_or_bail(1, "DELETE FROM spock.toast_suspect");
+
+# (aj) One key the winner cannot read (an enum label added on n1 only)
+#      fails only its own entry: the group's query is retried an entry at a
+#      time, and the other entry of the same table is settled.
+for my $n (1, 2) {
+    psql_or_bail($n, "SET spock.enable_ddl_replication = off; CREATE TYPE public.tdk AS ENUM ('a', 'b')");
+}
+td_like('(aj)', 'public.td_aj', 'id public.tdk', "'a'");
+psql_or_bail(1, "SET spock.enable_ddl_replication = off; ALTER TYPE public.tdk ADD VALUE 'x'");
+psql_or_bail(1, "BEGIN; SELECT spock.repair_mode(true); "
+              . "INSERT INTO public.td_aj VALUES ('x', 's', $BIG_Z); COMMIT");
+my $aj_sub = scalar_query(1, "SELECT sub_id FROM spock.subscription WHERE sub_name = 'sub_n1_n2'");
+my $aj_n2 = scalar_query(1, "SELECT node_id FROM spock.node WHERE node_name = 'n2'");
+for my $k ('a', 'x') {
+    psql_or_bail(1, "INSERT INTO spock.toast_suspect "
+                  . "(relid, pkey, attnums, winner_subid, winner_origin, winner_ts) "
+                  . "VALUES ('public.td_aj'::regclass, '{\"id\": \"$k\"}', '{3}', $aj_sub, $aj_n2, now())");
+}
+is(vcounts(1), '1/0/0/1', '(aj) row a cleared, row x failed');
+like(scalar_query(1, "SELECT last_error FROM spock.toast_suspect WHERE relid = 'public.td_aj'::regclass"),
+     qr/invalidinputvalueforenum/, '(aj) row x failed on its key');
+psql_or_bail(1, "DELETE FROM spock.toast_suspect");
+
+# (ak) Key columns named like the fields the batched queries add (h0, the
+#      first column's hash) and a key of a domain over jsonb, which
+#      jsonb_to_record() would read as a JSON string.  verify() confirms
+#      both real divergences.
+for my $n (1, 2) {
+    psql_or_bail($n, "SET spock.enable_ddl_replication = off; CREATE DOMAIN public.tdj AS jsonb");
+}
+td_like('(ak)', 'public.td_h0', 'h0 int', 1);
+td_like('(ak)', 'public.td_dj', 'k public.tdj', q{'{"a": 1}'});
+race('(ak)',
+     "UPDATE public.td_h0 SET big = $BIG_X; UPDATE public.td_dj SET big = $BIG_X",
+     "UPDATE public.td_h0 SET small = 'ak'; UPDATE public.td_dj SET small = 'ak'");
+is(suspects(1), '2', '(ak) both recorded');
+is(vcounts(1), '0/2/0/0', '(ak) verify() confirms both');
+psql_or_bail(1, "DELETE FROM spock.toast_suspect");
+
+$cfg = get_test_config();
+
+# (am) verify() does not wait for an entry another session has locked, as
+#      an apply worker detecting the row again would: it settles the rest
+#      and leaves that one for the next run.
+td_like('(am)', 'public.td_am', 'id int', 1, 2);
+race('(am)',
+     "UPDATE public.td_am SET big = $BIG_X",
+     "UPDATE public.td_am SET small = 'am'");
+is(suspects(1, "relid = 'public.td_am'::regclass"), '2', '(am) both recorded');
+my $am_locker = IPC::Run::start(
+    [ "$cfg->{pg_bin}/psql", '-X', '-p', $cfg->{node_ports}->[0], '-d', $cfg->{db_name}, '-c',
+      "SET application_name = 'td_locker'; BEGIN; "
+    . "SELECT 1 FROM spock.toast_suspect WHERE relid = 'public.td_am'::regclass "
+    . "AND pkey = jsonb_build_object('id', '1') FOR UPDATE; SELECT pg_sleep(120);" ],
+    '>', \my $am_out, '2>', \my $am_err);
+ok(poll_query_until(1, "SELECT count(*) FROM pg_stat_activity WHERE application_name = 'td_locker' "
+                     . "AND state = 'active' AND query LIKE '%pg_sleep%'", '1', 30),
+   '(am) entry for row 1 locked on n1') or diag("locking session: $am_err");
+is(vcounts(1), '0/1/0/0', '(am) verify() confirmed row 2 only');
+is(scalar_query(1, "SELECT state FROM spock.toast_suspect WHERE relid = 'public.td_am'::regclass "
+                 . "AND pkey = jsonb_build_object('id', '1')"), 'suspect', '(am) row 1 left as it was');
+psql_or_bail(1, "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE application_name = 'td_locker'");
+$am_locker->finish;
+psql_or_bail(1, "DELETE FROM spock.toast_suspect");
+
+# (an) A local lock timeout is about the table, so the rows of a group are
+#      not read again one at a time, each waiting it out: three entries fail
+#      after one wait.
+td_like('(an)', 'public.td_an', 'id int', 1, 2, 3);
+race('(an)',
+     "UPDATE public.td_an SET big = $BIG_X",
+     "UPDATE public.td_an SET small = 'an'");
+is(suspects(1, "relid = 'public.td_an'::regclass"), '3', '(an) three recorded');
+my $an_locker = IPC::Run::start(
+    [ "$cfg->{pg_bin}/psql", '-X', '-p', $cfg->{node_ports}->[0], '-d', $cfg->{db_name}, '-c',
+      "SET application_name = 'td_locker'; BEGIN; LOCK TABLE public.td_an IN ACCESS EXCLUSIVE MODE; "
+    . "SELECT pg_sleep(120);" ],
+    '>', \my $an_out, '2>', \my $an_err);
+ok(poll_query_until(1, "SELECT count(*) FROM pg_stat_activity WHERE application_name = 'td_locker' "
+                     . "AND state = 'active' AND query LIKE '%pg_sleep%'", '1', 30),
+   '(an) public.td_an locked on n1') or diag("locking session: $an_err");
+my $an_t0 = time();
+my $an_res = `$cfg->{pg_bin}/psql -X -A -t -p $cfg->{node_ports}->[0] -d $cfg->{db_name} -c "SET lock_timeout = '3s'; SELECT format('%s/%s/%s/%s', (r).cleared, (r).confirmed, (r).remote_missing, (r).failed) FROM spock.toast_divergence_verify() r" 2>&1`;
+my $an_secs = time() - $an_t0;
+$an_res =~ s/^SET\s*//;
+chomp $an_res;
+is($an_res, '0/0/0/3', '(an) all three failed');
+cmp_ok($an_secs, '<', 9, '(an) after one lock wait, not one per row');
+psql_or_bail(1, "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE application_name = 'td_locker'");
+$an_locker->finish;
+psql_or_bail(1, "DELETE FROM spock.toast_suspect");
+
+# (ar) An entry cleared and recorded again while verify() was comparing is
+#      a new detection, although it starts again at detect_count 1: the
+#      older comparison leaves it alone.  verify() is held on a lock on n2's
+#      table while the entry is replaced.
+td_like('(ar)', 'public.td_ar', 'id int', 1);
+race('(ar)',
+     "UPDATE public.td_ar SET big = $BIG_X",
+     "UPDATE public.td_ar SET small = 'ar'");
+is(suspects(1, "relid = 'public.td_ar'::regclass"), '1', '(ar) recorded');
+my $ar_locker = IPC::Run::start(
+    [ "$cfg->{pg_bin}/psql", '-X', '-p', $cfg->{node_ports}->[1], '-d', $cfg->{db_name}, '-c',
+      "SET application_name = 'td_locker'; BEGIN; LOCK TABLE public.td_ar IN ACCESS EXCLUSIVE MODE; "
+    . "SELECT pg_sleep(120);" ],
+    '>', \my $ar_lout, '2>', \my $ar_lerr);
+ok(poll_query_until(2, "SELECT count(*) FROM pg_stat_activity WHERE application_name = 'td_locker' "
+                     . "AND state = 'active' AND query LIKE '%pg_sleep%'", '1', 30),
+   '(ar) public.td_ar locked on n2') or diag("locking session: $ar_lerr");
+my $ar_verify = IPC::Run::start(
+    [ "$cfg->{pg_bin}/psql", '-X', '-A', '-t', '-p', $cfg->{node_ports}->[0], '-d', $cfg->{db_name}, '-c',
+      "SELECT format('%s/%s/%s/%s', (r).cleared, (r).confirmed, (r).remote_missing, (r).failed) "
+    . "FROM spock.toast_divergence_verify() r" ],
+    '>', \my $ar_vout, '2>', \my $ar_verr);
+ok(poll_query_until(2, "SELECT count(*) FROM pg_stat_activity WHERE application_name LIKE '%toastdiv%' "
+                     . "AND wait_event_type = 'Lock'", '1', 30),
+   '(ar) verify()\'s query waits on the lock on n2');
+psql_or_bail(1, "BEGIN; "
+              . "CREATE TEMP TABLE ar_copy ON COMMIT DROP AS "
+              . "SELECT * FROM spock.toast_suspect WHERE relid = 'public.td_ar'::regclass; "
+              . "DELETE FROM spock.toast_suspect WHERE relid = 'public.td_ar'::regclass; "
+              . "UPDATE ar_copy SET detected_at = clock_timestamp(), detect_count = 1; "
+              . "INSERT INTO spock.toast_suspect SELECT * FROM ar_copy; COMMIT");
+psql_or_bail(2, "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE application_name = 'td_locker'");
+$ar_locker->finish;
+$ar_verify->finish;
+chomp $ar_vout;
+is($ar_vout, '0/0/0/0', '(ar) verify() settled nothing') or diag("verify: $ar_verr");
+is(scalar_query(1, "SELECT state FROM spock.toast_suspect WHERE relid = 'public.td_ar'::regclass"),
+   'suspect', '(ar) the new entry was left alone');
+psql_or_bail(1, "DELETE FROM spock.toast_suspect");
+
+# (aw) A key that matches more than one row on the winner fails its entry,
+#      as it does on the local side.  n2's key is widened after the entry
+#      was recorded, and n2 then holds a second row with the same id.
+psql_or_bail(1, "CREATE TABLE public.td_aw (id int PRIMARY KEY, region int DEFAULT 0, "
+              . "small text, big text); "
+              . "ALTER TABLE public.td_aw ALTER COLUMN big SET STORAGE EXTERNAL");
+is(wait_for_value(2, "SELECT count(*) FROM pg_class WHERE oid = to_regclass('public.td_aw')", '1'),
+   '1', '(aw) td_aw replicated to n2');
+psql_or_bail(1, "INSERT INTO public.td_aw VALUES (1, 0, 's', $BIG_Z)");
+ok(sync_nodes(1, 2), '(aw) row on n2');
+race('(aw)',
+     "UPDATE public.td_aw SET big = $BIG_X WHERE id = 1",
+     "UPDATE public.td_aw SET small = 'aw' WHERE id = 1");
+is(suspects(1, "relid = 'public.td_aw'::regclass"), '1', '(aw) recorded');
+psql_or_bail(2, "SET spock.enable_ddl_replication = off; "
+              . "ALTER TABLE public.td_aw DROP CONSTRAINT td_aw_pkey, ADD PRIMARY KEY (id, region)");
+psql_or_bail(2, "BEGIN; SELECT spock.repair_mode(true); "
+              . "INSERT INTO public.td_aw VALUES (1, 1, 's', $BIG_Z); COMMIT");
+is(vcounts(1), '0/0/0/1', '(aw) verify() failed the entry');
+is(scalar_query(1, "SELECT last_error LIKE '%more than one row on the winning node%' "
+                 . "FROM spock.toast_suspect WHERE relid = 'public.td_aw'::regclass"),
+   't', '(aw) last_error says why');
 psql_or_bail(1, "DELETE FROM spock.toast_suspect");
 
 # (at) A local row whose commit timestamp can no longer be read is not

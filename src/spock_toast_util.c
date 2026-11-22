@@ -3,11 +3,11 @@
  * spock_toast_util.c
  *		Helpers shared by the TOAST divergence code
  *
- * Helpers the TOAST divergence code shares: running one step in a
+ * Helpers the detection and verify code share: running one step in a
  * subtransaction, so an error settles only that step (run_in_subxact()) and
  * this node's id (cached_local_nodeid()).
- * It also holds the text-output settings pinned while a row's key is
- * rendered (toast_pinned_output).
+ * It also holds the text-output settings pinned wherever values are
+ * compared across nodes (toast_pinned_output).
  *
  * Copyright (c) 2022-2026, pgEdge, Inc.
  * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
@@ -18,6 +18,7 @@
 #include "postgres.h"
 
 #include "access/xact.h"
+#include "executor/spi.h"
 #include "utils/resowner.h"
 
 #include "spock.h"
@@ -28,9 +29,10 @@
 #include "spock_compat.h"
 
 /*
- * The text-output settings pinned while a row's key is rendered, so the
- * stored key reads back as the same row whatever the session's own
- * settings, as {name, value} pairs ending in NULLs.
+ * The text-output settings pinned wherever keys, values or hashes are
+ * compared across nodes, as {name, value} pairs ending in NULLs.  Keep in
+ * step with the SET clauses of spock.toast_divergence_verify() and
+ * PIN_OUTPUT_SETTINGS_SQL in spock_toast_conn.c.
  */
 const char *const toast_pinned_output[][2] = {
 	{"bytea_output", "hex"},
@@ -42,19 +44,29 @@ const char *const toast_pinned_output[][2] = {
 	{NULL, NULL}
 };
 
+/* The SQLSTATE of the error run_in_subxact() last caught. */
+int			last_subxact_errcode = 0;
+
 /*
  * Run fn(arg) inside a subtransaction so an error in it settles just the one
- * thing being done (recording one detection) rather than aborting the
- * caller's transaction.  Callers use *arg both to pass fn its input and to
- * get results back; anything fn wants to keep must be in *arg before it
- * returns.
+ * thing being done (recording one detection, or verifying one queue
+ * entry) rather than aborting the caller's transaction.  Callers use *arg
+ * both to pass fn its input and to get results back; anything fn wants to
+ * keep must be in *arg before it returns.
  *
  * This switches back to the caller's memory context before calling fn, so
- * what fn palloc's is not freed when the subtransaction ends.
+ * what fn palloc's is not freed when the subtransaction ends.  That covers
+ * the strings SPI_getvalue() returns: it allocates them in the current
+ * context, which inside an SPI call is SPI's procCxt, a child of
+ * TopTransactionContext rather than of the subtransaction, and
+ * AtEOSubXact_SPI() throws away a tuptable only when the subtransaction
+ * aborts, in which case there was nothing to copy out anyway.
  *
  * On success, returns true.  On error, the subtransaction is rolled back,
  * *errmsg is set to the caught message (palloc'd in the caller's context),
- * and this returns false.
+ * its SQLSTATE is left in last_subxact_errcode, and this returns false.  A
+ * query cancel (statement_timeout included) is not caught: it is raised
+ * again after the rollback, so it stops the whole call.
  */
 bool
 run_in_subxact(void (*fn) (void *arg), void *arg, char **errmsg)
@@ -85,6 +97,9 @@ run_in_subxact(void (*fn) (void *arg), void *arg, char **errmsg)
 		MemoryContextSwitchTo(oldcontext);
 		CurrentResourceOwner = oldowner;
 
+		if (edata->sqlerrcode == ERRCODE_QUERY_CANCELED)
+			ReThrowError(edata);
+		last_subxact_errcode = edata->sqlerrcode;
 		*errmsg = pstrdup(edata->message ? edata->message : "unknown error");
 		FreeErrorData(edata);
 		return false;
