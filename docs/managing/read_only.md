@@ -5,8 +5,8 @@ Spock supports operating a node in read-only mode. Read-only status is managed u
 | Value   | Description |
 |---------|-------------|
 | `off`   | No restrictions. All users may write. This is the default. |
-| `local` | Non-superuser local sessions are read-only. Replicated writes from apply workers are still permitted, so inbound replication continues normally. Superusers may still perform write operations. (The legacy alias `user` is accepted for backward compatibility.) |
-| `all`   | Non-superuser local sessions and apply workers are blocked from writing. Superusers may still perform write operations. Use this mode when you need to stop both local application writes and inbound replication. |
+| `local` | Non-superuser local sessions are read-only. Replicated writes from apply workers, and repairs by the TOAST repair worker, are still permitted, so inbound replication continues normally. Superusers may still perform write operations. (The legacy alias `user` is accepted for backward compatibility.) |
+| `all`   | Non-superuser local sessions and apply workers are blocked from writing. Superusers may still perform write operations. The TOAST repair worker pauses. Use this mode when you need to stop both local application writes and inbound replication. |
 
 The setting is at cluster level: either all databases are read-only or all
 databases are read-write (the usual setting).

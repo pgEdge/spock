@@ -174,6 +174,13 @@ bool		spock_include_ddl_repset = false;
 bool		spock_toast_divergence_detection = true;
 int			spock_toast_divergence_max_suspects = 100000;
 bool		spock_toast_divergence_stamps = true;
+bool		spock_toast_divergence_repair = false;
+int			spock_toast_divergence_interval = 300;
+int			spock_toast_divergence_retry_interval = 1;
+int			spock_toast_divergence_conn_lifetime = 300;
+int			spock_toast_divergence_lock_timeout = 5000;
+int			spock_toast_divergence_batch = 100;
+int			spock_toast_divergence_fetch_bytes = 32 * 1024 * 1024;
 bool		allow_ddl_from_functions = false;
 int			restart_delay_default;
 int			restart_delay_on_exception;
@@ -1369,6 +1376,80 @@ _PG_init(void)
 							100000, 0, INT_MAX,
 							PGC_SIGHUP,
 							0,
+							NULL, NULL, NULL);
+
+	DefineCustomBoolVariable("spock.toast_divergence_repair",
+							 "Run the background worker that verifies and repairs TOAST suspects",
+							 "When on, one worker per database verifies entries in "
+							 "spock.toast_suspect against the node that won and rewrites "
+							 "confirmed rows with the winner's values, stamped with the "
+							 "winner row's commit timestamp and not replicated.",
+							 &spock_toast_divergence_repair,
+							 false,
+							 PGC_SIGHUP,
+							 0,
+							 NULL, NULL, NULL);
+
+	DefineCustomIntVariable("spock.toast_divergence_interval",
+							"How long the repair worker sleeps after a pass that found less than a full batch",
+							"After a full batch that settled entries, the next pass starts at once.",
+							&spock_toast_divergence_interval,
+							300, 1, 3600 * 1000,
+							PGC_SIGHUP,
+							GUC_UNIT_MS,
+							NULL, NULL, NULL);
+
+	DefineCustomIntVariable("spock.toast_divergence_retry_interval",
+							"How long the repair worker sleeps after a pass that settled nothing",
+							"Such a pass found only entries that must wait or that failed, for "
+							"example because the winning node is down.",
+							&spock_toast_divergence_retry_interval,
+							1, 1, 3600,
+							PGC_SIGHUP,
+							GUC_UNIT_S,
+							NULL, NULL, NULL);
+
+	DefineCustomIntVariable("spock.toast_divergence_conn_lifetime",
+							"How long the repair worker keeps a connection to a winning node",
+							"The worker reuses one connection per winner subscription across "
+							"passes and opens a fresh one once it is this old.  0 closes "
+							"them at the end of every pass.",
+							&spock_toast_divergence_conn_lifetime,
+							300, 0, 86400,
+							PGC_SIGHUP,
+							GUC_UNIT_S,
+							NULL, NULL, NULL);
+
+	DefineCustomIntVariable("spock.toast_divergence_lock_timeout",
+							"How long the repair worker waits for a lock",
+							"The repair worker reads the table and locks the local row.  If "
+							"another transaction holds a conflicting lock longer than this, "
+							"the worker gives up on the entries involved and retries them on "
+							"a later pass.  0 waits as long as it takes.",
+							&spock_toast_divergence_lock_timeout,
+							5000, 0, INT_MAX,
+							PGC_SIGHUP,
+							GUC_UNIT_MS,
+							NULL, NULL, NULL);
+
+	DefineCustomIntVariable("spock.toast_divergence_batch",
+							"Entries the repair worker reads and settles per pass",
+							NULL,
+							&spock_toast_divergence_batch,
+							100, 1, 100000,
+							PGC_SIGHUP,
+							0,
+							NULL, NULL, NULL);
+
+	DefineCustomIntVariable("spock.toast_divergence_fetch_bytes",
+							"Payload byte budget for one TOAST repair fetch wave",
+							"A wave ends at whichever of this or spock.toast_divergence_batch "
+							"is reached first, so a batch of large-column rows does not hold "
+							"batch times the column size in the worker.",
+							&spock_toast_divergence_fetch_bytes,
+							32 * 1024 * 1024, 64 * 1024, INT_MAX,
+							PGC_SIGHUP,
+							GUC_UNIT_BYTE,
 							NULL, NULL, NULL);
 
 	DefineCustomBoolVariable("spock.allow_ddl_from_functions",

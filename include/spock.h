@@ -48,6 +48,13 @@ extern bool spock_include_ddl_repset;
 extern bool spock_toast_divergence_detection;
 extern bool spock_toast_divergence_stamps;
 extern int	spock_toast_divergence_max_suspects;
+extern bool spock_toast_divergence_repair;
+extern int	spock_toast_divergence_interval;
+extern int	spock_toast_divergence_retry_interval;
+extern int	spock_toast_divergence_conn_lifetime;
+extern int	spock_toast_divergence_lock_timeout;
+extern int	spock_toast_divergence_batch;
+extern int	spock_toast_divergence_fetch_bytes;
 extern bool allow_ddl_from_functions;
 extern int	restart_delay_default;
 extern int	restart_delay_on_exception;
@@ -143,6 +150,9 @@ extern PGconn *spock_connect(const char *connstring, const char *connname,
 extern PGconn *spock_connect_replica(const char *connstring,
 									 const char *connname,
 									 const char *suffix);
+/* spock_functions.c: spock.repair_mode() without its monitor event */
+extern XLogRecPtr skip_wal_records_decoding(bool enable);
+
 extern void spock_identify_system(PGconn *streamConn, uint64 *sysid,
 								  TimeLineID *timeline, XLogRecPtr *xlogpos,
 								  Name *dbname);

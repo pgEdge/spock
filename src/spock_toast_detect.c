@@ -33,6 +33,7 @@
 #endif
 
 #include "spock.h"
+#include "spock_conflict.h"
 #include "spock_toast_divergence.h"
 #include "spock_toast_internal.h"
 #include "spock_toast_stamp.h"
@@ -113,9 +114,9 @@ typedef struct SuspectColumns
 } SuspectColumns;
 
 /*
- * Pin the text-output settings that spock.toast_divergence_verify() uses,
- * for the rest of the current GUC nest level.  Returns the level for
- * AtEOXact_GUC().  An error before that call is fine: the
+ * Pin the text-output settings that spock.toast_divergence_verify() and the
+ * repair worker use, for the rest of the current GUC nest level.  Returns the
+ * level for AtEOXact_GUC().  An error before that call is fine: the
  * (sub)transaction abort unwinds the level.
  */
 static int
@@ -216,10 +217,10 @@ prepare_kept_plan(const char *sql, int nargs, Oid *argtypes, const char *what)
  * which is too much to run on every detection: detections happen on
  * routine cross-origin UPDATEs, not rare events, and this runs in the
  * apply hot path.  So the answer is cached for CAP_PROBE_INTERVAL_USEC.
- * The table drains through spock.toast_divergence_verify(), so the answer
- * changes slowly, and the cap is already approximate; caching it just
- * adds one more way it can be overshot, by however many detections land
- * inside one interval.
+ * The table drains through the repair worker and
+ * spock.toast_divergence_verify(), so the answer changes slowly, and the
+ * cap is already approximate; caching it just adds one more way it can
+ * be overshot, by however many detections land inside one interval.
  */
 static bool
 suspect_table_at_cap(void)
@@ -253,7 +254,7 @@ suspect_table_at_cap(void)
 	return last_at_cap;
 }
 
-/* Render the row key under the settings verify() parses it with. */
+/* Render the row key under the settings verify() and repair parse it with. */
 static char *
 pinned_pkey_json(Relation rel, TupleTableSlot *slot)
 {
@@ -316,9 +317,9 @@ suspect_record_cb(void *arg)
 	int			ret;
 
 	/*
-	 * The key is parsed back later under pinned settings, by verify(), so
-	 * render it under the same ones.  Otherwise a date key written as
-	 * '03/11/2026' under a DMY datestyle would name another row.
+	 * The key is parsed back later under pinned settings, by verify() and the
+	 * repair worker, so render it under the same ones.  Otherwise a date key
+	 * written as '03/11/2026' under a DMY datestyle would name another row.
 	 */
 	a->pkey = pinned_pkey_json(a->rel, a->slot);
 	if (a->pkey == NULL)
@@ -379,7 +380,8 @@ suspect_record_cb(void *arg)
 	 * and kept.
 	 *
 	 * At the cap no row is added, but an entry the row already has is still
-	 * refreshed, so it names the newest winner.
+	 * refreshed: left naming an older winner, the repair worker would copy
+	 * that winner's value, which has since lost, and delete the entry.
 	 */
 
 	if (suspect_table_at_cap())
@@ -414,8 +416,8 @@ suspect_record_cb(void *arg)
 										"  (relid, pkey, attnums, state, winner_subid, winner_origin, winner_ts, "
 										"   local_origin, local_ts, detected_at, last_error, "
 										"   winner_stamps, reason) "
-										"VALUES ($1, $2::jsonb, $3::int2[], 'suspect', $4, $5, $6, $7, $8, now(), $9, "
-										"        $10::text[], $11) "
+										"VALUES ($1, $2::jsonb, $3::int2[], 'suspect', $4, $5, $6, $7, $8, now(), "
+										"        $9, $10::text[], $11) "
 										"ON CONFLICT (relid, pkey) DO UPDATE SET " SUSPECT_REFRESH_SET,
 										11, argtypes, "recording a TOAST suspect");
 	ret = SPI_execute_plan(record_plan, values, nulls, false, 0);
@@ -473,7 +475,11 @@ column_suspect_reason(TupleTableSlot *newslot, SpockTupleData *newtup,
 		if (!toast_stamp_read_with(reader, value, cached_local_nodeid(), &local))
 			return REASON_NO_LOCAL_STAMP;
 
-		/* Equal stamps name the same version. */
+		/*
+		 * Equal stamps name the same version, also for a value a repair
+		 * wrote: it carries the winner's own stamp for that value
+		 * (write_with_value_stamps()).
+		 */
 		return toast_stamp_equal(&local, remote) ? REASON_NONE : REASON_STAMP_MISMATCH;
 	}
 
@@ -484,6 +490,40 @@ column_suspect_reason(TupleTableSlot *newslot, SpockTupleData *newtup,
 	if ((int32) toast_raw_datum_size(value) != remote->rawsize)
 		return REASON_STAMP_MISMATCH;
 	return REASON_NO_LOCAL_STAMP;
+}
+
+/*
+ * Whether the sender is older than 6.1.0.  Such a sender has no
+ * spock.toast_suspect: it records nothing of its own, and its value may
+ * itself be one that lost an earlier conflict, with nothing to say so.  The
+ * repair worker could not tell, so repairing from it could spread a losing
+ * value, and entries waiting for it to be upgraded could fill the queue
+ * during a long rolling upgrade.  Nothing is recorded for it; ACE covers
+ * these rows once every node is upgraded.  Said once per apply worker.
+ */
+static bool
+sender_too_old(void)
+{
+	static bool warned = false;
+	int			v = spock_apply_get_remote_version_num();
+
+	if (v >= SPOCK_TOAST_MIN_SENDER_VERSION_NUM)
+		return false;
+	if (!warned)
+	{
+		if (v > 0)
+			ereport(WARNING,
+					(errmsg("SPOCK %s: provider runs spock %d.%d.%d, older than 6.1.0; TOAST divergence on its changes is not recorded",
+							apply_sub_name(), v / 10000, (v / 100) % 100, v % 100),
+					 errhint("Compare the replicated tables with ACE once every node runs spock 6.1.0 or later.")));
+		else
+			ereport(WARNING,
+					(errmsg("SPOCK %s: provider did not report its spock version; TOAST divergence on its changes is not recorded",
+							apply_sub_name()),
+					 errhint("Compare the replicated tables with ACE once every node runs spock 6.1.0 or later.")));
+		warned = true;
+	}
+	return true;
 }
 
 static void
@@ -632,15 +672,18 @@ spock_toast_suspect_record(SpockRelation *rel, TupleTableSlot *newslot,
 		local_ts < MySubscription->created_at)
 		return;
 
+	/* Only a sender that keeps its own queue (see sender_too_old()). */
+	if (sender_too_old())
+		return;
+
 	/*
 	 * 3: collect the unchanged columns that may differ as an int2[] literal.
 	 * A column that arrived with a version stamp ('U') is compared with the
 	 * local value's stamp and left out when they are equal: both nodes hold
 	 * the same version.  Anything that cannot be told is kept, never assumed
-	 * equal (column_suspect_reason()).
-	 *
-	 * Next to each column goes the sender's stamp.  One open of the TOAST
-	 * relation serves all of the row's columns.
+	 * equal (column_suspect_reason()).  Next to each column goes the
+	 * sender's stamp.  One open of the TOAST relation serves all of the
+	 * row's columns.
 	 */
 	suspect_columns_init(&cols);
 	toast_stamp_reader_init(&reader);

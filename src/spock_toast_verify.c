@@ -102,13 +102,12 @@ verify_settle(RepairEntry *e, WinnerRow *w, ToastVerifyCounts *counts)
  * spock.toast_divergence_verify(max_rows)
  *
  * Check up to max_rows pending suspects against the node that won, without
- * repairing anything: one batched read hashes the local rows, and one
- * query per winner and table shape asks which columns differ.  Equal
- * hashes delete the entry, a difference confirms it and records which
- * columns differ and the winner row's current commit timestamp and origin,
- * a row missing on the winner is marked remote_missing and left, a row
- * missing here is deleted, and an entry that cannot be checked keeps its
- * state with last_error set.
+ * repairing anything: the batch read and winner fetch of the repair worker,
+ * with the fetch asking only which columns differ.  Equal hashes delete the
+ * entry, a difference confirms it and records which columns differ and the
+ * winner row's current commit timestamp and origin, a row missing on the
+ * winner is marked remote_missing and left, a row missing here is deleted,
+ * and an entry that cannot be checked keeps its state with last_error set.
  *
  * Every outcome is decided before any is written.  Writing marks the
  * spock.toast_suspect row, and the apply worker's upsert of the same key
@@ -159,7 +158,7 @@ spock_toast_divergence_verify(PG_FUNCTION_ARGS)
 
 	PG_TRY();
 	{
-		entries = read_entries(max_rows, cxt, &n);
+		entries = read_entries(max_rows, false, cxt, &n);
 		if (n > 0)
 		{
 			oldcxt = MemoryContextSwitchTo(cxt);
@@ -167,7 +166,7 @@ spock_toast_divergence_verify(PG_FUNCTION_ARGS)
 			for (i = 0; i < n; i++)
 				ptrs[i] = &entries[i];
 			rows = MemoryContextAllocZero(rowscxt, n * sizeof(WinnerRow));
-			fetch_wave(ptrs, n, (List **) &conns, rows);
+			fetch_wave(ptrs, n, (List **) &conns, rows, false);
 			MemoryContextSwitchTo(oldcxt);
 
 			for (i = 0; i < n; i++)

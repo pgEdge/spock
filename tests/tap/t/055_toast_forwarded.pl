@@ -5,7 +5,7 @@ use lib '.';
 use SpockTest qw(
     create_cluster destroy_cluster get_test_config
     psql_or_bail scalar_query poll_query_until
-    wait_for_sub_status sync_nodes
+    wait_for_sub_status sync_nodes log_offset wait_for_log
 );
 
 # TOAST divergence when the winning change was forwarded.
@@ -17,8 +17,9 @@ use SpockTest qw(
 # n3's UPDATEs reach n1 through n2.  n2 applied the same unchanged TOAST
 # column, so its own value proves nothing, and Spock does not allow n1 a
 # direct subscription to n3 while sub_n1_n2 forwards.  So the entry must be
-# recorded with no winner subscription and a last_error saying why, and
-# verify() must report it failed rather than settle it from the forwarder.
+# recorded with no winner subscription and a last_error saying why,
+# verify() must report it failed, and the repair worker must leave it and
+# the row alone rather than settle it from the forwarder.
 #
 # Every n1 write in this test loses its conflict on n2, so n2 never applies
 # one and nothing loops back to n1 through the {all} subscription.
@@ -52,6 +53,19 @@ sub suspects {
 sub big_md5 {
     my ($node, $id) = @_;
     return scalar_query($node, "SELECT md5(big) FROM public.td WHERE id = $id");
+}
+
+sub set_repair {
+    my ($node, $on) = @_;
+    psql_or_bail($node, "ALTER SYSTEM SET spock.toast_divergence_repair = $on");
+    psql_or_bail($node, "ALTER SYSTEM RESET spock.toast_divergence_interval");
+    psql_or_bail($node, "ALTER SYSTEM SET spock.toast_divergence_retry_interval = 1");
+    psql_or_bail($node, "SELECT pg_reload_conf()");
+    my $want = $on eq 'on' ? '1' : '0';
+    ok(poll_query_until($node,
+           "SELECT count(*) FROM pg_stat_activity WHERE application_name LIKE 'spock toast repair%'",
+           $want, 30),
+       "repair worker " . ($on eq 'on' ? 'running' : 'gone') . " on n$node");
 }
 
 # Stage a forwarded divergence on n1 for row $id.  n1 changes big while
@@ -129,6 +143,14 @@ is(scalar_query(1, "SELECT (r).cleared || '/' || (r).confirmed || '/' || (r).fai
 is(scalar_query(1, "SELECT state || '/' || (last_error LIKE '%forwarded%')::text "
                  . "FROM spock.toast_suspect WHERE pkey = jsonb_build_object('id', '1')"),
    'suspect/true', 'entry kept as suspect, last_error explains');
+
+my $off = log_offset(1);
+set_repair(1, 'on');
+ok(wait_for_log(1, qr/SPOCK toast repair: .*waiting [1-9]/, $off, 60),
+   'the repair worker leaves the entry waiting');
+set_repair(1, 'off');
+is(suspects(1, "pkey = jsonb_build_object('id', '1')"), '1', 'entry still present');
+is(big_md5(1, 1), $md5_x, 'row not rewritten from the forwarder');
 
 # ---------------------------------------------------------------------------
 # Stamps across the chain.  n3 writes row 3's big; n2 then updates small, so

@@ -1301,7 +1301,9 @@ spock_worker_status_name(SpockWorker *worker)
 	if (worker->proc == NULL)
 		return worker->terminated_at != 0 ? "restart pending" : "starting";
 
-	if (worker->worker_type == SPOCK_WORKER_MANAGER)
+	/* The manager and the TOAST repair worker do not report a status. */
+	if (worker->worker_type == SPOCK_WORKER_MANAGER ||
+		worker->worker_type == SPOCK_WORKER_REPAIR)
 		return "running";
 
 	if (status >= 0 && status < lengthof(names) && names[status] != NULL)

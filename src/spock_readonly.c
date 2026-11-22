@@ -37,6 +37,7 @@
 
 #include "spock_readonly.h"
 #include "spock.h"
+#include "spock_worker.h"
 
 /* GUC variable */
 int			spock_readonly = READONLY_OFF;
@@ -79,6 +80,23 @@ spockro_terminate_active_transactions(PG_FUNCTION_ARGS)
 	PG_RETURN_BOOL(true);
 }
 
+/*
+ * Whether spock.readonly makes this backend's statements read-only.
+ * Superusers are exempt, and in local mode so is the TOAST repair worker:
+ * like an apply worker's, its writes bring this node in line with the
+ * cluster, and it runs them as the table owner.  In all mode it pauses.
+ */
+static bool
+spock_readonly_applies(void)
+{
+	if (spock_readonly < READONLY_LOCAL || superuser())
+		return false;
+	if (spock_readonly == READONLY_LOCAL && MySpockWorker != NULL &&
+		MySpockWorker->worker_type == SPOCK_WORKER_REPAIR)
+		return false;
+	return true;
+}
+
 void
 #if PG_VERSION_NUM >= 190000
 spock_ropost_parse_analyze(ParseState *pstate, Query *query, const JumbleState *jstate)
@@ -93,7 +111,7 @@ spock_ropost_parse_analyze(ParseState *pstate, Query *query, JumbleState *jstate
 	 * Also, we use this fact here to identify if XactReadOnly has been
 	 * changed by Spock or by external tools.
 	 */
-	if (spock_readonly >= READONLY_LOCAL && !superuser())
+	if (spock_readonly_applies())
 		XactReadOnly = true;
 	else if (XactReadOnly)
 	{
@@ -120,7 +138,7 @@ spock_roExecutorStart(QueryDesc *queryDesc, int eflags)
 	 * execution (remember SPI plan for example). So, additional control makes
 	 * sense here.
 	 */
-	if (spock_readonly >= READONLY_LOCAL && !superuser())
+	if (spock_readonly_applies())
 		XactReadOnly = true;
 	else if (XactReadOnly)
 	{

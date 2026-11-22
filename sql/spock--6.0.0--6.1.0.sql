@@ -4,7 +4,7 @@
 \echo Use "ALTER EXTENSION spock UPDATE TO '6.1.0'" to load this file. \quit
 
 -- ----------------------------------------------------------------------
--- TOAST divergence detection and verification
+-- TOAST divergence detection, verification and repair
 -- ----------------------------------------------------------------------
 -- Rows whose TOAST columns may have diverged from the node that won a
 -- conflict.  Written by the apply worker (spock_toast_suspect_record()),
@@ -113,4 +113,15 @@ SET TimeZone = 'UTC'
 SET lc_monetary = 'C'
 LANGUAGE c AS 'MODULE_PATHNAME', 'spock_toast_divergence_verify';
 REVOKE ALL ON FUNCTION spock.toast_divergence_verify(integer) FROM PUBLIC;
+
+-- Runs the read of a table that another node's verify() or repair worker
+-- sends here, as the table's owner, so code the owner defined (casts,
+-- operators, row level security) does not run as the connecting role.  The
+-- query runs under the same pinned search_path as the caller's own SQL.
+CREATE FUNCTION spock.toast_read_as_owner(rel regclass, query text,
+    param jsonb, nstamp integer)
+RETURNS SETOF record VOLATILE STRICT
+SET search_path = pg_catalog, pg_temp
+LANGUAGE c AS 'MODULE_PATHNAME', 'spock_toast_read_as_owner';
+REVOKE ALL ON FUNCTION spock.toast_read_as_owner(regclass, text, jsonb, integer) FROM PUBLIC;
 

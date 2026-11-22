@@ -21,6 +21,48 @@ SHOW spock.toast_divergence_stamps;
  on
 (1 row)
 
+SHOW spock.toast_divergence_repair;
+ spock.toast_divergence_repair 
+-------------------------------
+ off
+(1 row)
+
+SHOW spock.toast_divergence_interval;
+ spock.toast_divergence_interval 
+---------------------------------
+ 300ms
+(1 row)
+
+SHOW spock.toast_divergence_retry_interval;
+ spock.toast_divergence_retry_interval 
+---------------------------------------
+ 1s
+(1 row)
+
+SHOW spock.toast_divergence_conn_lifetime;
+ spock.toast_divergence_conn_lifetime 
+--------------------------------------
+ 5min
+(1 row)
+
+SHOW spock.toast_divergence_lock_timeout;
+ spock.toast_divergence_lock_timeout 
+-------------------------------------
+ 5s
+(1 row)
+
+SHOW spock.toast_divergence_batch;
+ spock.toast_divergence_batch 
+------------------------------
+ 100
+(1 row)
+
+SHOW spock.toast_divergence_fetch_bytes;
+ spock.toast_divergence_fetch_bytes 
+------------------------------------
+ 32MB
+(1 row)
+
 SELECT column_name, data_type, is_nullable
   FROM information_schema.columns
  WHERE table_schema = 'spock' AND table_name = 'toast_suspect'
@@ -290,6 +332,8 @@ SELECT spock.toast_divergence_clear('pg_class', '{}');
 ERROR:  permission denied for function toast_divergence_clear
 SELECT * FROM spock.toast_divergence_verify();
 ERROR:  permission denied for function toast_divergence_verify
+SELECT * FROM spock.toast_read_as_owner('pg_class', 'SELECT 1', '{}', 0) AS t(x int);
+ERROR:  permission denied for function toast_read_as_owner
 RESET ROLE;
 REVOKE USAGE ON SCHEMA spock FROM td_noaccess;
 DROP ROLE td_noaccess;

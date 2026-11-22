@@ -697,6 +697,75 @@ worker adds no new rows until the table drains below it, and logs a warning
 once an hour; rows already in the table are still updated when detected
 again. `0` removes the cap. Default `100000`.
 
+### `spock.toast_divergence_repair`
+
+When on, one background worker per database verifies entries in
+`spock.toast_suspect` against the node that won and repairs confirmed rows
+with the winner's values, stamped with the winner row's commit timestamp
+and not replicated. It runs on every supported PostgreSQL
+version. There is no on-demand repair function; with the default
+`spock.toast_divergence_interval` the worker checks the queue about three
+times a second. The worker occupies one `max_worker_processes` slot per
+database for as long as it runs, so enabling it on many databases needs
+headroom there; see
+[Sizing Postgres Resources for Spock](sizing.md). See
+[Detecting and Repairing TOAST Divergence](toast_divergence.md#repairing).
+Default `off`. Takes effect on reload; the manager starts or stops the
+worker within a few seconds.
+
+### `spock.toast_divergence_interval`
+
+How long the repair worker sleeps after a pass that found less than a full
+batch, including an empty queue. After a full batch that settled entries,
+the next pass starts without sleeping. While idle the worker runs one
+small read-only query on `spock.toast_suspect` each interval. Takes a time
+unit; a bare number is milliseconds. Default `300ms`, minimum `1ms`.
+
+### `spock.toast_divergence_retry_interval`
+
+How long the repair worker sleeps after a pass that read entries but
+settled none of them, because each one had to wait (its winner
+subscription is disabled) or failed (for example, the winning node is
+down). This keeps the worker from retrying them several times a second.
+Takes a time unit; a bare number is seconds. Default `1s`, minimum `1s`.
+
+### `spock.toast_divergence_conn_lifetime`
+
+How long the repair worker keeps a connection to a winning node. The worker
+reuses one connection per winner subscription across passes, so it does not
+reconnect for every pass, and opens a fresh one once the connection is this
+old. A connection the winning node has closed is replaced at the next pass.
+`0` closes connections at the end of every pass. Takes a time unit; a bare
+number is seconds. Default `5min`.
+
+### `spock.toast_divergence_lock_timeout`
+
+How long the repair worker waits for a lock: on the local row it repairs,
+or on the table it reads, here or on the winning node (held, for example,
+by `VACUUM FULL` or a long `ALTER TABLE`). If another transaction holds it
+longer than this, the
+worker gives up on the entries involved, which keep their state and record
+the error in `last_error`, and retries them on a later pass, so one long
+transaction does not hold up repairs on every other table. `0` waits as
+long as it takes. Takes a time unit; a bare number is milliseconds. Default
+`5s`. `SIGHUP`.
+
+### `spock.toast_divergence_batch`
+
+Entries the repair worker reads and settles in one pass.
+Each pass commits one transaction per entry; a larger batch mainly means
+fewer, larger fetches from each winning node. Default `100`.
+
+### `spock.toast_divergence_fetch_bytes`
+
+The payload byte budget for one repair fetch wave. The worker fetches
+suspect rows from each winning node in batches; a wave ends at whichever of
+this budget or `spock.toast_divergence_batch` is reached first, so a batch
+of rows with large TOAST columns does not hold that many full values in the
+worker at once. The budget is an estimate from the stored size of each
+suspect column here, which can be compressed, so the text the winner sends
+for the columns that differ can be several times larger. Default `32MB`.
+
 ### `spock.log_origin_change`
 
 `spock.log_origin_change` indicates whether changes to a row's

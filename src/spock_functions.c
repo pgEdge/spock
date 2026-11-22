@@ -208,7 +208,6 @@ PG_FUNCTION_INFO_V1(spock_get_lsn_from_commit_ts);
 extern void gen_slot_name(Name slot_name, char *dbname,
 						  const char *provider_name,
 						  const char *subscriber_name);
-static XLogRecPtr skip_wal_records_decoding(bool enable);
 static void check_readonly_for_resync(const char *nspname, const char *relname);
 
 
@@ -4364,7 +4363,7 @@ delta_apply_money(PG_FUNCTION_ARGS)
  *
  * It is a general tool to perform operations, local for current spock node.
  */
-static XLogRecPtr
+XLogRecPtr
 skip_wal_records_decoding(bool enable)
 {
 	SpockWalMessageSimple message;

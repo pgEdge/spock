@@ -88,5 +88,7 @@ extern uint32 spock_get_proto_version(void);
 /* Protocol version management for subscriber */
 extern void spock_apply_set_proto_version(uint32 version);
 extern uint32 spock_apply_get_proto_version(void);
+extern void spock_apply_set_remote_version_num(int version);
+extern int	spock_apply_get_remote_version_num(void);
 
 #endif							/* SPOCK_PROTO_NATIVE_H */

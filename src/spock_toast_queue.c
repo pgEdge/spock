@@ -30,6 +30,8 @@
 #include "utils/typcache.h"
 
 #include "spock.h"
+#include "spock_common.h"
+#include "spock_conflict.h"
 #include "spock_toast_internal.h"
 
 /* Last: it redefines core macros such as WaitLatch() on some majors. */
@@ -84,12 +86,14 @@ typedef struct GroupHashArg
 	const char *sql;
 	const char *json_param;
 	int			ncols;
+	Oid			relid;			/* the query runs as this table's owner */
 	MemoryContext destcxt;		/* where the results must outlive SPI_finish */
 
 	/* out, allocated in destcxt */
 	int			nrows;
 	char	  **pkey;			/* nrows entries: the row's __pkey__ text */
 	char	 ***hash;			/* nrows x ncols: COLUMN_HASH_SQL, or NULL */
+	int64	   *est_bytes;
 } GroupHashArg;
 
 /*
@@ -101,6 +105,7 @@ typedef enum EntryColumn
 	EC_RELID = 1,
 	EC_PKEY,
 	EC_WINNER_SUBID,
+	EC_SUB_ENABLED,
 	EC_WINNER_NODE_ID,
 	EC_TABLE_EXISTS,
 	EC_QUALNAME,
@@ -113,6 +118,7 @@ typedef enum EntryColumn
 	EC_KEY_VALUES,
 	EC_KEY_TYPIDS,
 	EC_STATE,
+	EC_SUB_EXISTS,
 	EC_DETECTED_AT
 } EntryColumn;
 
@@ -196,13 +202,18 @@ static void
 group_hash_cb(void *arg)
 {
 	GroupHashArg *a = (GroupHashArg *) arg;
+	UserContext ucxt;
 	Oid			argtypes[1] = {TEXTOID};
 	Datum		argvals[1];
+	int			nestlevel;
 	int			ret;
 	uint64		r;
 
 	argvals[0] = CStringGetTextDatum(a->json_param);
+	/* owner_enter(): the subtransaction abort restores. */
+	nestlevel = owner_enter(table_owner(a->relid), &ucxt);
 	ret = SPI_execute_with_args(a->sql, 1, argtypes, argvals, NULL, true, 0);
+	owner_leave(&ucxt, nestlevel);
 	if (ret != SPI_OK_SELECT)
 		elog(ERROR, "SPI_execute_with_args failed hashing local rows: %d", ret);
 
@@ -219,15 +230,20 @@ group_hash_cb(void *arg)
 
 		a->pkey = palloc(a->nrows * sizeof(char *));
 		a->hash = palloc(a->nrows * sizeof(char **));
+		a->est_bytes = palloc(a->nrows * sizeof(int64));
 		for (r = 0; r < (uint64) a->nrows; r++)
 		{
 			HeapTuple	row = SPI_tuptable->vals[r];
 			TupleDesc	desc = SPI_tuptable->tupdesc;
+			bool		isnull;
 
 			a->pkey[r] = SPI_getvalue(row, desc, 1);
 			a->hash[r] = palloc(a->ncols * sizeof(char *));
 			for (c = 0; c < a->ncols; c++)
 				a->hash[r][c] = SPI_getvalue(row, desc, 2 + c);
+			a->est_bytes[r] = DatumGetInt64(SPI_getbinval(row, desc, 2 + a->ncols, &isnull));
+			if (isnull)
+				a->est_bytes[r] = 0;
 		}
 		MemoryContextSwitchTo(oldcxt);
 	}
@@ -264,6 +280,22 @@ entry_usable(const RepairEntry *e)
 	return e->table_exists && e->ncols > 0 && e->qualname != NULL &&
 		e->where_clause != NULL && e->pkjoin != NULL &&
 		e->pkcols_text != NULL && strcmp(e->pkey, "{}") != 0;
+}
+
+/*
+ * Whether the batch read hashes the entry's local row.  Not for one the
+ * repair worker can only leave waiting or delete (its winner subscription
+ * disabled, dropped or never known): hashing it on every pass would read
+ * its large values for nothing.
+ */
+static bool
+entry_needs_hash(const RepairEntry *e, bool for_repair)
+{
+	if (!entry_usable(e))
+		return false;
+	if (for_repair && (!e->sub_enabled || (OidIsValid(e->subid) && !e->sub_exists)))
+		return false;
+	return true;
 }
 
 /*
@@ -320,8 +352,11 @@ hash_local_rows(RepairEntry **group, int n, MemoryContext destcxt,
 	appendStringInfoString(&sql, "SELECT x.__pkey__");
 	for (c = 0; c < base->ncols; c++)
 		appendStringInfo(&sql, ", " COLUMN_HASH_SQL " AS h%d", base->colnames[c], c);
+	appendStringInfoString(&sql, ", (0::bigint");
+	for (c = 0; c < base->ncols; c++)
+		appendStringInfo(&sql, " + coalesce(pg_column_size(t.%s), 0)::bigint", base->colnames[c]);
 	appendStringInfo(&sql,
-					 " FROM jsonb_to_recordset($1::jsonb) AS x(k jsonb, __pkey__ text) "
+					 ") AS est_bytes FROM jsonb_to_recordset($1::jsonb) AS x(k jsonb, __pkey__ text) "
 					 KEY_FROM_PARAM " JOIN %s t ON %s",
 					 base->pkcols_text, base->qualname, base->pkjoin);
 
@@ -339,6 +374,7 @@ hash_local_rows(RepairEntry **group, int n, MemoryContext destcxt,
 	harg.sql = sql.data;
 	harg.json_param = params.data;
 	harg.ncols = base->ncols;
+	harg.relid = base->relid;
 	harg.destcxt = destcxt;
 
 	ok = run_in_subxact(group_hash_cb, &harg, errmsg);
@@ -368,6 +404,7 @@ hash_local_rows(RepairEntry **group, int n, MemoryContext destcxt,
 				{
 					e->local = LOCAL_FOUND;
 					e->local_hash = harg.hash[r];
+					e->est_bytes = harg.est_bytes[r];
 				}
 				break;
 			}
@@ -535,6 +572,7 @@ entry_from_tuple(RepairEntry *e, HeapTuple row, TupleDesc desc)
 	e->relid = DatumGetObjectId(SPI_getbinval(row, desc, EC_RELID, &isnull));
 	e->pkey = SPI_getvalue(row, desc, EC_PKEY);
 	e->subid = DatumGetObjectId(SPI_getbinval(row, desc, EC_WINNER_SUBID, &isnull));
+	e->sub_enabled = DatumGetBool(SPI_getbinval(row, desc, EC_SUB_ENABLED, &isnull));
 	d = SPI_getbinval(row, desc, EC_WINNER_NODE_ID, &isnull);
 	e->winner_node_id = isnull ? InvalidOid : DatumGetObjectId(d);
 	e->table_exists = DatumGetBool(SPI_getbinval(row, desc, EC_TABLE_EXISTS, &isnull));
@@ -558,6 +596,7 @@ entry_from_tuple(RepairEntry *e, HeapTuple row, TupleDesc desc)
 	/* fetch_wave() runs without SPI, so the entry carries the clauses. */
 	entry_key_clauses(e, row, desc);
 	e->orig_state = SPI_getvalue(row, desc, EC_STATE);
+	e->sub_exists = DatumGetBool(SPI_getbinval(row, desc, EC_SUB_EXISTS, &isnull));
 	d = SPI_getbinval(row, desc, EC_DETECTED_AT, &isnull);
 	e->detected_at = isnull ? 0 : DatumGetTimestampTz(d);
 }
@@ -572,7 +611,8 @@ entry_from_tuple(RepairEntry *e, HeapTuple row, TupleDesc desc)
  * LOCAL_UNREAD.
  */
 static void
-hash_entries(RepairEntry *entries, int n, MemoryContext destcxt)
+hash_entries(RepairEntry *entries, int n, bool for_repair,
+			 MemoryContext destcxt)
 {
 	bool	   *grouped = palloc0(n * sizeof(bool));
 	RepairEntry **group = palloc(n * sizeof(RepairEntry *));
@@ -588,13 +628,14 @@ hash_entries(RepairEntry *entries, int n, MemoryContext destcxt)
 		if (grouped[i])
 			continue;
 		grouped[i] = true;
-		if (!entry_usable(&entries[i]))
+		if (!entry_needs_hash(&entries[i], for_repair))
 			continue;
 
 		group[ngroup++] = &entries[i];
 		for (j = i + 1; j < n; j++)
 		{
-			if (!grouped[j] && same_shape(&entries[i], &entries[j]))
+			if (!grouped[j] && entry_needs_hash(&entries[j], for_repair) &&
+				same_shape(&entries[i], &entries[j]))
 			{
 				grouped[j] = true;
 				group[ngroup++] = &entries[j];
@@ -630,9 +671,16 @@ hash_entries(RepairEntry *entries, int n, MemoryContext destcxt)
  * winner fetch can compare hashes there and send back only the columns that
  * differ.  Must be called inside a transaction with SPI connected.
  *
- * Entries in state 'suspect' are read, those never tried first.
- * suspect_mark() stamps verified_at on every attempt, so an entry that
- * keeps failing goes to the back of the queue and cannot hold up the rest.
+ * With for_repair (the worker), entries in state 'suspect' and 'confirmed'
+ * are read, those the pass can act on first: a dropped table or winner
+ * subscription (deleted) or an enabled winner subscription.  The rest only
+ * wait, so they fill what is left of a batch and cannot keep the worker from
+ * the entries behind them.  A batch of only waiting entries settles nothing,
+ * and the worker then sleeps rather than reading them again at once.
+ * verify() reads only 'suspect' entries.  Either way, entries never tried
+ * come first, and suspect_mark() stamps verified_at on every attempt, so an
+ * entry that keeps failing goes to the back of the queue and cannot hold up
+ * the rest.
  *
  * The SQL fragments (qualified table name, column lists, WHERE clause and
  * join from the key) are built here from the local catalog.  Spock requires
@@ -645,11 +693,12 @@ hash_entries(RepairEntry *entries, int n, MemoryContext destcxt)
  * The key fragments are all or nothing (KEY_COLUMNS_LATERAL).
  */
 RepairEntry *
-read_entries(int max_rows, MemoryContext destcxt, int *nentries)
+read_entries(int max_rows, bool for_repair, MemoryContext destcxt,
+			 int *nentries)
 {
 	RepairEntry *entries = NULL;
-	Oid			argtypes[1] = {INT4OID};
-	Datum		argvals[1];
+	Oid			argtypes[3] = {INT4OID, TEXTOID, BOOLOID};
+	Datum		argvals[3];
 	int			ret;
 	uint64		r;
 	int			nestlevel;
@@ -670,8 +719,11 @@ read_entries(int max_rows, MemoryContext destcxt, int *nentries)
 							 GUC_ACTION_SAVE, true, 0, false);
 
 	argvals[0] = Int32GetDatum(max_rows);
+	argvals[1] = CStringGetTextDatum(for_repair ? "confirmed" : "suspect");
+	argvals[2] = BoolGetDatum(for_repair);
 	ret = SPI_execute_with_args(
 								"SELECT s.relid, s.pkey::text, s.winner_subid, "
+								"       coalesce(sub.sub_enabled, false) AS sub_enabled, "
 								"       sub.sub_origin AS winner_node_id, "
 								"       c.oid IS NOT NULL AS table_exists, "
 								"       CASE WHEN c.oid IS NOT NULL "
@@ -683,6 +735,7 @@ read_entries(int max_rows, MemoryContext destcxt, int *nentries)
 								"       CASE WHEN kc.ok THEN kc.vals END AS key_values, "
 								"       CASE WHEN kc.ok THEN kc.typids END AS key_typids, "
 								"       s.state, "
+								"       sub.sub_id IS NOT NULL AS sub_exists, "
 								"       s.detected_at "
 								"  FROM spock.toast_suspect s "
 								"  LEFT JOIN pg_class c ON c.oid = s.relid "
@@ -695,10 +748,12 @@ read_entries(int max_rows, MemoryContext destcxt, int *nentries)
 								"      FROM pg_attribute a WHERE a.attrelid = s.relid "
 								"       AND a.attnum = ANY (s.attnums) AND NOT a.attisdropped) cols ON true "
 								"  LEFT JOIN spock.subscription sub ON sub.sub_id = s.winner_subid "
-								" WHERE s.state = 'suspect' "
-								" ORDER BY s.verified_at NULLS FIRST, s.detected_at "
+								" WHERE s.state IN ('suspect', $2) "
+								" ORDER BY ($3 AND (c.oid IS NULL OR coalesce(sub.sub_enabled, false) "
+								"           OR (s.winner_subid <> 0 AND sub.sub_id IS NULL))) DESC, "
+								"          s.verified_at NULLS FIRST, s.detected_at "
 								" LIMIT $1",
-								1, argtypes, argvals, NULL, true, 0);
+								3, argtypes, argvals, NULL, true, 0);
 	AtEOXact_GUC(true, nestlevel);
 	if (ret != SPI_OK_SELECT)
 		elog(ERROR, "SPI_execute_with_args failed reading spock.toast_suspect: %d", ret);
@@ -713,7 +768,7 @@ read_entries(int max_rows, MemoryContext destcxt, int *nentries)
 							 SPI_tuptable->tupdesc);
 		*nentries = SPI_processed;
 		MemoryContextSwitchTo(oldcxt);
-		hash_entries(entries, *nentries, destcxt);
+		hash_entries(entries, *nentries, for_repair, destcxt);
 	}
 
 	return entries;

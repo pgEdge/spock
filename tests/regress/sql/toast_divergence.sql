@@ -8,6 +8,13 @@ SELECT * FROM spock_regress_variables()
 SHOW spock.toast_divergence_detection;
 SHOW spock.toast_divergence_max_suspects;
 SHOW spock.toast_divergence_stamps;
+SHOW spock.toast_divergence_repair;
+SHOW spock.toast_divergence_interval;
+SHOW spock.toast_divergence_retry_interval;
+SHOW spock.toast_divergence_conn_lifetime;
+SHOW spock.toast_divergence_lock_timeout;
+SHOW spock.toast_divergence_batch;
+SHOW spock.toast_divergence_fetch_bytes;
 
 SELECT column_name, data_type, is_nullable
   FROM information_schema.columns
@@ -118,6 +125,7 @@ SELECT count(*) FROM spock.toast_suspect;
 SELECT count(*) FROM spock.toast_divergence;
 SELECT spock.toast_divergence_clear('pg_class', '{}');
 SELECT * FROM spock.toast_divergence_verify();
+SELECT * FROM spock.toast_read_as_owner('pg_class', 'SELECT 1', '{}', 0) AS t(x int);
 RESET ROLE;
 REVOKE USAGE ON SCHEMA spock FROM td_noaccess;
 DROP ROLE td_noaccess;

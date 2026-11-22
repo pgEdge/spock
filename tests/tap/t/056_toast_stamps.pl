@@ -18,13 +18,14 @@ use SpockTest qw(
 #
 # Cases (lettered in the order they were written, so the list has gaps):
 #   a   sequential cross-node updates record nothing
-#   b   the race records stamp_mismatch with the winner's stamp, confirmed
+#   b   the race records stamp_mismatch with the winner's stamp, and repairs
 #   c   equal bytes written separately: stamp_mismatch, cleared by verify
 #   d   stamps off on the sender: plain 'u', every entry no_stamp
 #   e   local value inline, remote out of line: stamp_mismatch
 #   f   local chunks frozen keep their stamp: nothing recorded
 #   g   the sender cannot lock its TOAST table: no_stamp, decoding not held
 #   h0  a value written under the initial sync's stamp: no_local_stamp
+#   h   a repair writes the value's own stamp, and the row the winner's
 #   o   decoding a change made before VACUUM FULL or TRUNCATE sends 'u'
 #   x   a row last written by the sender is recorded when the sender's
 #       value names another node and differs here
@@ -33,7 +34,16 @@ use SpockTest qw(
 #   z2  a write of the sender's thrown away here that changed the size is
 #       recorded on the sender's next update
 #   p   hashes do not depend on lc_monetary
+#   s   a failed repair keeps the entry's state and logs no key
+#   u   a repair gives up on a locked row and retries it later
+#   t   a jsonb primary key is repaired
+#   v   an entry whose row is gone here is deleted without asking the winner
 #   w   a key that fails the batched local read fails only its own entry
+#   k   two TOAST columns, in a different order on each node: each recorded
+#       and repaired on its own, and a column written here after the
+#       compare stops the repair
+#   m   NULL values: a local NULL is recorded and repaired, and a winner's
+#       NULL is written
 
 create_cluster(2, 'Create 2-node cluster for TOAST version stamps');
 cross_wire(2, ['n1', 'n2'], 'Cross-wire n1 and n2');
@@ -98,6 +108,20 @@ sub race {
     drain($label);
 }
 
+sub set_repair {
+    my ($node, $on, $retry) = @_;
+    $retry //= 1;
+    psql_or_bail($node, "ALTER SYSTEM SET spock.toast_divergence_repair = $on");
+    psql_or_bail($node, "ALTER SYSTEM RESET spock.toast_divergence_interval");
+    psql_or_bail($node, "ALTER SYSTEM SET spock.toast_divergence_retry_interval = $retry");
+    psql_or_bail($node, "SELECT pg_reload_conf()");
+    my $want = $on eq 'on' ? '1' : '0';
+    ok(poll_query_until($node,
+           "SELECT count(*) FROM pg_stat_activity WHERE application_name LIKE 'spock toast repair%'",
+           $want, 30),
+       "repair worker " . ($on eq 'on' ? 'running' : 'gone') . " on n$node");
+}
+
 sub insert_rows {
     my ($label, $from, $to) = @_;
     psql_or_bail(1, "INSERT INTO public.td SELECT g, 's', $BIG_Z FROM generate_series($from, $to) g");
@@ -148,7 +172,12 @@ is(reason_of(1, 21), 'stamp_mismatch', '(b) reason stamp_mismatch');
 is(scalar_query(1, "SELECT winner_stamps[1] FROM spock.toast_suspect WHERE pkey = jsonb_build_object('id', '21')"),
    scalar_query(2, "SELECT spock.toast_stamp(big) FROM public.td WHERE id = 21"),
    '(b) the entry carries n2\'s stamp for big');
-is(verify_counts(1), '0/1/0', '(b) verify confirms it');
+set_repair(1, 'on');
+ok(poll_query_until(1, "SELECT count(*) FROM spock.toast_suspect WHERE pkey = jsonb_build_object('id', '21')",
+                    '0', 30), '(b) repaired');
+is(scalar_query(1, "SELECT md5(big) FROM public.td WHERE id = 21"),
+   scalar_query(2, "SELECT md5(big) FROM public.td WHERE id = 21"), '(b) n1 holds n2\'s big');
+set_repair(1, 'off');
 
 # ---------------------------------------------------------------------------
 # (c) Equal bytes written separately: n1 writes the value n2 already has.
@@ -266,6 +295,50 @@ drain('(h0)');
 psql_or_bail(2, "UPDATE public.td SET small = 'h2' WHERE id = 65");
 drain('(h0)');
 is(reason_of(1, 65), 'no_local_stamp', '(h0) recorded as no_local_stamp');
+
+sub value_stamp {
+    my ($node, $id) = @_;
+    return scalar_query($node, "SELECT spock.toast_stamp(big) FROM public.td WHERE id = $id");
+}
+
+# Row stamp as origin@timestamp, with origin 0 shown as the node's own id so
+# the two nodes can be compared.
+sub row_stamp {
+    my ($node, $id) = @_;
+    return scalar_query($node,
+        "SELECT format('%s\@%s', CASE WHEN o.roident = 0 THEN (SELECT node_id FROM spock.node_info()) "
+      . "ELSE o.roident END, extract(epoch FROM o.timestamp)) "
+      . "FROM public.td t, LATERAL spock.xact_commit_timestamp_origin(t.xmin) o WHERE t.id = $id");
+}
+
+# ---------------------------------------------------------------------------
+# (h) A repair writes the winner's value with the value's own stamp, and the
+#     row with the winner row's stamp.  Afterwards a local update on n1 and
+#     a later update from n2 record nothing: n1 holds the same version.
+# ---------------------------------------------------------------------------
+psql_or_bail(1, "DELETE FROM spock.toast_suspect");
+insert_rows('(h)', 71, 71);
+race('(h)',
+     "UPDATE public.td SET big = repeat('h', 200000) WHERE id = 71",
+     "UPDATE public.td SET small = 'h' WHERE id = 71");
+is(reason_of(1, 71), 'stamp_mismatch', '(h) suspect on n1');
+set_repair(1, 'on');
+ok(poll_query_until(1, "SELECT count(*) FROM spock.toast_suspect WHERE pkey = jsonb_build_object('id', '71')",
+                    '0', 30), '(h) repaired');
+set_repair(1, 'off');
+is(value_stamp(1, 71), value_stamp(2, 71), '(h) n1\'s value carries the value\'s own stamp');
+is(row_stamp(1, 71), row_stamp(2, 71), '(h) n1\'s row carries the winner row\'s stamp');
+psql_or_bail(1, "UPDATE public.td SET small = 'h1' WHERE id = 71");
+drain('(h)');
+psql_or_bail(2, "UPDATE public.td SET small = 'h2' WHERE id = 71");
+drain('(h)');
+is(suspects(1, "pkey = jsonb_build_object('id', '71')"), '0', '(h) the next cross-node update records nothing');
+
+sub suspect_gone {
+    my ($id) = @_;
+    return poll_query_until(1, "SELECT count(*) FROM spock.toast_suspect "
+                             . "WHERE pkey = jsonb_build_object('id', '$id')", '0', 30);
+}
 
 # ---------------------------------------------------------------------------
 # (x) A row last written by the sender is recorded when the sender's value
@@ -446,6 +519,93 @@ SKIP: {
     psql_or_bail(1, "ALTER DATABASE $cfg->{db_name} RESET lc_monetary");
 }
 
+# ---------------------------------------------------------------------------
+# (s) A repair that fails keeps the entry's state, and the warning leaves the
+#     row's key out of the log.  A trigger on n1 only, enabled ALWAYS so it
+#     fires for the worker, makes the repair fail.
+# ---------------------------------------------------------------------------
+insert_rows('(s)', 112, 112);
+race('(s)',
+     "UPDATE public.td SET big = repeat('t', 200000) WHERE id = 112",
+     "UPDATE public.td SET small = 't' WHERE id = 112");
+is(scalar_query(1, "SELECT state FROM spock.toast_suspect WHERE pkey = jsonb_build_object('id', '112')"),
+   'suspect', '(s) recorded as suspect');
+psql_or_bail(1, "SET spock.enable_ddl_replication = off; "
+              . "CREATE FUNCTION public.td_block() RETURNS trigger LANGUAGE plpgsql "
+              . "AS \$\$BEGIN RAISE EXCEPTION 'td_block'; END\$\$; "
+              . "CREATE TRIGGER td_block BEFORE UPDATE ON public.td FOR EACH ROW "
+              . "WHEN (NEW.id = 112) EXECUTE FUNCTION public.td_block(); "
+              . "ALTER TABLE public.td ENABLE ALWAYS TRIGGER td_block");
+my $s_off = log_offset(1);
+set_repair(1, 'on');
+ok(poll_query_until(1, "SELECT count(*) FROM spock.toast_suspect WHERE pkey = jsonb_build_object('id', '112') "
+                     . "AND last_error LIKE '%td_block%'", '1', 30),
+   '(s) the repair fails');
+set_repair(1, 'off');
+is(scalar_query(1, "SELECT state FROM spock.toast_suspect WHERE pkey = jsonb_build_object('id', '112')"),
+   'suspect', '(s) a failed repair keeps the entry suspect');
+my $s_log = log_since(1, $s_off);
+like($s_log, qr/could not repair a row of relation \d+: td_block/, '(s) the failure is logged');
+unlike($s_log, qr/"id": "112"/, '(s) the log does not carry the row\'s key');
+psql_or_bail(1, "SET spock.enable_ddl_replication = off; "
+              . "DROP TRIGGER td_block ON public.td; DROP FUNCTION public.td_block()");
+set_repair(1, 'on');
+ok(suspect_gone(112), '(s) repaired once the trigger is gone');
+set_repair(1, 'off');
+
+# ---------------------------------------------------------------------------
+# (u) A repair waits for a row lock only spock.toast_divergence_lock_timeout:
+#     a session holding the row makes that entry fail with a lock timeout,
+#     and it is repaired once the lock is gone.
+# ---------------------------------------------------------------------------
+insert_rows('(u)', 113, 113);
+race('(u)',
+     "UPDATE public.td SET big = repeat('u', 200000) WHERE id = 113",
+     "UPDATE public.td SET small = 'u' WHERE id = 113");
+is(reason_of(1, 113), 'stamp_mismatch', '(u) suspect on n1');
+$locker_node = 1;
+$locker = IPC::Run::start(
+    [ "$cfg->{pg_bin}/psql", '-X', '-p', $cfg->{node_ports}->[0], '-d', $cfg->{db_name}, '-c',
+      "SET application_name = 'td_locker'; BEGIN; SELECT 1 FROM public.td WHERE id = 113 FOR UPDATE; "
+    . "SELECT pg_sleep(120);" ],
+    '>', \my $u_out, '2>', \my $u_err);
+ok(poll_query_until(1, "SELECT count(*) FROM pg_stat_activity WHERE application_name = 'td_locker' "
+                     . "AND state = 'active' AND query LIKE '%pg_sleep%'", '1', 30),
+   '(u) row 113 locked on n1') or diag("locking session: $u_err");
+psql_or_bail(1, "ALTER SYSTEM SET spock.toast_divergence_lock_timeout = '1s'");
+set_repair(1, 'on');
+ok(poll_query_until(1, "SELECT count(*) FROM spock.toast_suspect WHERE pkey = jsonb_build_object('id', '113') "
+                     . "AND last_error LIKE '%lock timeout%' AND state = 'suspect'", '1', 30),
+   '(u) the repair gives up on the locked row');
+end_locker();
+$locker_node = 2;
+ok(suspect_gone(113), '(u) repaired once the lock is gone');
+psql_or_bail(1, "ALTER SYSTEM RESET spock.toast_divergence_lock_timeout");
+set_repair(1, 'off');
+
+# ---------------------------------------------------------------------------
+# (t) A jsonb primary key.  Key values are kept as JSON strings, so the
+#     batched queries must cast them back to jsonb to find the row.
+# ---------------------------------------------------------------------------
+psql_or_bail(1, "CREATE TABLE public.tj (k jsonb PRIMARY KEY, small text, big text); "
+              . "ALTER TABLE public.tj ALTER COLUMN big SET STORAGE EXTERNAL");
+ok(poll_query_until(2, "SELECT count(*) FROM pg_class WHERE oid = to_regclass('public.tj')", '1', 30),
+   '(t) table replicated to n2');
+psql_or_bail(1, "INSERT INTO public.tj VALUES ('{\"a\": 1}', 's', $BIG_Z)");
+drain('(t)');
+race('(t)',
+     "UPDATE public.tj SET big = repeat('j', 200000) WHERE k = '{\"a\": 1}'",
+     "UPDATE public.tj SET small = 'j' WHERE k = '{\"a\": 1}'");
+is(suspects(1, "relid = 'public.tj'::regclass"), '1', '(t) suspect on n1');
+set_repair(1, 'on');
+ok(poll_query_until(1, "SELECT count(*) FROM spock.toast_suspect WHERE relid = 'public.tj'::regclass",
+                    '0', 30), '(t) repaired')
+    or diag(scalar_query(1, "SELECT state || ' ' || coalesce(last_error, '') FROM spock.toast_suspect "
+                          . "WHERE relid = 'public.tj'::regclass"));
+set_repair(1, 'off');
+is(scalar_query(1, "SELECT md5(big) FROM public.tj"), scalar_query(2, "SELECT md5(big) FROM public.tj"),
+   '(t) n1 holds n2\'s big');
+
 # Hand-made suspect entries on n1 naming sub_n1_n2 as the winner.
 sub add_entries {
     my (@keys) = @_;
@@ -457,6 +617,29 @@ sub add_entries {
                   . "v(relid, pkey, attnums, winner_subid, winner_origin, winner_ts) "
                   . "WHERE s.sub_name = 'sub_n1_n2'");
 }
+
+# ---------------------------------------------------------------------------
+# (v) An entry whose row is gone here is deleted without asking the winner.
+#     n2's table is locked, so a fetch from n2 would wait for as long as the
+#     lock is held.
+# ---------------------------------------------------------------------------
+psql_or_bail(1, "DELETE FROM spock.toast_suspect");
+add_entries(9130);
+$locker_node = 2;
+$locker = IPC::Run::start(
+    [ "$cfg->{pg_bin}/psql", '-X', '-p', $cfg->{node_ports}->[1], '-d', $cfg->{db_name}, '-c',
+      "SET application_name = 'td_locker'; BEGIN; LOCK TABLE public.td IN ACCESS EXCLUSIVE MODE; "
+    . "SELECT pg_sleep(120);" ],
+    '>', \my $v_out, '2>', \my $v_err);
+ok(poll_query_until(2, "SELECT count(*) FROM pg_stat_activity WHERE application_name = 'td_locker' "
+                     . "AND state = 'active' AND query LIKE '%pg_sleep%'", '1', 30),
+   '(v) public.td locked on n2') or diag("locking session: $v_err");
+set_repair(1, 'on');
+ok(suspect_gone(9130), '(v) the entry is deleted while n2 is locked');
+is(scalar_query(2, "SELECT count(*) FROM pg_stat_activity WHERE application_name = 'td_locker' "
+                 . "AND state = 'active'"), '1', '(v) n2 stayed locked throughout');
+end_locker();
+set_repair(1, 'off');
 
 # ---------------------------------------------------------------------------
 # (w) A key that fails the batched local read (not an integer) fails only
@@ -471,6 +654,138 @@ is(scalar_query(1, "SELECT count(*) FROM spock.toast_suspect WHERE pkey = jsonb_
                  . "AND state = 'suspect' AND last_error LIKE '%invalid input syntax for type integer%'"),
    '1', '(w) the bad key keeps its state and records the error');
 psql_or_bail(1, "DELETE FROM spock.toast_suspect");
+
+# ---------------------------------------------------------------------------
+# (k) Two TOAST columns, in a different column order on each node.  Only the
+#     column that differs is recorded, under its attnum here; a repair
+#     writes each column under that value's own stamp, though the winner's
+#     two values carry different ones.  And a column the fetch found equal,
+#     written here before the worker locks the row, stops the repair: the
+#     row would take the winner's stamp over a value the winner never had.
+# ---------------------------------------------------------------------------
+for my $n (1, 2) {
+    my $cols = $n == 1 ? 'id int PRIMARY KEY, small text, b1 text, b2 text'
+                       : 'b2 text, id int PRIMARY KEY, b1 text, small text';
+    psql_or_bail($n, "SET spock.enable_ddl_replication = off; "
+                   . "CREATE TABLE public.td2 ($cols); "
+                   . "ALTER TABLE public.td2 ALTER COLUMN b1 SET STORAGE EXTERNAL, "
+                   . "ALTER COLUMN b2 SET STORAGE EXTERNAL; "
+                   . "SELECT spock.repset_add_table('default', 'public.td2')");
+}
+sub td2 {
+    my ($node, $expr, $id) = @_;
+    return scalar_query($node, "SELECT $expr FROM public.td2 WHERE id = $id");
+}
+psql_or_bail(1, "DELETE FROM spock.toast_suspect");
+psql_or_bail(2, "DELETE FROM spock.toast_suspect");
+psql_or_bail(1, "INSERT INTO public.td2 (id, small, b1, b2) "
+              . "SELECT g, 's', repeat('1', 200000), repeat('2', 200000) FROM generate_series(1, 3) g");
+drain('(k)');
+is(scalar_query(2, "SELECT count(*) FROM public.td2"), '3', '(k) rows on n2');
+
+# Row 1: n1 writes b1 only.
+race('(k)',
+     "UPDATE public.td2 SET b1 = repeat('a', 200000) WHERE id = 1",
+     "UPDATE public.td2 SET small = 'k' WHERE id = 1");
+is(scalar_query(1, "SELECT attnums::text FROM spock.toast_suspect "
+                 . "WHERE relid = 'public.td2'::regclass AND pkey = jsonb_build_object('id', '1')"),
+   '{' . scalar_query(1, "SELECT attnum FROM pg_attribute "
+                       . "WHERE attrelid = 'public.td2'::regclass AND attname = 'b1'") . '}',
+   '(k) row 1: only b1 recorded, under its attnum on n1');
+
+# Row 2: n2 wrote b1 earlier, so its b1 and b2 carry different stamps; n1
+# then writes both.
+psql_or_bail(2, "UPDATE public.td2 SET b1 = repeat('c', 200000) WHERE id = 2");
+drain('(k)');
+race('(k)',
+     "UPDATE public.td2 SET b1 = repeat('d', 200000), b2 = repeat('e', 200000) WHERE id = 2",
+     "UPDATE public.td2 SET small = 'k' WHERE id = 2");
+is(scalar_query(1, "SELECT cardinality(attnums) FROM spock.toast_suspect "
+                 . "WHERE relid = 'public.td2'::regclass AND pkey = jsonb_build_object('id', '2')"),
+   '2', '(k) row 2: both columns recorded');
+isnt(td2(2, 'spock.toast_stamp(b1)', 2), td2(2, 'spock.toast_stamp(b2)', 2),
+     '(k) row 2: n2\'s two values carry different stamps');
+set_repair(1, 'on');
+ok(poll_query_until(1, "SELECT count(*) FROM spock.toast_suspect WHERE relid = 'public.td2'::regclass",
+                    '0', 30), '(k) both rows repaired');
+set_repair(1, 'off');
+for my $id (1, 2) {
+    for my $c ('b1', 'b2') {
+        is(td2(1, "md5($c)", $id), td2(2, "md5($c)", $id), "(k) row $id: n1 holds n2's $c");
+        is(td2(1, "spock.toast_stamp($c)", $id), td2(2, "spock.toast_stamp($c)", $id),
+           "(k) row $id: n1's $c carries n2's stamp for that value");
+    }
+}
+
+# Row 3: CLUSTER on n1 gives both its values new stamps, so n1's write of b1
+# records b1 (different) and b2 (equal, under another stamp).  A session
+# holds the row; once the worker waits for it, the session writes b2.
+psql_or_bail(1, "SET spock.enable_ddl_replication = off; CLUSTER public.td2 USING td2_pkey");
+race('(k)',
+     "UPDATE public.td2 SET b1 = repeat('f', 200000) WHERE id = 3",
+     "UPDATE public.td2 SET small = 'k' WHERE id = 3");
+is(scalar_query(1, "SELECT cardinality(attnums) FROM spock.toast_suspect "
+                 . "WHERE relid = 'public.td2'::regclass AND pkey = jsonb_build_object('id', '3')"),
+   '2', '(k) row 3: both columns recorded');
+my $k_b2_winner = td2(2, 'spock.toast_stamp(b2)', 3);
+my ($k_in, $k_out, $k_err) = ('', '', '');
+my $k_timer = IPC::Run::timer(30);
+my $k_sess = IPC::Run::start(
+    [ "$cfg->{pg_bin}/psql", '-X', '-q', '-p', $cfg->{node_ports}->[0], '-d', $cfg->{db_name} ],
+    '<', \$k_in, '>', \$k_out, '2>', \$k_err, $k_timer);
+$k_in .= "BEGIN; SELECT 1 FROM public.td2 WHERE id = 3 FOR UPDATE;\n";
+$k_timer->start;
+$k_sess->pump while $k_out !~ /1/ && $k_sess->pumpable && !$k_timer->is_expired;
+like($k_out, qr/1/, '(k) row 3 is locked') or diag("locking session: $k_err");
+# A long retry interval keeps the worker from comparing again right away.
+set_repair(1, 'on', 60);
+ok(poll_query_until(1, "SELECT count(*) FROM pg_stat_activity "
+                     . "WHERE application_name LIKE 'spock toast repair%' AND wait_event_type = 'Lock'",
+                    '1', 30),
+   '(k) the worker compared row 3 and waits to settle it');
+$k_in .= "UPDATE public.td2 SET b2 = repeat('g', 200000) WHERE id = 3; COMMIT;\n\\q\n";
+$k_sess->finish;
+ok(poll_query_until(1, "SELECT last_error LIKE '%changed here after it was compared%' "
+                     . "FROM spock.toast_suspect WHERE relid = 'public.td2'::regclass "
+                     . "AND pkey = jsonb_build_object('id', '3')", 't', 30),
+   '(k) row 3: the worker noticed b2 changed and wrote nothing');
+set_repair(1, 'off');
+is(td2(1, 'md5(b1) = md5(repeat(\'f\', 200000))', 3), 't', '(k) row 3: b1 not written');
+isnt(td2(1, 'spock.toast_stamp(b2)', 3), $k_b2_winner, '(k) row 3: b2 did not get the winner\'s stamp');
+psql_or_bail(1, "DELETE FROM spock.toast_suspect");
+drain('(k)');
+psql_or_bail(2, "DELETE FROM spock.toast_suspect");
+
+# ---------------------------------------------------------------------------
+# (m) NULL values.  Row 121: n1 sets big to NULL while n2's update leaves it
+#     alone.  A NULL has no stamp, so n1 records stamp_mismatch, and the
+#     repair gives n1 n2's value.  Row 122: after the race n2 sets big to
+#     NULL in repair mode, so the change never reaches n1, and n1's repair
+#     writes the winner's NULL.
+# ---------------------------------------------------------------------------
+insert_rows('(m)', 121, 122);
+race('(m)',
+     "UPDATE public.td SET big = NULL WHERE id = 121; "
+   . "UPDATE public.td SET big = repeat('m', 200000) WHERE id = 122",
+     "UPDATE public.td SET small = 'm' WHERE id IN (121, 122)");
+is(reason_of(1, 121), 'stamp_mismatch', '(m) row 121: a local NULL is recorded as stamp_mismatch');
+is(reason_of(1, 122), 'stamp_mismatch', '(m) row 122 recorded');
+psql_or_bail(2, "BEGIN; SELECT spock.repair_mode(true); "
+              . "UPDATE public.td SET big = NULL WHERE id = 122; COMMIT");
+drain('(m)');
+is(scalar_query(1, "SELECT big IS NULL FROM public.td WHERE id = 122"), 'f',
+   '(m) row 122: n2\'s NULL did not reach n1');
+set_repair(1, 'on');
+ok(poll_query_until(1, "SELECT count(*) FROM spock.toast_suspect WHERE pkey->>'id' IN ('121', '122')",
+                    '0', 30), '(m) both repaired');
+set_repair(1, 'off');
+is(scalar_query(1, "SELECT md5(big) FROM public.td WHERE id = 121"),
+   scalar_query(2, "SELECT md5(big) FROM public.td WHERE id = 121"), '(m) row 121: n1 holds n2\'s big');
+is(scalar_query(1, "SELECT big IS NULL FROM public.td WHERE id = 122"), 't',
+   '(m) row 122: the repair wrote the winner\'s NULL');
+drain('(m)');
+is(suspects(1, "pkey->>'id' IN ('121', '122')"), '0', '(m) nothing recorded again');
+is(suspects(2, "pkey->>'id' IN ('121', '122')"), '0', '(m) nor on n2');
 
 destroy_cluster('Destroy cluster');
 done_testing();

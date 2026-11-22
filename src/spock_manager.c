@@ -13,14 +13,18 @@
 
 #include "miscadmin.h"
 
+#include "access/commit_ts.h"
 #include "access/xact.h"
 
 #include "commands/dbcommands.h"
 #include "commands/extension.h"
 
+#include "postmaster/interrupt.h"
+
 #include "storage/ipc.h"
 #include "storage/proc.h"
 
+#include "utils/guc.h"
 #include "utils/lsyscache.h"	/* PG19 moved get_database_name() here */
 #include "utils/memutils.h"
 #include "utils/resowner.h"
@@ -29,6 +33,7 @@
 #include "pgstat.h"
 
 #include "spock_node.h"
+#include "spock_toast_repair.h"
 #include "spock_worker.h"
 #include "spock.h"
 
@@ -183,6 +188,106 @@ manage_apply_workers(void)
 }
 
 /*
+ * Start the TOAST repair worker when spock.toast_divergence_repair is on
+ * and stop it when the GUC is turned off.  A worker that exited with an
+ * error is restarted after its restart delay, like an apply worker.
+ */
+static void
+manage_toast_repair_worker(void)
+{
+	static bool register_warned = false;
+	MemoryContext oldcxt = CurrentMemoryContext;
+	SpockWorker *w;
+	SpockWorker reg;
+
+	/*
+	 * The repair reads and stamps commit timestamps.  The setting needs a
+	 * restart to change, so warn once and never start the worker.
+	 */
+	if (spock_toast_divergence_repair && !track_commit_timestamp)
+	{
+		static bool warned = false;
+
+		if (!warned)
+			ereport(WARNING,
+					(errmsg("spock.toast_divergence_repair is on but track_commit_timestamp is off; not starting the TOAST repair worker")));
+		warned = true;
+		return;
+	}
+
+	LWLockAcquire(SpockCtx->lock, LW_EXCLUSIVE);
+	w = spock_toast_repair_find(MySpockWorker->dboid);
+
+	if (!spock_toast_divergence_repair)
+	{
+		if (spock_worker_running(w))
+			spock_worker_kill(w);
+		else if (w != NULL && w->terminated_at != 0)
+		{
+			/* The slot of a worker that ended in an error. */
+			w->worker_type = SPOCK_WORKER_NONE;
+			w->terminated_at = 0;
+		}
+		LWLockRelease(SpockCtx->lock);
+		return;
+	}
+
+	if (spock_worker_running(w))
+	{
+		LWLockRelease(SpockCtx->lock);
+		return;
+	}
+
+	if (w != NULL && w->terminated_at != 0)
+	{
+		TimestampTz restart_time;
+
+		restart_time = TimestampTzPlusMilliseconds(w->terminated_at,
+												   w->restart_delay);
+		if (restart_time >= GetCurrentTimestamp())
+		{
+			LWLockRelease(SpockCtx->lock);
+			return;
+		}
+	}
+	LWLockRelease(SpockCtx->lock);
+
+	memset(&reg, 0, sizeof(SpockWorker));
+	reg.worker_type = SPOCK_WORKER_REPAIR;
+	reg.dboid = MySpockWorker->dboid;
+
+	/*
+	 * Registering fails when no background worker slot is free.  That must
+	 * not take the manager down with it: warn once and try again on a later
+	 * round.
+	 */
+	PG_TRY();
+	{
+		StartTransactionCommand();
+		spock_worker_register(&reg);
+		CommitTransactionCommand();
+		register_warned = false;
+	}
+	PG_CATCH();
+	{
+		ErrorData  *edata;
+
+		MemoryContextSwitchTo(oldcxt);
+		edata = CopyErrorData();
+		FlushErrorState();
+		AbortCurrentTransaction();
+		MemoryContextSwitchTo(oldcxt);
+		if (!register_warned)
+			ereport(WARNING,
+					(errmsg("could not start the TOAST repair worker: %s", edata->message),
+					 errhint("Raise max_worker_processes, or turn spock.toast_divergence_repair off.")));
+		register_warned = true;
+		FreeErrorData(edata);
+	}
+	PG_END_TRY();
+}
+
+/*
  * Entry point for manager worker.
  */
 void
@@ -219,6 +324,12 @@ spock_manager_main(Datum main_arg)
 		int			rc;
 		int			sleep_timer;
 
+		if (ConfigReloadPending)
+		{
+			ConfigReloadPending = false;
+			ProcessConfigFile(PGC_SIGHUP);
+		}
+
 		/*
 		 * Launch or restart apply-workers. This determines how long we have
 		 * to wait before doing this again based on the restart delay of any
@@ -226,6 +337,8 @@ spock_manager_main(Datum main_arg)
 		 * exception handling).
 		 */
 		sleep_timer = manage_apply_workers();
+
+		manage_toast_repair_worker();
 
 		rc = WaitLatch(&MyProc->procLatch,
 					   WL_LATCH_SET | WL_TIMEOUT | WL_POSTMASTER_DEATH,

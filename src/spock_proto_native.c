@@ -46,6 +46,13 @@ static uint32 spock_negotiated_proto_version = SPOCK_PROTO_VERSION_NUM;
 static uint32 spock_apply_proto_version = SPOCK_PROTO_MIN_VERSION_NUM;
 
 /*
+ * The sender's spock_version_num from its startup message, or 0 if it sent
+ * none.  Every release this code knows of sends it, so 0 means a sender too
+ * old or too unusual to rely on.
+ */
+static int	spock_apply_remote_version_num = 0;
+
+/*
  * Protocol version management functions for publisher
  */
 void
@@ -73,6 +80,18 @@ uint32
 spock_apply_get_proto_version(void)
 {
 	return spock_apply_proto_version;
+}
+
+void
+spock_apply_set_remote_version_num(int version)
+{
+	spock_apply_remote_version_num = version;
+}
+
+int
+spock_apply_get_remote_version_num(void)
+{
+	return spock_apply_remote_version_num;
 }
 
 static void spock_write_attrs(StringInfo out, Relation rel,

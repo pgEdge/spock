@@ -1,4 +1,4 @@
-# Detecting TOAST Divergence
+# Detecting and Repairing TOAST Divergence
 
 PostgreSQL stores large column values out of line, in a TOAST table, and
 does not write such a value to WAL when an `UPDATE` leaves it unchanged.
@@ -66,8 +66,8 @@ frozen transaction id, so on a busy cluster values older than about
 value frozen and left unwritten for about four billion transactions can
 instead read a newer transaction's stamp, as transaction ids wrap around:
 that records a row needlessly, and never hides one. Verification still
-hashes every entry against the winner, so these cost a check, never a wrong
-answer.
+hashes every entry against the winner before anything is written, so these
+cost a check, never a wrong repair.
 
 A rewrite on the sending node is quiet only for some rows. A `VACUUM FULL`,
 `CLUSTER`, pg_repack or a table-rewriting `ALTER TABLE` gives every value
@@ -124,10 +124,11 @@ recent local write. The same gap applies: a write made here just before a
 a sender had not applied yet can be lost to that sender's newer change and
 is not recorded.
 
-Detection and verification need `track_commit_timestamp = on`, which
+Detection, verification and repair need `track_commit_timestamp = on`, which
 `last_update_wins` conflict resolution already requires. With it off,
-nothing is recorded and `spock.toast_divergence_verify()` raises an error. A
-winning node with it off is reported as a connection error on its entries.
+nothing is recorded, `spock.toast_divergence_verify()` raises an error, and
+the repair worker is not started. A winning node with it off is reported as
+a connection error on its entries.
 
 One entry is kept per row. A repeat detection replaces it and increments its
 count, at the cap too. The table is approximately capped by
@@ -142,7 +143,8 @@ naming a row that no longer exists; remove it with
 `spock.toast_divergence_clear()`. An entry for a table that has since been
 dropped no longer shows in `spock.toast_divergence` but still counts toward
 the cap. `spock.toast_divergence_verify()` removes it while it is in state
-`suspect`; an entry in another state stays until you delete it from
+`suspect`, and the repair worker while it is in state `suspect` or
+`confirmed`; an entry in another state stays until you delete it from
 `spock.toast_suspect`.
 
 Each row recorded, or recorded again, is written in its own subtransaction,
@@ -203,24 +205,181 @@ A `confirmed` row differed from the winner in the named columns when it was
 checked. The winner holds the value that row-level last-update-wins says
 every node should converge on. A row checked while this node was behind the
 winner can be `confirmed` although the change still on its way will make
-the two agree.
+the two agree; the repair worker compares again before it writes.
 
 ## Repairing
 
-To repair a confirmed row, for example with ACE's table repair using
+With `spock.toast_divergence_repair = on`, a background worker on each node
+checks and repairs suspect rows in a single pass, handling up to
+`spock.toast_divergence_batch` entries per pass. After a full batch that
+settled entries, the next pass starts at once, so a backlog is worked off
+without pauses. After a pass that found less than a full batch, the worker
+sleeps `spock.toast_divergence_interval` (default 300 ms), so new suspects
+are usually handled within a fraction of a second. After a pass that
+settled nothing, because every entry it read had to wait or failed (for
+example, the winning node is down), it sleeps
+`spock.toast_divergence_retry_interval` (default 1 s) instead. The worker
+keeps one connection to each winning node between passes and opens a fresh
+one after `spock.toast_divergence_conn_lifetime` (default 5 min). It is
+off by default:
+turning it on lets Spock rewrite rows in your tables. It runs on every
+supported PostgreSQL version.
+
+Checking and repairing a suspect happen in one step, and only a column
+whose value differs from the winner's is transferred. A row that has
+already converged since it was flagged is cleared for almost no cost.
+
+A repair is the same decision the apply worker would have made had the
+winner's row arrived again on the stream. The worker locks the local row,
+reads its origin and commit timestamp, fetches the winner's current values
+for the suspect columns together with the winner's commit timestamp and
+origin, and applies the configured conflict resolution. If the winner still
+wins, the columns that differ are rewritten. The repaired row carries the
+winner row's commit timestamp, so later conflicts on it resolve against the
+right history, and the repair is not replicated: every other node already
+holds the winner's value. It also carries the winner's origin.
+
+If the local row was changed again since detection and is now the newer
+one, the row stays as it is and the entry is removed (see below).
+
+The worker reads and writes each table as the table's owner, on both nodes,
+so casts and operators the owner defined and row level security policies
+never run as a superuser. On the winning node it reads the row through
+`spock.toast_read_as_owner()`, called over the subscription's connection
+string. The role in that string must be a superuser, as Spock requires, or a
+member of the table owner's role with the SET option, with `EXECUTE` on that
+function. A row that a row level security policy hides from the owner, with
+`FORCE ROW LEVEL SECURITY`, reads as missing on this node, and its entry is
+removed.
+
+Values are copied as text: the winner's column cast to `text`, and cast
+back to the column's type here. Built-in types read back as the same value;
+a type with a cast to `text` of its own that its input function does not
+read back the same way cannot be repaired correctly.
+
+The worker runs its SQL under the same `search_path` as
+`spock.toast_divergence_verify()`, `pg_catalog, pg_temp`. User code that a
+repair write runs uses that path too, whether it is reached from a trigger
+enabled `ALWAYS` or `REPLICA`, a `CHECK` or domain constraint, an index
+expression, a generated column or a cast. A name it does not find there
+fails the write, and the entry shows the error in `last_error`. An operator
+or function on a type from another schema that has an implicit cast to a
+built-in type does not fail: it resolves to the built-in one, so, for
+example, `=` on two `citext` values compares them as `text`, case
+sensitively, with no error. The apply worker runs the same code under the
+path of the last DDL it replicated, so the two can differ. Give such
+functions a `SET search_path` clause of their own to avoid both. A
+`SET search_path` the code runs lasts only for that statement, here and in
+the read on the winning node.
+
+If the winning node no longer keeps its row's commit timestamp, because the
+row is older than that node's commit timestamp horizon, the conflict rule
+cannot compare the rows. When the local row was last written by the winning
+node, the winner's row is at least as new, and the row is repaired.
+Otherwise the entry is removed with a warning naming the row; compare it
+with ACE.
+
+Entries whose winner subscription is disabled wait, and are repaired once
+it is enabled again. Entries whose winner subscription has been dropped,
+for example because that node left the cluster, can never be repaired: the
+worker deletes them and logs a warning with the count. Those rows may still
+differ from the last values the removed node had; compare the tables with
+ACE if that matters. Entries that can be worked on are taken first, so
+waiting entries do not hold up the rest of the queue. An entry that cannot
+be repaired keeps its state with the reason in `last_error` and is retried
+on the next pass. A row that no
+longer exists on the winner is marked `remote_missing` and left for you.
+
+The worker holds a replication origin named `spock_toast_repair_<dboid>`
+while it runs. It counts against `max_replication_slots` per database on
+PostgreSQL 15 to 17, and against `max_active_replication_origins` from
+PostgreSQL 18.
+
+There is no on-demand repair function. With the default settings the
+worker checks the queue several times a second, so new suspects are
+handled almost as soon as they are recorded.
+
+To repair by other means, for example with ACE's table repair using
 `--preserve-origin`, remove the entry afterwards:
 
 ```sql
 SELECT spock.toast_divergence_clear('public.orders', '{"id": "42"}');
 ```
 
+## Performance
+
+With stamps on, which is the default, the steady cost of this feature is the
+stamp lookup on the sending node. Verification and repair have work only for
+rows that really differ, and for rows whose stamp could not be read. In a
+cluster with occasional conflicts, the queue is empty most of the time.
+
+### Sending stamps
+
+The walsender for each subscriber reads a stamp for every out-of-line column
+that an `UPDATE` leaves unchanged, whether or not the row conflicts. Each
+lookup costs about as much as reading one row by its primary key, so a row
+with many such columns costs that many lookups. The cost grows when the
+TOAST table no longer fits in shared buffers, because each lookup may then
+read a page from disk. A node with several subscribers does this work once
+for each of them.
+
+The lookups slow the walsender, not the writing transaction. A walsender
+that cannot keep up shows as replication lag rather than as lower throughput
+on the provider. In testing, that happened only with many large columns per
+row, a high update rate, and a TOAST table about the size of shared buffers.
+
+Turning `spock.toast_divergence_stamps` off at the provider removes this
+cost. The subscriber then records every candidate row, and verification or
+repair must clear each entry later. Clearing one entry costs far more than a
+stamp lookup, because both nodes read and hash the whole value. Turning
+stamps off is cheaper only for a table with many large columns, a high
+update rate, and rows that another node rarely writes. The setting applies
+to the whole node, not to one table. Watch the queue size against
+`spock.toast_divergence_max_suspects` when stamps are off, because at the
+cap new divergences are not recorded.
+
+### Verifying and repairing
+
+Verification and the repair worker read and hash the full value of each
+suspect column on both nodes. They send one query to each winning node per
+table in each batch, and a batch ends at `spock.toast_divergence_batch`
+entries or `spock.toast_divergence_fetch_bytes` of values. For small values
+the round trips set the pace, so the rate falls with network latency; for
+large values, reading, hashing and copying the values set the pace.
+
+A repair writes the columns that differ, plus one more version of the row
+that reuses the values just written. A backlog of repairs therefore writes
+about as much data as it copies, and competes for I/O like any other write
+of that size. In testing, repairing 1 GB slowed concurrent `pgbench` traffic
+no more than an ordinary session writing the same 1 GB.
+
+With an empty queue, the repair worker runs one small query on
+`spock.toast_suspect` every `spock.toast_divergence_interval`, which is
+300 ms by default and uses a small fraction of one CPU core. A longer
+interval lowers that cost and delays the repair of new entries by as much.
+
 ## What this does not cover
+
+Nodes older than Spock 6.1.0 keep no queue, so during a rolling upgrade
+nothing is recorded for changes that come from a node still on an older
+release. The apply worker logs a warning once, at the first update from such
+a node that wins over a row another node last wrote. Repairing from such a
+node could spread a value that lost an earlier conflict, since it has no
+record of its own divergences. Once every node runs 6.1.0 or later, compare
+the replicated tables with ACE to find anything that diverged during the
+upgrade.
+
+If the node that lost a conflict updates the row again before the repair,
+leaving the TOAST column alone, its row is then the newer one and keeps the
+losing value. That update reaches the other nodes with the column
+unchanged, and they record suspects of their own naming this node, so the
+cluster can end on the value that lost.
 
 Detection is forward-only. Rows that diverged before this feature was
 enabled, or while detection was off, are never recorded. Use ACE for a
-baseline comparison; from then on this feature finds what diverges. An
-empty list does not mean a consistent cluster unless the cluster was
-consistent when detection started.
+baseline comparison; this feature keeps a baselined cluster converged from
+then on. An empty list does not mean a consistent cluster unless the
+cluster was consistent when detection started.
 
 With `spock.toast_divergence_stamps` off at a provider, a row last written
 by that provider is never recorded on its subscribers. In a mesh of three or
@@ -259,6 +418,18 @@ subscription with `forward_origins`, the forwarding node cannot be used to
 check it: it applied the same unchanged column and may hold a stale value
 itself. Spock does not allow a direct subscription to the originating node
 while forwarding is active, so such an entry is kept with no winner
-subscription and a `last_error` saying so, and
-`spock.toast_divergence_verify()` reports it as failed. Use ACE to compare
-the row with the originating node, then `spock.toast_divergence_clear()`.
+subscription and a `last_error` saying so, and is never verified or repaired
+automatically. Use ACE to compare the row with the originating node, then
+`spock.toast_divergence_clear()`.
+
+A repair that the local table rejects every time, for example through a
+`CHECK` constraint or a trigger that raises an error on the winner's value,
+is retried on every pass of the repair worker, and the winner's value is
+fetched again each time. The entry shows the error in `last_error`. Resolve
+the row by hand and remove the entry with `spock.toast_divergence_clear()`.
+
+Automatic repair on a node relies on the node that won the conflict also
+running with `spock.toast_divergence_detection` on. If a peer has detection
+turned off, some divergences that node should have corrected toward can be
+left unrepaired; use `spock.toast_divergence_verify()` and
+`spock.toast_divergence_clear()`, or ACE, to resolve those.

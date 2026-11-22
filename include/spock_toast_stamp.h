@@ -16,6 +16,9 @@
 #include "access/xlogdefs.h"
 #include "utils/timestamp.h"
 
+/* RepOriginId: PG 19 renamed it, spock_compat.h maps the name. */
+#include "spock_compat.h"
+
 /*
  * The version of a TOAST value: the node and commit timestamp of the
  * transaction that wrote it, and its raw size.  Every node holding that
@@ -52,6 +55,9 @@ extern bool toast_stamp_read_with(ToastStampReader *reader, Datum value,
 								  uint32 local_nodeid, SpockToastStamp *stamp);
 extern void toast_stamp_reader_close(ToastStampReader *reader);
 extern char *toast_stamp_to_text(const SpockToastStamp *stamp);
+extern bool toast_stamp_from_text(const char *txt, SpockToastStamp *stamp);
+extern void toast_stamp_set_subxact_commit_ts(TimestampTz ts,
+											  RepOriginId nodeid);
 extern Datum spock_toast_stamp(PG_FUNCTION_ARGS);
 
 #endif							/* SPOCK_TOAST_STAMP_H */

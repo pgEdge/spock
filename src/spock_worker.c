@@ -183,6 +183,13 @@ spock_worker_register(SpockWorker *worker)
 				 shorten_hash(NameStr(worker->worker.sync.relname), NAMEDATALEN - 37),
 				 worker->dboid, worker->worker.sync.apply.subid);
 	}
+	else if (worker->worker_type == SPOCK_WORKER_REPAIR)
+	{
+		snprintf(bgw.bgw_function_name, BGW_MAXLEN,
+				 "spock_toast_repair_main");
+		snprintf(bgw.bgw_name, BGW_MAXLEN,
+				 "spock toast repair %u", worker->dboid);
+	}
 	else
 	{
 		snprintf(bgw.bgw_function_name, BGW_MAXLEN,
@@ -558,6 +565,27 @@ spock_apply_find_all(Oid dboid)
 }
 
 /*
+ * Find the TOAST repair worker for a database, running or not.
+ */
+SpockWorker *
+spock_toast_repair_find(Oid dboid)
+{
+	int			i;
+
+	Assert(LWLockHeldByMe(SpockCtx->lock));
+
+	for (i = 0; i < SpockCtx->total_workers; i++)
+	{
+		SpockWorker *w = &SpockCtx->workers[i];
+
+		if (w->worker_type == SPOCK_WORKER_REPAIR && w->dboid == dboid)
+			return w;
+	}
+
+	return NULL;
+}
+
+/*
  * Find the sync worker for given subscription and table
  */
 SpockWorker *
@@ -924,6 +952,8 @@ spock_worker_type_name(SpockWorkerType type)
 			return "apply";
 		case SPOCK_WORKER_SYNC:
 			return "sync";
+		case SPOCK_WORKER_REPAIR:
+			return "toast repair";
 		default:
 			Assert(false);
 			return NULL;

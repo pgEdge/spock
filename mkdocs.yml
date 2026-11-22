@@ -58,7 +58,7 @@ nav:
   - Logical Slot Failover (HA Standby): logical_slot_failover.md
   - Upgrading a Spock Installation: upgrading_spock.md
   - Conflict Types and Resolution: conflict_types.md
-  - Detecting TOAST Divergence: toast_divergence.md
+  - Detecting and Repairing TOAST Divergence: toast_divergence.md
   - Spock's Conflict Avoidance Options: conflicts.md
   - Spock's Management Features:
     - Managing a Spock Installation: managing/index.md

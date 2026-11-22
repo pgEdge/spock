@@ -3,9 +3,10 @@
  * spock_toast_util.c
  *		Helpers shared by the TOAST divergence code
  *
- * Helpers the detection and verify code share: running one step in a
- * subtransaction, so an error settles only that step (run_in_subxact()) and
- * this node's id (cached_local_nodeid()).
+ * Helpers the detection, verify and repair code share: running one step in a
+ * subtransaction, so an error settles only that step (run_in_subxact()), this
+ * node's id (cached_local_nodeid()), and reading and writing a user table as
+ * its owner (spi_execute_as_owner()).
  * It also holds the text-output settings pinned wherever values are
  * compared across nodes (toast_pinned_output).
  *
@@ -19,9 +20,12 @@
 
 #include "access/xact.h"
 #include "executor/spi.h"
+#include "utils/guc.h"
 #include "utils/resowner.h"
+#include "utils/syscache.h"
 
 #include "spock.h"
+#include "spock_common.h"
 #include "spock_node.h"
 #include "spock_toast_internal.h"
 
@@ -110,9 +114,9 @@ run_in_subxact(void (*fn) (void *arg), void *arg, char **errmsg)
 }
 
 /*
- * This node's Spock node id, for mapping origin 0 in a local stamp.  Read
- * once per process; 0 until a local node exists.  Needs a transaction the
- * first time.
+ * This node's Spock node id: for mapping origin 0 in a local stamp, and for
+ * the repair worker's origin decisions.  Read once per process; 0
+ * until a local node exists.  Needs a transaction the first time.
  */
 uint32
 cached_local_nodeid(void)
@@ -127,4 +131,66 @@ cached_local_nodeid(void)
 			nodeid = node->node->id;
 	}
 	return nodeid;
+}
+
+/*
+ * The owner of relid.  Repair reads and writes of a user table run as that
+ * user, as the apply worker's writes do, so code they run (casts and
+ * operators of the key and column types, domain constraints, triggers
+ * enabled ALWAYS or REPLICA, CHECK constraints, index expressions,
+ * generated columns) does not run as the superuser the worker connects as.
+ */
+Oid
+table_owner(Oid relid)
+{
+	HeapTuple	tp = SearchSysCache1(RELOID, ObjectIdGetDatum(relid));
+	Oid			owner;
+
+	if (!HeapTupleIsValid(tp))
+		elog(ERROR, "cache lookup failed for relation %u", relid);
+	owner = ((Form_pg_class) GETSTRUCT(tp))->relowner;
+	ReleaseSysCache(tp);
+	return owner;
+}
+
+/*
+ * Switch to owner, a table's owner, for one statement, in a GUC nest level
+ * of its own, and return that level for owner_leave(), which switches back
+ * and rolls the level back.  An error in between needs neither: aborting the
+ * (sub)transaction resets the user and the GUC nest level.
+ *
+ * SwitchToUntrustedUser() opens a nest level only for an owner who cannot
+ * SET ROLE back to this user.  For one who can, such as any superuser, a
+ * SET in a trigger or function the statement runs would otherwise outlast
+ * it, and a SET search_path would replace TOAST_SEARCH_PATH for every later
+ * statement in the session.
+ */
+int
+owner_enter(Oid owner, UserContext *ucxt)
+{
+	int			nestlevel = NewGUCNestLevel();
+
+	SwitchToUntrustedUser(owner, ucxt);
+	return nestlevel;
+}
+
+void
+owner_leave(UserContext *ucxt, int nestlevel)
+{
+	RestoreUserContext(ucxt);
+	AtEOXact_GUC(false, nestlevel);
+}
+
+/* SPI_execute() as the owner of relid (owner_enter()). */
+int
+spi_execute_as_owner(Oid relid, const char *sql, long count)
+{
+	UserContext ucxt;
+	int			nestlevel;
+	int			ret;
+
+	nestlevel = owner_enter(table_owner(relid), &ucxt);
+	ret = SPI_execute(sql, false, count);
+	owner_leave(&ucxt, nestlevel);
+	return ret;
 }

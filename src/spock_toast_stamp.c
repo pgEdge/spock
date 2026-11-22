@@ -300,6 +300,39 @@ toast_stamp_to_text(const SpockToastStamp *stamp)
 					(int64) stamp->ts, stamp->rawsize);
 }
 
+/* The reverse of toast_stamp_to_text(); false for anything malformed. */
+bool
+toast_stamp_from_text(const char *txt, SpockToastStamp *stamp)
+{
+	unsigned long nodeid;
+	long long	ts;
+	int			rawsize;
+	char		extra;
+
+	if (txt == NULL ||
+		sscanf(txt, "%lu/%lld/%d%c", &nodeid, &ts, &rawsize, &extra) != 3)
+		return false;
+	if (nodeid > PG_UINT16_MAX || ts <= 0 || rawsize < 0)
+		return false;
+	stamp->nodeid = (uint32) nodeid;
+	stamp->ts = (TimestampTz) ts;
+	stamp->rawsize = rawsize;
+	return true;
+}
+
+/*
+ * Give the current subtransaction its own commit timestamp and origin, so
+ * the rows and TOAST chunks it writes carry them after the top-level commit.
+ * This needs the pgEdge PostgreSQL patch that adds
+ * SubTransactionIdSetCommitTsData(); keep every call for TOAST divergence
+ * here, so the check for a patched build has one place to go.
+ */
+void
+toast_stamp_set_subxact_commit_ts(TimestampTz ts, RepOriginId nodeid)
+{
+	SubTransactionIdSetCommitTsData(GetCurrentTransactionId(), ts, nodeid);
+}
+
 PG_FUNCTION_INFO_V1(spock_toast_stamp);
 
 /* spock.toast_stamp("any"): see toast_stamp_read(). */

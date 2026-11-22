@@ -2424,6 +2424,9 @@ handle_startup(StringInfo s)
 		elog(ERROR, "SPOCK %s: Expected startup message version %u, but got %u",
 			 MySubscription->name, SPOCK_STARTUP_MSG_FORMAT_FLAT, msgver);
 
+	/* A sender that leaves the key out reads as version 0. */
+	spock_apply_set_remote_version_num(0);
+
 	/*
 	 * The startup message consists of null-terminated strings as key/value
 	 * pairs. The first entry is always the format identifier.
@@ -2607,6 +2610,21 @@ handle_startup_param(const char *key, const char *value)
 
 		elog(LOG, "SPOCK %s: using protocol version %u from publisher",
 			 MySubscription->name, proto_version);
+	}
+
+	if (strcmp(key, "spock_version_num") == 0)
+	{
+		char	   *endptr;
+		long		v;
+
+		errno = 0;
+		v = strtol(value, &endptr, 10);
+		if (errno != 0 || *endptr != '\0' || v < 0 || v > INT_MAX)
+			ereport(ERROR,
+					(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+					 errmsg("SPOCK %s: invalid spock_version_num value: %s",
+							MySubscription->name, value)));
+		spock_apply_set_remote_version_num((int) v);
 	}
 
 	/*

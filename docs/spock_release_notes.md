@@ -4,14 +4,17 @@
 
 ### Highlights
 
-* **TOAST divergence detection.** Rows whose out-of-line TOAST columns may
-  have diverged after a conflict on a `REPLICA IDENTITY DEFAULT` table are
-  recorded as they happen, and `spock.toast_divergence_verify()` confirms
-  which ones did. Providers send a version stamp with each unchanged TOAST
-  column (protocol 6, `spock.toast_divergence_stamps`), so only rows whose
-  version actually differs are recorded.
+* **TOAST divergence detection and repair.** Rows whose out-of-line TOAST
+  columns may have diverged after a conflict on a `REPLICA IDENTITY DEFAULT`
+  table are recorded as they happen, and `spock.toast_divergence_verify()`
+  confirms which ones did. With `spock.toast_divergence_repair = on`, a
+  background worker repairs confirmed rows with the winner's values,
+  stamped with the winner row's timestamp and not replicated. Providers
+  send a version stamp with each unchanged TOAST column (protocol 6,
+  `spock.toast_divergence_stamps`), so only rows whose version actually
+  differs are recorded.
   Detection is forward-only: rows that diverged before upgrading are not
-  found. See *Detecting TOAST Divergence*.
+  found. See *Detecting and Repairing TOAST Divergence*.
 
 ### New GUCs
 
@@ -21,6 +24,24 @@
   the version stamp of each unchanged TOAST column.
 * `spock.toast_divergence_max_suspects` (int, default `100000`, `SIGHUP`):
   cap on `spock.toast_suspect`; `0` removes it.
+* `spock.toast_divergence_repair` (bool, default `off`, `SIGHUP`): run the
+  worker that verifies and repairs TOAST suspects.
+* `spock.toast_divergence_interval` (int milliseconds, default `300ms`,
+  `SIGHUP`): how long the repair worker sleeps after a pass that found
+  less than a full batch.
+* `spock.toast_divergence_retry_interval` (int seconds, default `1s`,
+  `SIGHUP`): how long the repair worker sleeps after a pass that settled
+  nothing.
+* `spock.toast_divergence_conn_lifetime` (int seconds, default `5min`,
+  `SIGHUP`): how long the repair worker reuses a connection to a winning
+  node; `0` closes it after every pass.
+* `spock.toast_divergence_lock_timeout` (int milliseconds, default `5s`,
+  `SIGHUP`): how long a repair waits for a row lock before retrying the
+  entry on a later pass; `0` waits as long as it takes.
+* `spock.toast_divergence_batch` (int, default `100`, `SIGHUP`): entries
+  per pass.
+* `spock.toast_divergence_fetch_bytes` (int, default `32MB`, `SIGHUP`):
+  the payload byte budget for one repair fetch wave.
 
 ### New functions, tables and views
 
@@ -29,6 +50,11 @@
 * `spock.toast_divergence_clear(relation regclass, pkey jsonb)`: remove one
   entry after an out-of-band repair.
 * `spock.toast_stamp(value "any")`: the version stamp of a column value.
+* `spock.toast_read_as_owner(rel, query, param, nstamp)`: called by other
+  nodes' repair workers and `spock.toast_divergence_verify()` over the
+  subscription connection, to read a table as its owner. Only members of
+  the table owner's role may call it, and `EXECUTE` is revoked from
+  `PUBLIC`.
 * `spock.toast_suspect` table and `spock.toast_divergence` view. Local to
   each node, never replicated.
 
@@ -40,6 +66,10 @@
   beta 2 or 6.0.0 binaries before it runs 6.1.0: there is no update path
   from the beta 1 catalog, and the manager would label it 6.1.0 at
   startup.
+* TOAST divergence is only recorded for changes from nodes running 6.1.0 or
+  later. During a rolling upgrade, changes from nodes still on an older
+  release are not tracked. Compare the replicated tables with ACE once every
+  node is upgraded.
 
 ## Spock 6.0.0-beta.2
 

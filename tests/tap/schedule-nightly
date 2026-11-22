@@ -13,6 +13,7 @@
 test: 012_zodan_basics
 # test: 016_crash_recovery_progress
 test: 017_zodan_3n_timeout
+test: 057_toast_nightly
 
 # Transient apply-error retry.  Both gate apply on an error that has to persist
 # for a while and then clear, so they are dominated by waiting: 035 runs ~130s

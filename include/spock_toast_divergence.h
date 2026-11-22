@@ -20,6 +20,13 @@
 #include "spock_proto_native.h"
 #include "spock_relcache.h"
 
+/*
+ * The first release whose nodes keep spock.toast_suspect.  The repair worker
+ * relies on the winner having one, so detection records nothing for changes
+ * from an older sender.
+ */
+#define SPOCK_TOAST_MIN_SENDER_VERSION_NUM 60100
+
 extern void spock_toast_suspect_record(SpockRelation *rel,
 									   TupleTableSlot *newslot,
 									   SpockTupleData *newtup,
@@ -27,5 +34,7 @@ extern void spock_toast_suspect_record(SpockRelation *rel,
 									   RepOriginId local_origin,
 									   TimestampTz local_ts);
 extern Datum spock_toast_divergence_verify(PG_FUNCTION_ARGS);
+
+extern void toast_divergence_close_cached_conns(void);
 
 #endif							/* SPOCK_TOAST_DIVERGENCE_H */

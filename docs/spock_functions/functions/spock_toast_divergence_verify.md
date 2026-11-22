@@ -12,6 +12,10 @@ A row with four integer counts: cleared, confirmed, remote_missing, failed.
 
 ### DESCRIPTION
 
+The repair worker runs this same pass on each of its rounds when
+`spock.toast_divergence_repair` is on, so calling it by hand is only needed
+with the worker off.
+
 Checks pending entries in `spock.toast_suspect` against the node that won
 each conflict. For every entry in state `suspect`, up to max_rows, the
 function connects to the winner and asks for a hash of each suspect column
@@ -63,7 +67,8 @@ the rest of the queue.
 The comparison holds as of the call. If this node has not yet applied a
 newer change to the row from the winner, the entry can be `confirmed` (or
 `remote_missing`, for a delete still on its way) although the rows will
-agree once that change arrives.
+agree once that change arrives. The repair worker compares again before it
+writes anything.
 
 Entries in state `confirmed` or `remote_missing` are not re-checked. A new
 detection on the same row returns it to `suspect`, and an entry the apply
@@ -83,18 +88,21 @@ saying so, as does an entry whose winning change was forwarded by another
 node.
 
 Run it on the node holding the suspects, as a superuser, and do not grant
-`EXECUTE` on it to other roles: it reads the winner's rows as the role in
-the subscription's connection string, not as the caller. It reads the local
-rows as the calling user; with row level security, a row hidden from either
-side reads as missing. It reads the table of the same name on the winner, so
-if the nodes partition a table differently, an entry recorded for a
-partition can fail or show as `remote_missing`; compare such rows with ACE.
-It opens one ordinary connection, not a replication connection, per winning
-subscription for the length of the call and closes them before returning. A
-cancel or `statement_timeout` is acted on while it waits for a winner's
-answer, and the queries still running on the winners are cancelled, but
-opening a connection to an unreachable winner first waits out the connection
-timeout. See [Detecting TOAST Divergence](../../toast_divergence.md).
+`EXECUTE` on it to other roles. It reads each local row as its table's
+owner, as the repair worker does, so the owner's casts and row level
+security settings apply. It reads the winner's row as the table's owner
+there too, through `spock.toast_read_as_owner()`, so the role in the
+subscription's connection string must be a superuser or a member of the
+owner's role with the SET option. A row hidden from either side reads as
+missing. It reads the table of the same name on the winner, so if the nodes
+partition a table differently, an entry recorded for a partition can fail or
+show as `remote_missing`; compare such rows with ACE. It opens one ordinary
+connection, not a replication connection, per winning subscription for the
+length of the call and closes them before returning. A cancel or
+`statement_timeout` is acted on while it waits for a winner's answer, and
+the queries still running on the winners are cancelled, but opening a
+connection to an unreachable winner first waits out the connection timeout.
+See [Detecting and Repairing TOAST Divergence](../../toast_divergence.md).
 
 ### ARGUMENTS
 

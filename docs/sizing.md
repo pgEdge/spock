@@ -26,6 +26,7 @@ Spock actually launches so you can size each parameter deliberately.
 | Manager | 1 per **connectable database** in the instance | `max_worker_processes` |
 | Apply worker | 1 per enabled subscription | `max_worker_processes` |
 | Table sync worker | at most 1 concurrently per subscription | `max_worker_processes` |
+| TOAST repair worker | 1 per Spock database, with `spock.toast_divergence_repair` on | `max_worker_processes`, and replication origins (below) |
 | Walsender | 1 per subscription streaming from this node, plus 1 more per subscription during table sync | `max_wal_senders` |
 
 Four of these counts are commonly misjudged.
@@ -86,6 +87,7 @@ For one node, at peak:
                   + D    # connectable databases in this instance
                   + S    # apply workers: one per enabled subscription
                   + S    # table sync workers: worst case, one per subscription
+                  + T    # TOAST repair workers: one per database with repair on
 
     max_worker_processes = spock_workers
                          + max_parallel_workers        # shared pool - see below
@@ -104,6 +106,9 @@ Where:
   the instance. In a fully-meshed cluster of `N` nodes each replicating the
   same `R` databases, `S = R * (N - 1)`. With a single replicated database
   that reduces to the familiar `S = N - 1`.
+- `T` is `R` with `spock.toast_divergence_repair` on, and `0` with it off,
+  the default. The setting applies to the whole instance, so every
+  database with a Spock node gets a worker.
 
 !!! warning
 
@@ -202,6 +207,11 @@ parameter:
 
 This should cause Postgres 18+ to operate with a sufficiently large origin
 pool.
+
+Each TOAST repair worker holds one origin of its own while it runs. Add one
+per database with a Spock node, when `spock.toast_divergence_repair` is on,
+to `max_replication_slots` (15 to 17) or `max_active_replication_origins`
+(18 and later).
 
 ## Worked Examples
 
