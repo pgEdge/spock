@@ -1882,9 +1882,9 @@ failover_slots_connect(void)
 		{
 			/*
 			 * A database that is missing or refuses connections makes the
-			 * connection FATAL.  The restarted worker then connects without
-			 * a database, so slot sync goes on without the snapshot check,
-			 * and tries the database again later (see
+			 * connection FATAL.  The restarted worker then connects without a
+			 * database, so slot sync goes on without the snapshot check, and
+			 * tries the database again later (see
 			 * failover_slots_db_retry_due()).
 			 */
 			BackgroundWorkerInitializeConnection(dbname, NULL, 0);

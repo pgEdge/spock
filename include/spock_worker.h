@@ -101,14 +101,14 @@ typedef struct SpockContext
 
 	/*
 	 * State of the failover slot worker's connection to
-	 * spock.failover_slots_database, kept across restarts of the worker.
-	 * Only that worker reads and writes it.
+	 * spock.failover_slots_database, kept across restarts of the worker. Only
+	 * that worker reads and writes it.
 	 *
 	 * connecting is set while the worker connects, so that the restarted
 	 * worker can tell that the attempt failed or was interrupted.  failures
 	 * counts such attempts in a row and failed_at is when the last one was
-	 * noticed.  retry is set by a worker running without the database when
-	 * it exits to let its successor try again.
+	 * noticed.  retry is set by a worker running without the database when it
+	 * exits to let its successor try again.
 	 */
 	bool		failover_slots_db_connecting;
 	bool		failover_slots_db_retry;
