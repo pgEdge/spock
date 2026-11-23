@@ -535,7 +535,7 @@ worker keeps synchronizing the other slots; if the standby is promoted
 before then, the copy is dropped. A temporary copy belongs to the worker
 process: if the worker exits for any reason, for example because the
 primary is restarting and cannot be reached, the copy is dropped with it,
-and the worker that the postmaster starts a minute later creates it again
+and the worker that the postmaster starts 15 seconds later creates it again
 at the standby's position of that time, which the primary's slot has to
 pass again. If a temporary copy is invalidated while the worker holds it,
 PostgreSQL terminates the worker to release the slot, with the same
@@ -590,14 +590,22 @@ every node where the setting is present, including a primary, where it
 otherwise sleeps, and a PostgreSQL 17 standby using native slot sync. As
 with any open connection, `DROP DATABASE`, `ALTER DATABASE ... RENAME` and
 `CREATE DATABASE ... TEMPLATE` on that database then fail. Stopping the
-worker frees the database only until it restarts 60 seconds later; use
+worker frees the database only until it restarts 15 seconds later; use
 `DROP DATABASE ... WITH (FORCE)`, or clear the setting and restart the
-server. If connecting fails, for example because the database does not
-exist, the worker reports it, carries on without the check, and does not
-try again until the server is restarted. The same happens when the
-database is dropped on the primary: replaying the drop on the standby ends
-the worker, the restarted worker cannot connect to the database, and the
-worker after that keeps synchronizing slots without the check.
+server.
+
+If connecting fails, for example because the database does not exist or
+does not accept connections, the worker reports it and carries on without
+the check. While it synchronizes slots on a standby, it tries again as
+soon as the database exists and accepts connections. A background worker
+cannot connect to a database once it is running, so the worker restarts to
+do so, and no slot is synchronized for about 15 seconds. If connecting
+fails although the database looks available, the worker tries again at
+once the first time, then after one minute, doubling up to five minutes.
+Correcting the setting itself still requires a restart of the server. When
+the database is dropped on the primary, replaying the drop on the standby
+ends the worker, and the worker after that synchronizes slots without the
+check until a database of that name exists again.
 
 The check is made on PostgreSQL 16 and 17 (when `sync_replication_slots` is
 not enabled). On PostgreSQL 17 with native slot sync active, the worker still
