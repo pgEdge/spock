@@ -17,6 +17,8 @@ BuildRequires:	lz4-devel krb5-devel e2fsprogs-devel openssl-devel jansson-devel
 BuildRequires:	libxml2-devel libxslt-devel pam-devel libzstd-devel >= 1.4.0
 Requires:	pgedge-postgresql%{pgmajorversion}-server jansson
 Provides:       %{pname}%{spockmajorversion}_%{pgmajorversion}
+# Stream-neutral capability shared by all Spock streams; used by the pgEdge Enterprise meta packages.
+Provides:       pgedge-spock_%{pgmajorversion} = %{version}-%{release}
 Conflicts:      pgedge-spock60_%{pgmajorversion}
 
 %description
