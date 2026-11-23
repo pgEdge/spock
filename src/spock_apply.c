@@ -411,6 +411,39 @@ clear_exception_log_entry(SpockExceptionLog *entry)
 }
 
 /*
+ * Name of this worker's entry in the shared exception log.
+ *
+ * A table sync worker runs for the same subscription as its apply worker,
+ * and while it catches up it is sent the transaction the apply worker is in
+ * the middle of.  The apply worker has put that transaction's commit LSN in
+ * its entry, so a sync worker sharing the entry would take the transaction
+ * for one that failed before, and discard it or disable the subscription.
+ * A sync worker therefore has an entry of its own, under its slot name,
+ * which it gives back when it exits.
+ */
+static const char *
+exception_log_entry_name(void)
+{
+	if (MySpockWorker->worker_type == SPOCK_WORKER_SYNC)
+		return MySubscription->slot_name;
+	return MySubscription->name;
+}
+
+/*
+ * Give back a sync worker's entry.  No lock: the worker may be exiting on
+ * an error raised while it held one, and clearing the first byte of the
+ * name is all that makes the entry free.
+ */
+static void
+exception_log_entry_release(int code, Datum arg)
+{
+	SpockExceptionLog *entry = &exception_log_ptr[DatumGetInt32(arg)];
+
+	clear_exception_log_entry(entry);
+	NameStr(entry->slot_name)[0] = '\0';
+}
+
+/*
  * Forget the in-flight transaction marker after a transient failure on the
  * normal apply path.
  *
@@ -808,7 +841,7 @@ handle_begin(StringInfo s)
 			exception_log = &exception_log_ptr[i];
 
 			if (namestrcmp(&exception_log->slot_name,
-						   MySubscription->name) == 0)
+						   exception_log_entry_name()) == 0)
 			{
 				/* We found our slot in shared memory. */
 				slot_found = true;
@@ -846,7 +879,7 @@ handle_begin(StringInfo s)
 				exception_log = &exception_log_ptr[i];
 
 				if (namestrcmp(&exception_log->slot_name,
-							   MySubscription->name) == 0)
+							   exception_log_entry_name()) == 0)
 				{
 					/* We found our slot in shared memory. */
 					slot_found = true;
@@ -895,7 +928,11 @@ handle_begin(StringInfo s)
 				 * leak
 				 */
 				new_elog_entry = &exception_log_ptr[free_slot_index];
-				namestrcpy(&new_elog_entry->slot_name, MySubscription->name);
+				namestrcpy(&new_elog_entry->slot_name,
+						   exception_log_entry_name());
+				if (MySpockWorker->worker_type == SPOCK_WORKER_SYNC)
+					before_shmem_exit(exception_log_entry_release,
+									  Int32GetDatum(free_slot_index));
 
 				/*
 				 * Redundant, since it's happening below. But we'll have it
