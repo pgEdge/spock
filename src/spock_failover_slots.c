@@ -1014,11 +1014,11 @@ apply_remote_position(RemoteSlot *remote_slot)
 							   remote_slot->catalog_xmin);
 
 	/*
-	 * restart_lsn is the oldest of all the primary's slots, and is not
-	 * capped at the WAL received.  When the standby has not received it,
-	 * leave the copy's restart_lsn where it is: a promotion would otherwise
-	 * leave the slot pointing at WAL this node never had.  own_restart_lsn
-	 * is capped, and is below restart_lsn only in that case.
+	 * restart_lsn is the oldest of all the primary's slots, and is not capped
+	 * at the WAL received.  When the standby has not received it, leave the
+	 * copy's restart_lsn where it is: a promotion would otherwise leave the
+	 * slot pointing at WAL this node never had.  own_restart_lsn is capped,
+	 * and is below restart_lsn only in that case.
 	 */
 	if (restart_lsn <= remote_slot->own_restart_lsn)
 		LogicalIncreaseRestartDecodingForSlot(remote_slot->confirmed_lsn,
@@ -1436,12 +1436,12 @@ synchronize_one_slot(RemoteSlot *remote_slot)
 
 		/*
 		 * A new copy starts at the primary slot's restart_lsn, so wait until
-		 * the standby has received it.  Until then the only position to
-		 * offer is the end of the WAL received, which while the standby is
-		 * catching up is usually inside a record.  Decoding cannot start
-		 * there: the error would end the worker on every pass, and where the
-		 * standby cannot decode, the copy would be made persistent at a
-		 * position no subscriber can start from.
+		 * the standby has received it.  Until then the only position to offer
+		 * is the end of the WAL received, which while the standby is catching
+		 * up is usually inside a record.  Decoding cannot start there: the
+		 * error would end the worker on every pass, and where the standby
+		 * cannot decode, the copy would be made persistent at a position no
+		 * subscriber can start from.
 		 */
 		if (!remote_slot->restart_lsn_received)
 		{
@@ -1856,9 +1856,9 @@ synchronize_failover_slots(long sleep_time)
 
 		/*
 		 * WAL that has been replayed has been received, even where the
-		 * walreceiver's flush position is behind it: that position starts
-		 * at the beginning of a segment when the walreceiver first starts.
-		 * This is GetStandbyFlushRecPtr() in PostgreSQL's walsender.c.
+		 * walreceiver's flush position is behind it: that position starts at
+		 * the beginning of a segment when the walreceiver first starts. This
+		 * is GetStandbyFlushRecPtr() in PostgreSQL's walsender.c.
 		 */
 		{
 			TimeLineID	replayTLI;
