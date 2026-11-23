@@ -491,6 +491,12 @@ unrecoverable errors:
     failover could be missed after the promotion.  A copy that cannot be
     decoded is reported once with a WARNING.  The worker stays connected to
     that database, so commands such as `DROP DATABASE` on it fail.
+  * After a failed connection to `spock.failover_slots_database`, it
+    carries on without the snapshot check and tries again as soon as the
+    database exists and accepts connections.  If connecting fails for
+    another reason, it tries again at once the first time and then after a
+    wait of one to five minutes.
+  * It is restarted 15 seconds after it exits, down from 60.
 
 ### More granular conflict classification
 

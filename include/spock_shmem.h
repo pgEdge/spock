@@ -25,10 +25,12 @@
 extern void spock_shmem_init(void);
 
 /*
- * Whether the failover slot worker is connecting to
+ * The failover slot worker's connection attempts to
  * spock.failover_slots_database; see failover_slots_connect().
  */
-extern bool spock_failover_slots_db_connecting(void);
-extern void spock_set_failover_slots_db_connecting(bool connecting);
+extern bool spock_failover_slots_db_connect_begin(void);
+extern void spock_failover_slots_db_connect_done(void);
+extern int	spock_failover_slots_db_failures(TimestampTz *failed_at);
+extern void spock_failover_slots_db_request_retry(void);
 
 #endif							/* SPOCK_SHMEM_H */
