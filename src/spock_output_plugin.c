@@ -750,6 +750,16 @@ pg_decode_commit_txn(LogicalDecodingContext *ctx, ReorderBufferTXN *txn,
 		elog(LOG, "Spock: walsender idx too big (%d) - "
 			 " not calling SyncRepWaitForLSN()", MyWalSenderIdx);
 	}
+	else if (MyWalSnd->sync_standby_priority > 0)
+	{
+		/*
+		 * The subscriber this walsender serves is itself named in
+		 * synchronous_standby_names, as the nodes of a shard group with a
+		 * sync_count are.  The commit can only be confirmed once it has been
+		 * sent, so waiting here would wait for ever, and the session that
+		 * committed would wait with us.
+		 */
+	}
 	else
 	{
 		HOLD_INTERRUPTS();
