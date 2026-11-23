@@ -2124,9 +2124,19 @@ spock_sync_main(Datum main_arg)
 						  status_lsn);
 	CommitTransactionCommand();
 
-	wait_for_sync_status_change(MySubscription->id, copytable->schemaname,
-								copytable->relname, SYNC_STATUS_CATCHUP,
-								&lsn);
+	if (!wait_for_sync_status_change(MySubscription->id, copytable->schemaname,
+									 copytable->relname, SYNC_STATUS_CATCHUP,
+									 &lsn))
+	{
+		/*
+		 * Told to stop, or the status is gone, before the apply worker
+		 * answered.  Nothing was agreed on where to catch up to, so do not go
+		 * on and call the table synchronized.
+		 */
+		elog(LOG, "sync of table %s.%s for subscriber %s stopped while waiting for the apply worker",
+			 copytable->schemaname, copytable->relname, MySubscription->name);
+		proc_exit(1);
+	}
 	Assert(lsn == status_lsn);
 
 	/* Setup the origin and get the starting position for the replication. */
