@@ -3531,6 +3531,12 @@ get_flush_position(XLogRecPtr *write, XLogRecPtr *flush)
  *                        WAL stream we have processed, flush/write are the
  *                        equivalent positions returned by get_flush_position
  *                        once the local commit is durable).
+ *
+ * Note that the publisher's slot does not advance past a held commit until
+ * the sync standby has flushed it.  If the standby is unavailable while
+ * synchronous_standby_names is still set, holds accumulate, the publisher's
+ * slot stays pinned and it retains WAL until the standby returns or
+ * synchronous_standby_names is changed.
  */
 static void
 append_feedback_position(XLogRecPtr local_commit_lsn, XLogRecPtr remote_commit_lsn)
@@ -3569,6 +3575,48 @@ append_feedback_position(XLogRecPtr local_commit_lsn, XLogRecPtr remote_commit_l
 		 LSN_FORMAT_ARGS(remote_commit_lsn),
 		 LSN_FORMAT_ARGS(remote_writepos),
 		 LSN_FORMAT_ARGS(remote_flushpos));
+}
+
+/*
+ * Reconstruct the sync-standby hold for a freshly started apply worker.
+ *
+ * The hold queue lives in memory, but the replication origin the worker
+ * resumes from already includes commits that an earlier worker applied and
+ * that the sync standby may not have flushed yet.  With an empty queue the
+ * first feedback message would report everything up to the origin position,
+ * and the publisher would advance its slot past changes a failover of this
+ * node could lose.
+ *
+ * Queue a barrier hold instead.  Every commit made by a previous worker
+ * ends at or before the current WAL insert position, so gate the barrier on
+ * the standby having flushed that far, and report the origin's start
+ * position once it has.  Until then nothing beyond the (still clamped) slot
+ * position is reported.
+ */
+static void
+queue_startup_sync_hold(XLogRecPtr remote_startpos)
+{
+	RemoteSyncPosition *syncpos;
+	MemoryContext oldctx;
+
+	if (!(WalSndCtl->sync_standbys_status & SYNC_STANDBY_DEFINED) ||
+		remote_startpos == InvalidXLogRecPtr)
+		return;
+
+	oldctx = MemoryContextSwitchTo(TopMemoryContext);
+	syncpos = (RemoteSyncPosition *) palloc0(sizeof(RemoteSyncPosition));
+	MemoryContextSwitchTo(oldctx);
+
+	syncpos->local_commit_lsn = GetXLogInsertRecPtr();
+	syncpos->remote_recvpos = remote_startpos;
+	syncpos->remote_writepos = remote_startpos;
+	syncpos->remote_flushpos = remote_startpos;
+	dlist_push_tail(&sync_replica_lsn, &syncpos->node);
+	elog(DEBUG2,
+		 "SPOCK %s: queued startup sync-hold local=%X/%X remote=%X/%X",
+		 MySubscription->name,
+		 LSN_FORMAT_ARGS(syncpos->local_commit_lsn),
+		 LSN_FORMAT_ARGS(remote_startpos));
 }
 
 /*
@@ -3637,15 +3685,39 @@ send_feedback(PGconn *conn, XLogRecPtr recvpos, int64 now, bool force)
 	static XLogRecPtr last_writepos = InvalidXLogRecPtr;
 	static XLogRecPtr last_flushpos = InvalidXLogRecPtr;
 
+	/* Highest positions the sync standby has released so far */
+	static XLogRecPtr released_recvpos = InvalidXLogRecPtr;
+	static XLogRecPtr released_writepos = InvalidXLogRecPtr;
+	static XLogRecPtr released_flushpos = InvalidXLogRecPtr;
+
 	XLogRecPtr	writepos;
 	XLogRecPtr	flushpos;
+	bool		sync_defined;
+
+	sync_defined = (WalSndCtl->sync_standbys_status & SYNC_STANDBY_DEFINED) != 0;
 
 	/*
-	 * In case of any syncrounoun replica is attached get the  LSN from the
-	 * list
+	 * If a synchronous replica is attached, release the holds whose local
+	 * commit the standby has flushed.  Remember the highest released remote
+	 * positions: get_flush_position() below only knows about the local flush
+	 * and must not be allowed to report beyond them while holds are queued.
+	 * The caller's recvpos is deliberately left alone here; it is bounded by
+	 * released_recvpos below.
 	 */
-	if (WalSndCtl->sync_standbys_status & SYNC_STANDBY_DEFINED)
-		get_feedback_position(&recvpos, &writepos, &flushpos, &max_recvpos);
+	if (sync_defined)
+	{
+		XLogRecPtr	rel_recv = InvalidXLogRecPtr;
+		XLogRecPtr	rel_write = InvalidXLogRecPtr;
+		XLogRecPtr	rel_flush = InvalidXLogRecPtr;
+
+		get_feedback_position(&rel_recv, &rel_write, &rel_flush, &max_recvpos);
+		if (rel_recv > released_recvpos)
+			released_recvpos = rel_recv;
+		if (rel_write > released_writepos)
+			released_writepos = rel_write;
+		if (rel_flush > released_flushpos)
+			released_flushpos = rel_flush;
+	}
 
 	/* It's legal to not pass a recvpos */
 	if (recvpos < last_recvpos)
@@ -3658,6 +3730,29 @@ send_feedback(PGconn *conn, XLogRecPtr recvpos, int64 now, bool force)
 		 * received position. This is important for synchronous replication.
 		 */
 		flushpos = writepos = recvpos;
+	}
+
+	/*
+	 * While a commit is still held waiting for the sync standby, never report
+	 * a position beyond what the standby has released, in any of the write,
+	 * flush and apply fields, so that every synchronous_commit level on the
+	 * publisher honours the hold.  Otherwise the publisher could advance its
+	 * slot past changes that a failover of this node would lose.  When
+	 * nothing is held, the above behaviour is kept so that positions carrying
+	 * no applied change are still acknowledged.
+	 */
+	if (sync_defined && !dlist_is_empty(&sync_replica_lsn))
+	{
+		if (recvpos > released_recvpos)
+			recvpos = released_recvpos;
+		if (writepos > released_writepos)
+			writepos = released_writepos;
+		if (flushpos > released_flushpos)
+			flushpos = released_flushpos;
+
+		/* Never go backwards relative to what was already reported */
+		if (recvpos < last_recvpos)
+			recvpos = last_recvpos;
 	}
 
 	if (writepos < last_writepos)
@@ -3748,12 +3843,24 @@ request_initial_status_update(PGconn *conn, XLogRecPtr startpos)
 {
 	StringInfoData msg;
 	int64		now = GetCurrentTimestamp();
+	XLogRecPtr	reportpos = startpos;
+
+	/*
+	 * With a synchronous standby the origin position may include commits the
+	 * standby has not flushed yet, which queue_startup_sync_hold() holds
+	 * back.  Do not report it here, or the publisher would advance its slot
+	 * past them.  The reply is still requested; the positions are
+	 * InvalidXLogRecPtr, which the publisher ignores for slot confirmation.
+	 */
+	if ((WalSndCtl->sync_standbys_status & SYNC_STANDBY_DEFINED) &&
+		startpos != InvalidXLogRecPtr)
+		reportpos = InvalidXLogRecPtr;
 
 	initStringInfo(&msg);
 	pq_sendbyte(&msg, 'r');
-	pq_sendint64(&msg, startpos);	/* write */
-	pq_sendint64(&msg, startpos);	/* flush */
-	pq_sendint64(&msg, startpos);	/* apply */
+	pq_sendint64(&msg, reportpos);	/* write */
+	pq_sendint64(&msg, reportpos);	/* flush */
+	pq_sendint64(&msg, reportpos);	/* apply */
 	pq_sendint64(&msg, now);	/* sendTime */
 	pq_sendbyte(&msg, true);	/* replyRequested */
 
@@ -3978,6 +4085,23 @@ stream_replay:
 			}
 
 			Assert(CurrentMemoryContext == MessageContext);
+
+			/*
+			 * Commits held for the synchronous standby are released from
+			 * send_feedback(), which is otherwise only reached when a message
+			 * arrives from the publisher.  On an idle connection that could
+			 * delay the release by up to wal_sender_timeout / 2, so retry it
+			 * on every wakeup while holds are queued.  Use the same condition
+			 * as the per-message feedback below.
+			 */
+			if ((rc & WL_TIMEOUT) &&
+				!in_remote_transaction &&
+				!dlist_is_empty(&sync_replica_lsn) &&
+				(WalSndCtl->sync_standbys_status & SYNC_STANDBY_DEFINED) &&
+				(!MyApplyWorker->use_try_block ||
+				 exception_behaviour == DISCARD))
+				send_feedback(applyconn, last_received, GetCurrentTimestamp(),
+							  false);
 
 			for (;;)
 			{
@@ -5224,6 +5348,9 @@ spock_apply_main(Datum main_arg)
 
 	/* Initialize the wait queue for replicated LSNs */
 	dlist_init(&sync_replica_lsn);
+
+	/* Commits applied by a previous worker may still be unflushed on standby */
+	queue_startup_sync_hold(origin_startpos);
 
 	apply_work(streamConn);
 
