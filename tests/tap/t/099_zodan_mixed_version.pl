@@ -134,6 +134,33 @@ sub resolve_build_ref {
     die "cannot resolve git ref '$git_ref' in $SPOCK_REPO, and fetching it from origin failed";
 }
 
+# On PostgreSQL 18 and later, Spock calls check_simple_rowfilter_expr(), which
+# core declares static.  Older Spock, v5_STABLE among them, relies on the core
+# patch pg<major>-035-row-filter-check to export it.  HEAD carries its own copy
+# in src/compat/ and no longer applies that patch, so the PostgreSQL install in
+# CI does not export it and such a build fails to compile.  Skip when neither
+# the install nor the old ref provides the function.
+if ($PG_MAJOR >= 18) {
+    my $incdir = capture($PG_CONFIG, '--includedir-server');
+    my $hdr = "$incdir/commands/publicationcmds.h";
+    open(my $fh, '<', $hdr) or die "cannot read $hdr: $!";
+    my $patched = grep { /\bcheck_simple_rowfilter_expr\s*\(/ } <$fh>;
+    close $fh;
+    unless ($patched) {
+        my ($commit) = resolve_build_ref($N12_REF);
+        system('git', '-C', $SPOCK_REPO, 'grep', '-q', '-E',
+               '^check_simple_rowfilter_expr\\(', $commit, '--',
+               "src/compat/$PG_MAJOR/*.c");
+        my $rc = $? >> 8;
+        die "git grep failed in $SPOCK_REPO for $commit (exit $rc)"
+            if $? == -1 || $rc > 1;
+        my $has_copy = $rc == 0;
+        plan skip_all => "$N12_REF has no copy of check_simple_rowfilter_expr "
+            . "and PostgreSQL $PG_MAJOR does not export it, so it cannot build"
+            unless $has_copy;
+    }
+}
+
 # Build Spock at $git_ref into its own copy of the PostgreSQL install.
 # The commit that was built is recorded in the tree; an existing tree is
 # reused only when it holds the commit $git_ref resolves to now.
