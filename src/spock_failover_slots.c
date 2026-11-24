@@ -101,6 +101,9 @@ typedef struct RemoteSlot
 	 * satisfy it.
 	 */
 	XLogRecPtr	own_restart_lsn;
+
+	/* False while the WAL at the slot's own restart_lsn is not received */
+	bool		restart_received;
 } RemoteSlot;
 
 typedef enum FailoverSlotFilterKey
@@ -1028,6 +1031,11 @@ apply_remote_position(RemoteSlot *remote_slot)
  * passes it.  PostgreSQL also accepts older WAL that another local slot
  * holds.  That is left out here: on PG15 a slot can hold a restart_lsn
  * whose WAL is already gone.
+ *
+ * The caller passes InvalidXLogRecPtr while the WAL at the primary's
+ * restart_lsn has not been received.  The position received so far need not
+ * be the start of a WAL record, and decoding cannot start anywhere else, so
+ * the copy then starts at the redo pointer as well.
  */
 static void
 reserve_wal_for_copy(XLogRecPtr remote_restart_lsn)
@@ -1451,7 +1459,8 @@ synchronize_one_slot(RemoteSlot *remote_slot)
 		 * It's OK if we can't guarantee their safety yet, the slot isn't
 		 * visible to anyone else at this point.
 		 */
-		reserve_wal_for_copy(remote_slot->own_restart_lsn);
+		reserve_wal_for_copy(remote_slot->restart_received ?
+							 remote_slot->own_restart_lsn : InvalidXLogRecPtr);
 
 		/*
 		 * Compute the safe xmin horizon and seed the new slot.
@@ -1848,6 +1857,8 @@ synchronize_failover_slots(long sleep_time)
 			 * restart_lsn, so one slot that lags does not hold back the
 			 * others.
 			 */
+			remote_slot->restart_received =
+				remote_slot->restart_lsn <= receivePtr;
 			remote_slot->own_restart_lsn = Min(remote_slot->restart_lsn,
 											   receivePtr);
 			if (remote_slot->restart_lsn > lsn)
