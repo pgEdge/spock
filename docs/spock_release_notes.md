@@ -30,6 +30,22 @@
   accepts connections. If connecting fails for another reason, it tries
   again at once the first time and then after a wait of one to five minutes.
   The worker is also restarted 15 seconds after it exits, down from 60.
+* When the subscriber had a synchronous physical standby, the apply worker
+  reported its write, flush and apply positions to the publisher as soon as
+  the change was committed locally, without waiting for the standby to flush
+  it. The publisher advanced the subscription's slot, and a commit waiting
+  in `remote_write` or `remote_apply` mode returned to its client, so a
+  failover of the subscriber to its standby could permanently lose the
+  change. The apply worker now reports positions only up to what the
+  synchronous standby has flushed, and releases them within about a second
+  of the standby catching up. A restarted apply worker holds its feedback
+  until the standby has flushed everything the subscriber had written when
+  the worker started, so a restart cannot bypass the wait.
+  While the standby is unavailable but still named in
+  `synchronous_standby_names`, the publisher's slot does not advance, its
+  replication lag grows, and it retains WAL until the standby returns or
+  `synchronous_standby_names` is changed. Commits made before
+  `synchronous_standby_names` was set are not covered.
 
 ## Spock 5.0.14
 
