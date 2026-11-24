@@ -29,3 +29,19 @@ test: 036_real_deadlock_retry
 # rule in check_spock_version_compatibility.  About three minutes once the
 # trees are built; the first run also compiles both Spock versions.
 test: 099_zodan_mixed_version
+
+# Moved from the per-PR schedule to keep PR CI short.  Each guards one
+# narrow bug or option in code that changes rarely, and together they took
+# about seven minutes per PostgreSQL version.  051 alone is about two minutes.
+test: 006_sync_during_write
+test: 013_origin_change_restore
+test: 019_stale_fd_epoll_after_conn_death
+test: 021_uc_null_key_skip
+test: 022_apply_mem_context
+test: 023_sync_mixed_version_no_pause
+test: 033_zodan_lolor_add_node
+test: 051_subscriber_failover_no_replay
+test: 103_manager_worker_dboid_race
+test: 110_resync_node_info_warning
+test: 120_standby_holdback_quorum
+test: 121_exception_slot_exhausted
