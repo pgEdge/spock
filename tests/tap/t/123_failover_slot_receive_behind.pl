@@ -317,6 +317,12 @@ sub run_round {
               FROM pg_replication_slots s, pg_stat_wal_receiver r
               WHERE s.slot_name = '$slot_name'"), 't',
         "[$mode] existing copy's restart_lsn is within the WAL received");
+    # The end of the WAL received is inside a record here, so the copy must
+    # not have been moved to it.
+    is($sb->("SELECT s.restart_lsn <> r.flushed_lsn
+              FROM pg_replication_slots s, pg_stat_wal_receiver r
+              WHERE s.slot_name = '$slot_name'"), 't',
+        "[$mode] existing copy's restart_lsn is not the end of the WAL received");
 
     # -------------------------------------------------------------------------
     # A new copy.  The worker passes every second.  It must wait for the WAL
