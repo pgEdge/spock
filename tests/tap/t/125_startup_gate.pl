@@ -108,22 +108,31 @@ cmp_ok(scalar_query(1, "SELECT count(*) FROM spock.events " .
     '>=', 2, 'drain events are recorded');
 
 # A provider that keeps writing while the backlog is applied forces a
-# second round.
+# second round.  The writer goes on until the test tells it to stop, so it
+# cannot run out before the second round is there.
 stop_node($dir1);
 psql_or_bail(2, "INSERT INTO gate_t SELECT g, 'backlog' " .
                 "FROM generate_series(10000, 209999) g");
 my $p2 = $config->{node_ports}->[1];
 system("$pg_bin/psql -X -p $p2 -d $db -qc \"DO \\\$\\\$ BEGIN " .
-       "FOR i IN 200..399 LOOP INSERT INTO gate_t VALUES (i, 'busy'); " .
+       "FOR i IN 200..2999 LOOP " .
+       "EXIT WHEN EXISTS (SELECT 1 FROM gate_t WHERE id = -1); " .
+       "INSERT INTO gate_t VALUES (i, 'busy'); " .
        "COMMIT; PERFORM pg_sleep(0.1); END LOOP; END \\\$\\\$\" " .
        ">/dev/null 2>&1 &");
 $offset = log_offset(1);
 start_node($dir1);
-ok(poll_query_until(1, $gate, 'open:drained', 120), 'busy drain opens the gate');
-ok(wait_for_log(1, qr/startup drain round [2-9]\d* reached/, $offset),
+ok(wait_for_log(1, qr/startup drain round [2-9]\d* reached/, $offset, 120),
     'a busy provider needs more than one round');
+psql_or_bail(2, "INSERT INTO gate_t VALUES (-1, 'stop')");
+ok(poll_query_until(2, "SELECT count(*) FROM pg_stat_activity " .
+        "WHERE query LIKE 'DO %busy%' AND pid <> pg_backend_pid()", '0', 60),
+    'the writer has stopped');
+ok(poll_query_until(1, $gate, 'open:drained', 120), 'busy drain opens the gate');
+my $busy = scalar_query(2, "SELECT count(*) FROM gate_t WHERE v = 'busy'");
+cmp_ok($busy, '>', 0, 'the writer wrote during the drain');
 ok(poll_query_until(1, "SELECT count(*) FROM gate_t WHERE v = 'busy'",
-        '200', 120), 'writes made during the drain arrive');
+        $busy, 120), 'writes made during the drain arrive');
 
 # A database that gets Spock after the start has nothing to drain.
 psql_or_bail(1, "CREATE DATABASE gate_late");

@@ -33,7 +33,7 @@ extern void spock_startup_manager_begin(void);
 extern bool spock_startup_manager_check(void);
 
 /* apply worker side */
-extern void spock_startup_apply_connecting(void);
+extern void spock_startup_apply_connect_failed(void);
 extern void spock_startup_apply_attach(void);
 extern void spock_startup_apply_progress(XLogRecPtr last_received,
 										 bool in_remote_xact);

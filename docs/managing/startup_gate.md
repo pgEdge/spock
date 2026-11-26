@@ -20,14 +20,25 @@ spock.max_lag_for_availability_on_startup = '30s'
 spock.startup_drain_timeout = '5min'
 ```
 
-`spock.startup_drain_timeout` is the longest time the node waits. When the
+`spock.startup_drain_timeout` is the longest time the node waits, counted
+from the server start. When the
 time is up the node opens anyway and writes a warning to the log. The
 default, `0`, waits without limit: a peer that is down keeps the node
 closed until a superuser opens it with `spock.startup_gate_open()`. Set a
 timeout if you prefer the node to come back on its own. Set `-1` to wait
 without limit for the providers that can be reached and not for the others:
-a subscription whose apply worker has failed to connect three times in a
-row is set aside, and the gate opens once the rest have caught up.
+a subscription whose apply worker has failed three times in a row to
+connect to its provider, or to get an answer from it within five seconds,
+is set aside, and the gate opens once the rest have caught up.
+
+A subscription that has caught up is checked again every second while the
+gate is closed. If it falls behind again, or its apply worker stops, the
+gate waits for it again, so the gate never opens on a result that is no
+longer true.
+
+The gate keeps one entry per subscription in shared memory, sized by
+`max_worker_processes`. If a subscription gets no entry, the server logs a
+warning and the gate stays closed until it times out or is opened by hand.
 
 The gate is set up at server start, so
 `spock.max_lag_for_availability_on_startup` has to be set before the node is

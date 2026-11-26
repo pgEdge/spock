@@ -8,6 +8,8 @@
  * position and applies up to it.  The round's length bounds the lag.  A
  * subscription has caught up when the provider did not move during a round,
  * or when a round after the first took no longer than the lag setting.
+ * A subscription that has caught up keeps running rounds while the gate is
+ * closed, so that it is still caught up when the others are.
  * The database's manager owns the gate and opens it.
  *
  * Copyright (c) 2022-2026, pgEdge, Inc.
@@ -28,8 +30,10 @@
 #include "libpq-fe.h"
 #include "miscadmin.h"
 #include "nodes/parsenodes.h"
+#include "pgstat.h"
 #include "port/atomics.h"
 #include "storage/ipc.h"
+#include "storage/latch.h"
 #include "storage/lwlock.h"
 #include "storage/shmem.h"
 #include "utils/acl.h"
@@ -37,6 +41,7 @@
 #include "utils/hsearch.h"
 #include "utils/pg_lsn.h"
 #include "utils/timestamp.h"
+#include "utils/wait_event.h"
 
 #include "spock.h"
 #include "spock_monitor.h"
@@ -51,7 +56,13 @@
 /* How long to wait before asking the provider for its position again. */
 #define SPOCK_STARTUP_RETRY_MS		5000
 
-/* With spock.startup_drain_timeout = -1, failed connects before set aside. */
+/* How long the provider may take to answer with its position. */
+#define SPOCK_STARTUP_PROBE_TIMEOUT_MS	5000
+
+/* Pause between the rounds of a subscription that has caught up. */
+#define SPOCK_STARTUP_RECHECK_MS	1000
+
+/* With spock.startup_drain_timeout = -1, failures in a row before set aside. */
 #define SPOCK_STARTUP_MAX_CONNECT_FAILURES	3
 
 typedef enum SpockStartupGateState
@@ -88,6 +99,7 @@ typedef struct SpockStartupGate
 	SpockStartupGateReason reason;
 	TimestampTz started_at;		/* start of the drain */
 	TimestampTz opened_at;
+	int			untracked;		/* subscriptions that got no drain entry */
 	pg_atomic_uint64 rejected;	/* statements turned away */
 } SpockStartupGate;
 
@@ -109,7 +121,8 @@ typedef struct SpockStartupSub
 	XLogRecPtr	target;			/* provider position the round has to reach */
 	TimestampTz round_start;
 	int64		last_round_us;	/* length of the last finished round, or -1 */
-	int			connect_failures;	/* failed connects in a row */
+	int			connect_failures;	/* failed connects and probes in a row */
+	TimestampTz checked_at;		/* when it was last found caught up */
 	pg_atomic_uint64 received;	/* last position seen by the worker */
 } SpockStartupSub;
 
@@ -139,6 +152,7 @@ static SpockStartupSub *MyStartupSub = NULL;
 static XLogRecPtr my_round_target = InvalidXLogRecPtr;
 static TimestampTz my_round_start = 0;
 static TimestampTz my_next_try = 0;
+
 
 PG_FUNCTION_INFO_V1(spock_startup_gate_open);
 PG_FUNCTION_INFO_V1(spock_get_startup_status);
@@ -299,6 +313,7 @@ startup_gate_enter(void)
 		gate->reason = STARTUP_REASON_NONE;
 		gate->started_at = 0;
 		gate->opened_at = 0;
+		gate->untracked = 0;
 		pg_atomic_init_u64(&gate->rejected, 0);
 	}
 
@@ -362,28 +377,27 @@ startup_stmt_exempt(Node *utilityStmt)
 }
 
 /*
- * Has the drain that started at since run out of time?
+ * Has the wait run out of time?  The time counts from the server start for
+ * the sessions and for the manager alike, whatever the state of the gate.
  */
 static bool
-startup_timed_out(TimestampTz since)
+startup_timed_out(void)
 {
 	return spock_startup_drain_timeout > 0 &&
-		TimestampDifferenceExceeds(since, GetCurrentTimestamp(),
+		TimestampDifferenceExceeds(SpockStartup->armed_at,
+								   GetCurrentTimestamp(),
 								   spock_startup_drain_timeout);
 }
 
 /*
- * State of this database's gate as a session sees it, and the time its
- * timeout counts from.
+ * State of this database's gate as a session sees it.
  */
 static SpockStartupGateState
-startup_gate_state(SpockStartupGate **gate_out, TimestampTz *since)
+startup_gate_state(SpockStartupGate **gate_out)
 {
 	SpockStartupGate *gate;
 	SpockStartupGateState state = STARTUP_GATE_UNKNOWN;
 	bool		managed;
-
-	*since = SpockStartup->armed_at;
 
 	LWLockAcquire(SpockStartup->lock, LW_SHARED);
 	gate = startup_gate_find();
@@ -391,8 +405,6 @@ startup_gate_state(SpockStartupGate **gate_out, TimestampTz *since)
 		state = gate->state;
 	else if (SpockStartup->full)
 		state = STARTUP_GATE_OPEN;
-	if (state == STARTUP_GATE_DRAINING)
-		*since = gate->started_at;
 	LWLockRelease(SpockStartup->lock);
 
 	*gate_out = gate;
@@ -412,15 +424,14 @@ startup_gate_state(SpockStartupGate **gate_out, TimestampTz *since)
  * has nothing to wait for.
  */
 static bool
-startup_database_open(SpockStartupGate **gate, TimestampTz *since)
+startup_database_open(SpockStartupGate **gate)
 {
 	*gate = NULL;
-	*since = 0;
 
 	if (!OidIsValid(get_extension_oid(EXTENSION_NAME, true)))
 		return true;
 
-	return startup_gate_state(gate, since) == STARTUP_GATE_OPEN;
+	return startup_gate_state(gate) == STARTUP_GATE_OPEN;
 }
 
 /*
@@ -431,7 +442,6 @@ void
 spock_startup_gate_check(Node *utilityStmt)
 {
 	SpockStartupGate *gate;
-	TimestampTz since;
 
 	if (startup_gate_passed)
 		return;
@@ -446,14 +456,14 @@ spock_startup_gate_check(Node *utilityStmt)
 	if (startup_stmt_exempt(utilityStmt))
 		return;
 
-	if (startup_database_open(&gate, &since))
+	if (startup_database_open(&gate))
 	{
 		startup_gate_passed = true;
 		return;
 	}
 
 	/* Do not depend on the manager to open the gate on timeout. */
-	if (startup_timed_out(since))
+	if (startup_timed_out())
 		return;
 
 	if (gate != NULL)
@@ -540,6 +550,7 @@ startup_sub_track(Oid subid)
 	sub->round_start = 0;
 	sub->last_round_us = -1;
 	sub->connect_failures = 0;
+	sub->checked_at = 0;
 	pg_atomic_init_u64(&sub->received, InvalidXLogRecPtr);
 
 	return true;
@@ -548,6 +559,10 @@ startup_sub_track(Oid subid)
 /*
  * Close the gate of this database for subids, or open it if there are
  * none.  Returns NULL if the gate table is full.
+ *
+ * A subscription that gets no drain entry cannot be measured.  The gate
+ * counts it as behind for good, so it opens on timeout or by hand only and
+ * never reports a drain that left a subscription out.
  */
 static SpockStartupGate *
 startup_gate_arm(List *subids, bool *draining)
@@ -565,8 +580,9 @@ startup_gate_arm(List *subids, bool *draining)
 	{
 		foreach(lc, subids)
 		{
-			if (startup_sub_track(lfirst_oid(lc)))
-				*draining = true;
+			if (!startup_sub_track(lfirst_oid(lc)))
+				gate->untracked++;
+			*draining = true;
 		}
 
 		if (*draining)
@@ -621,6 +637,12 @@ spock_startup_manager_begin(void)
 				(errmsg("spock startup gate table is full, the gate of this database stays open")));
 	else if (draining)
 	{
+		if (gate->untracked > 0)
+			ereport(WARNING,
+					(errmsg("spock startup gate cannot track %d subscription(s), the gate stays closed until it times out or is opened by hand",
+							gate->untracked),
+					 errhint("Raise max_worker_processes, or open the gate with spock.startup_gate_open().")));
+
 		ereport(LOG,
 				(errmsg("spock startup drain started, waiting for %d subscription(s)",
 						nsubs)));
@@ -631,11 +653,10 @@ spock_startup_manager_begin(void)
 }
 
 /*
- * Is the gate of this database draining?  If so, also return when the
- * drain started.
+ * Is the gate of this database draining?
  */
 static bool
-startup_draining_since(TimestampTz *started_at)
+startup_draining(void)
 {
 	SpockStartupGate *gate;
 	bool		draining;
@@ -643,8 +664,6 @@ startup_draining_since(TimestampTz *started_at)
 	LWLockAcquire(SpockStartup->lock, LW_SHARED);
 	gate = startup_gate_find();
 	draining = (gate != NULL && gate->state == STARTUP_GATE_DRAINING);
-	if (draining)
-		*started_at = gate->started_at;
 	LWLockRelease(SpockStartup->lock);
 
 	return draining;
@@ -664,6 +683,32 @@ startup_find_enabled(List *subs, Oid subid)
 	}
 
 	return NULL;
+}
+
+/*
+ * Is the worker of this subscription still measuring it?
+ */
+static inline bool
+startup_sub_measured(SpockStartupSub *sub)
+{
+	return sub->state == STARTUP_SUB_PENDING ||
+		sub->state == STARTUP_SUB_CATCHING_UP ||
+		sub->state == STARTUP_SUB_CAUGHT_UP;
+}
+
+/*
+ * Has the worker confirmed lately that the subscription has caught up?  A
+ * worker that is gone, or that cannot ask its provider any more, stops
+ * confirming, and what it found before does not count for ever.
+ */
+static bool
+startup_sub_confirmed(SpockStartupSub *sub, TimestampTz now)
+{
+	int64		valid_ms = (int64) spock_startup_max_lag +
+		2 * (SPOCK_STARTUP_RETRY_MS + SPOCK_STARTUP_PROBE_TIMEOUT_MS);
+
+	return sub->state == STARTUP_SUB_CAUGHT_UP &&
+		now - sub->checked_at <= valid_ms * 1000;
 }
 
 /*
@@ -692,6 +737,8 @@ startup_drain_scan(List *subs, StringInfo behind, StringInfo set_aside)
 {
 	HASH_SEQ_STATUS seq;
 	SpockStartupSub *sub;
+	SpockStartupGate *gate;
+	TimestampTz now = GetCurrentTimestamp();
 	int			pending = 0;
 
 	LWLockAcquire(SpockStartup->lock, LW_EXCLUSIVE);
@@ -701,13 +748,14 @@ startup_drain_scan(List *subs, StringInfo behind, StringInfo set_aside)
 		SpockSubscription *cur;
 
 		if (sub->key.dboid != MyDatabaseId ||
-			sub->state == STARTUP_SUB_REMOVED ||
-			sub->state == STARTUP_SUB_CAUGHT_UP)
+			sub->state == STARTUP_SUB_REMOVED)
 			continue;
 
 		cur = startup_find_enabled(subs, sub->key.subid);
 		if (cur == NULL)
 			sub->state = STARTUP_SUB_REMOVED;
+		else if (startup_sub_confirmed(sub, now))
+			continue;
 		else if (startup_sub_unreachable(sub))
 		{
 			sub->state = STARTUP_SUB_SET_ASIDE;
@@ -718,6 +766,14 @@ startup_drain_scan(List *subs, StringInfo behind, StringInfo set_aside)
 			pending++;
 			startup_append_name(behind, cur->name);
 		}
+	}
+
+	gate = startup_gate_find();
+	if (gate != NULL && gate->untracked > 0)
+	{
+		pending += gate->untracked;
+		appendStringInfo(behind, "%s%d not tracked",
+						 behind->len > 0 ? ", " : "", gate->untracked);
 	}
 	LWLockRelease(SpockStartup->lock);
 
@@ -785,10 +841,9 @@ spock_startup_manager_check(void)
 	List	   *subs = NIL;
 	StringInfoData behind;
 	StringInfoData set_aside;
-	TimestampTz started_at = 0;
 	bool		draining = true;
 
-	if (!startup_gate_armed() || !startup_draining_since(&started_at))
+	if (!startup_gate_armed() || !startup_draining())
 		return false;
 
 	if (spock_startup_max_lag <= 0)
@@ -811,7 +866,7 @@ spock_startup_manager_check(void)
 		startup_open_drained(set_aside.data);
 		draining = false;
 	}
-	else if (startup_timed_out(started_at))
+	else if (startup_timed_out())
 	{
 		startup_open_timed_out(behind.data);
 		draining = false;
@@ -826,14 +881,18 @@ spock_startup_manager_check(void)
  * Read the provider's WAL flush position, or InvalidXLogRecPtr on failure.
  * The walsender sends flushed WAL only, so the insert position could be a
  * target the stream never reaches.
+ *
+ * The provider gets SPOCK_STARTUP_PROBE_TIMEOUT_MS to answer.  A backend
+ * there that takes the connection and then says nothing would otherwise
+ * hold the drain for as long as it likes.
  */
 static XLogRecPtr
 startup_fetch_provider_lsn(void)
 {
 	PGconn	   *conn = NULL;
-	PGresult   *res;
 	XLogRecPtr	lsn = InvalidXLogRecPtr;
 	MemoryContext oldctx = CurrentMemoryContext;
+	TimestampTz deadline;
 
 	PG_TRY();
 	{
@@ -851,17 +910,51 @@ startup_fetch_provider_lsn(void)
 	if (conn == NULL)
 		return InvalidXLogRecPtr;
 
-	res = PQexec(conn,
-				 "SELECT (pg_catalog.pg_current_wal_flush_lsn() - '0/0')::text");
-	if (PQresultStatus(res) == PGRES_TUPLES_OK && PQntuples(res) == 1)
-	{
-		char	   *end;
-		uint64		bytes = strtou64(PQgetvalue(res, 0, 0), &end, 10);
+	deadline = TimestampTzPlusMilliseconds(GetCurrentTimestamp(),
+										   SPOCK_STARTUP_PROBE_TIMEOUT_MS);
 
-		if (*end == '\0')
-			lsn = (XLogRecPtr) bytes;
+	if (PQsendQuery(conn,
+					"SELECT (pg_catalog.pg_current_wal_flush_lsn() - '0/0')::text"))
+	{
+		for (;;)
+		{
+			long		left;
+
+			if (!PQconsumeInput(conn))
+				break;
+
+			if (!PQisBusy(conn))
+			{
+				PGresult   *res = PQgetResult(conn);
+
+				if (PQresultStatus(res) == PGRES_TUPLES_OK &&
+					PQntuples(res) == 1)
+				{
+					char	   *end;
+					uint64		bytes = strtou64(PQgetvalue(res, 0, 0), &end, 10);
+
+					if (*end == '\0')
+						lsn = (XLogRecPtr) bytes;
+				}
+				PQclear(res);
+				break;
+			}
+
+			left = TimestampDifferenceMilliseconds(GetCurrentTimestamp(),
+												   deadline);
+			if (left <= 0)
+				break;
+
+			/* The latch is left alone, it belongs to the apply loop. */
+			(void) WaitLatchOrSocket(NULL,
+									 WL_SOCKET_READABLE | WL_TIMEOUT |
+									 WL_EXIT_ON_PM_DEATH,
+									 PQsocket(conn), left);
+			CHECK_FOR_INTERRUPTS();
+		}
 	}
-	PQclear(res);
+
+	/* Closing the connection also ends a query that is still running. */
 	PQfinish(conn);
 
 	return lsn;
@@ -887,9 +980,7 @@ startup_sub_find(SpockStartupGate **gate_out)
 	if (gate != NULL && gate->state == STARTUP_GATE_DRAINING)
 		sub = (SpockStartupSub *) hash_search(SpockStartupSubHash, &key,
 											  HASH_FIND, NULL);
-	if (sub != NULL &&
-		sub->state != STARTUP_SUB_PENDING &&
-		sub->state != STARTUP_SUB_CATCHING_UP)
+	if (sub != NULL && !startup_sub_measured(sub))
 		sub = NULL;
 	LWLockRelease(SpockStartup->lock);
 
@@ -899,11 +990,11 @@ startup_sub_find(SpockStartupGate **gate_out)
 }
 
 /*
- * Count a connect attempt to the provider.  spock_startup_apply_attach()
- * clears the count once the connection is up.
+ * Count a failed connect to the provider.  spock_startup_apply_attach()
+ * clears the count once a connection is up.
  */
 void
-spock_startup_apply_connecting(void)
+spock_startup_apply_connect_failed(void)
 {
 	SpockStartupSub *sub;
 
@@ -920,8 +1011,28 @@ spock_startup_apply_connecting(void)
 }
 
 /*
+ * An apply worker that exits no longer keeps its subscription caught up.
+ * Say so at once; a worker that dies without getting here is noticed
+ * later, when nobody has confirmed the subscription for a while.
+ */
+static void
+startup_apply_exit(int code, Datum arg)
+{
+	if (MyStartupSub == NULL)
+		return;
+
+	LWLockAcquire(SpockStartup->lock, LW_EXCLUSIVE);
+	if (MyStartupSub->state == STARTUP_SUB_CAUGHT_UP)
+		MyStartupSub->state = STARTUP_SUB_PENDING;
+	LWLockRelease(SpockStartup->lock);
+}
+
+/*
  * Find out whether this apply worker takes part in the startup drain.
  * Called once the worker is connected to its provider.
+ *
+ * What an earlier worker found does not hold for this one: the subscription
+ * fell behind while it was not connected, so it has to catch up again.
  */
 void
 spock_startup_apply_attach(void)
@@ -940,25 +1051,51 @@ spock_startup_apply_attach(void)
 
 	LWLockAcquire(SpockStartup->lock, LW_EXCLUSIVE);
 	MyStartupSub->connect_failures = 0;
+	if (MyStartupSub->state == STARTUP_SUB_CAUGHT_UP)
+		MyStartupSub->state = STARTUP_SUB_PENDING;
 	LWLockRelease(SpockStartup->lock);
+
+	before_shmem_exit(startup_apply_exit, (Datum) 0);
 }
 
 /*
- * Start a round that has to reach target.  The round is timed from now.
+ * Ask the provider for its position and keep the count of failures in a
+ * row.  A provider that does not answer in time counts like one that
+ * cannot be reached.
  */
-static void
-startup_round_begin(XLogRecPtr target)
+static XLogRecPtr
+startup_probe_provider(void)
 {
-	TimestampTz now = GetCurrentTimestamp();
-
-	my_round_target = target;
-	my_round_start = now;
+	XLogRecPtr	provider = startup_fetch_provider_lsn();
 
 	LWLockAcquire(SpockStartup->lock, LW_EXCLUSIVE);
-	MyStartupSub->state = STARTUP_SUB_CATCHING_UP;
+	if (provider == InvalidXLogRecPtr)
+		MyStartupSub->connect_failures++;
+	else
+		MyStartupSub->connect_failures = 0;
+	LWLockRelease(SpockStartup->lock);
+
+	return provider;
+}
+
+/*
+ * Start a round that has to reach target.  started is the time just before
+ * the provider was asked for target: what it committed before that is at or
+ * below target, so the time from there to the end of the round bounds the
+ * lag.  Timing the round from the answer would leave out a slow answer.
+ */
+static void
+startup_round_begin(XLogRecPtr target, TimestampTz started)
+{
+	my_round_target = target;
+	my_round_start = started;
+
+	LWLockAcquire(SpockStartup->lock, LW_EXCLUSIVE);
+	if (MyStartupSub->state == STARTUP_SUB_PENDING)
+		MyStartupSub->state = STARTUP_SUB_CATCHING_UP;
 	MyStartupSub->round++;
 	MyStartupSub->target = target;
-	MyStartupSub->round_start = now;
+	MyStartupSub->round_start = started;
 	LWLockRelease(SpockStartup->lock);
 }
 
@@ -975,17 +1112,18 @@ startup_round_try_begin(void)
 	if (now < my_next_try)
 		return false;
 
-	provider = startup_fetch_provider_lsn();
+	provider = startup_probe_provider();
 	if (provider == InvalidXLogRecPtr)
 	{
 		ereport(LOG,
 				(errmsg("SPOCK %s: could not read the provider WAL position for the startup drain, will retry",
 						MySubscription->name)));
-		my_next_try = TimestampTzPlusMilliseconds(now, SPOCK_STARTUP_RETRY_MS);
+		my_next_try = TimestampTzPlusMilliseconds(GetCurrentTimestamp(),
+												  SPOCK_STARTUP_RETRY_MS);
 		return false;
 	}
 
-	startup_round_begin(provider);
+	startup_round_begin(provider, now);
 	return true;
 }
 
@@ -1003,37 +1141,87 @@ startup_round_caught_up(XLogRecPtr provider, int round, int64 round_us)
 }
 
 /*
- * End the round that reached its target, and start the next one if the
- * subscription has not caught up.
+ * End the round that reached its target and start the next one.  A
+ * subscription that has caught up waits a moment first: it keeps running
+ * rounds while the gate is closed, because another subscription may need
+ * much longer and this one must not fall behind again unnoticed.
+ *
+ * The round is timed up to here, after the provider has answered a second
+ * time, so the lag it bounds is the lag at the time of the decision.
  */
 static void
 startup_round_end(void)
 {
-	int64		round_us = GetCurrentTimestamp() - my_round_start;
-	XLogRecPtr	provider = startup_fetch_provider_lsn();
-	bool		caught_up;
+	TimestampTz probe_start = GetCurrentTimestamp();
+	XLogRecPtr	provider = startup_probe_provider();
+	TimestampTz now = GetCurrentTimestamp();
+	int64		round_us = now - my_round_start;
+	bool		was_caught_up = false;
+	bool		caught_up = false;
 	int			round;
 
 	LWLockAcquire(SpockStartup->lock, LW_EXCLUSIVE);
 	round = MyStartupSub->round;
-	caught_up = startup_round_caught_up(provider, round, round_us);
 	MyStartupSub->last_round_us = round_us;
-	if (caught_up)
-		MyStartupSub->state = STARTUP_SUB_CAUGHT_UP;
+	if (startup_sub_measured(MyStartupSub))
+	{
+		was_caught_up = (MyStartupSub->state == STARTUP_SUB_CAUGHT_UP);
+		caught_up = startup_round_caught_up(provider, round, round_us);
+		if (caught_up)
+		{
+			MyStartupSub->state = STARTUP_SUB_CAUGHT_UP;
+			MyStartupSub->checked_at = now;
+		}
+		else
+			MyStartupSub->state = STARTUP_SUB_CATCHING_UP;
+	}
 	LWLockRelease(SpockStartup->lock);
 
-	ereport(LOG,
+	/* The rounds of a subscription that stays caught up are not news. */
+	ereport(caught_up && was_caught_up ? DEBUG1 : LOG,
 			(errmsg("SPOCK %s: startup drain round %d reached %X/%X in %ld ms%s",
 					MySubscription->name, round,
 					LSN_FORMAT_ARGS(my_round_target),
 					(long) (round_us / 1000),
-					caught_up ? ", caught up" : "")));
+					caught_up ? ", caught up" :
+					was_caught_up ? ", behind again" : "")));
 
 	my_round_target = InvalidXLogRecPtr;
 	if (caught_up)
-		MyStartupSub = NULL;
+		my_next_try = TimestampTzPlusMilliseconds(now, SPOCK_STARTUP_RECHECK_MS);
 	else if (provider != InvalidXLogRecPtr)
-		startup_round_begin(provider);
+		startup_round_begin(provider, probe_start);
+	else
+		my_next_try = TimestampTzPlusMilliseconds(now, SPOCK_STARTUP_RETRY_MS);
+}
+
+/*
+ * A subscription that had caught up is behind again when its round does not
+ * reach the target within the lag setting.
+ */
+static void
+startup_round_check_overdue(void)
+{
+	bool		behind = false;
+
+	if (MyStartupSub->state != STARTUP_SUB_CAUGHT_UP ||
+		GetCurrentTimestamp() - my_round_start <=
+		(int64) spock_startup_max_lag * 1000)
+		return;
+
+	LWLockAcquire(SpockStartup->lock, LW_EXCLUSIVE);
+	if (MyStartupSub->state == STARTUP_SUB_CAUGHT_UP)
+	{
+		MyStartupSub->state = STARTUP_SUB_CATCHING_UP;
+		behind = true;
+	}
+	LWLockRelease(SpockStartup->lock);
+
+	if (behind)
+		ereport(LOG,
+				(errmsg("SPOCK %s: startup drain round %d has not reached %X/%X in time, behind again",
+						MySubscription->name, MyStartupSub->round,
+						LSN_FORMAT_ARGS(my_round_target))));
 }
 
 /*
@@ -1046,9 +1234,9 @@ spock_startup_apply_progress(XLogRecPtr last_received, bool in_remote_xact)
 	if (MyStartupSub == NULL)
 		return;
 
-	/* The gate was opened in some other way, stop measuring. */
+	/* The gate was opened or the subscription given up, stop measuring. */
 	if (MyStartupGate->state != STARTUP_GATE_DRAINING ||
-		MyStartupSub->state == STARTUP_SUB_SET_ASIDE)
+		!startup_sub_measured(MyStartupSub))
 	{
 		MyStartupSub = NULL;
 		return;
@@ -1062,6 +1250,8 @@ spock_startup_apply_progress(XLogRecPtr last_received, bool in_remote_xact)
 	/* The round ends once everything up to the target has been applied. */
 	if (!in_remote_xact && last_received >= my_round_target)
 		startup_round_end();
+	else
+		startup_round_check_overdue();
 }
 
 /*
@@ -1148,7 +1338,7 @@ startup_status_gate(SpockStartupGate *gate, TimestampTz now,
 	if (!nulls[SS_TIMEOUT_LEFT])
 	{
 		int64		left = (int64) spock_startup_drain_timeout * 1000 -
-			(now - gate->started_at);
+			(now - SpockStartup->armed_at);
 
 		values[SS_TIMEOUT_LEFT] = startup_interval_datum(Max(left, 0));
 	}

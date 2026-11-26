@@ -4015,6 +4015,12 @@ stream_replay:
 				}
 			}
 
+			/*
+			 * An idle provider sends nothing, so the startup drain is also
+			 * looked at on every wakeup.
+			 */
+			spock_startup_apply_progress(last_received, in_remote_transaction);
+
 			Assert(CurrentMemoryContext == MessageContext);
 
 			for (;;)
@@ -5229,10 +5235,17 @@ spock_apply_main(Datum main_arg)
 
 	/* Start the replication. */
 	/* A provider that cannot be reached shows up in the startup drain. */
-	spock_startup_apply_connecting();
-
-	streamConn = spock_connect_replica(MySubscription->origin_if->dsn,
-									   MySubscription->slot_name, NULL);
+	PG_TRY();
+	{
+		streamConn = spock_connect_replica(MySubscription->origin_if->dsn,
+										   MySubscription->slot_name, NULL);
+	}
+	PG_CATCH();
+	{
+		spock_startup_apply_connect_failed();
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
 
 	repsets = stringlist_to_identifierstr(MySubscription->replication_sets);
 	origins = stringlist_to_identifierstr(MySubscription->forward_origins);
