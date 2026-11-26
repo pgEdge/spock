@@ -19,6 +19,7 @@
 #include "mb/pg_wchar.h"
 
 #include "miscadmin.h"
+#include "pgstat.h"
 #include "access/commit_ts.h"
 #include "access/xact.h"
 #include "executor/executor.h"
@@ -30,10 +31,14 @@
 #include "utils/rel.h"
 #include "utils/snapmgr.h"
 #include "utils/guc.h"
+#include "utils/wait_event.h"
+#include "postmaster/interrupt.h"
 #include "replication/origin.h"
+#include "replication/slot.h"
 #include "replication/syncrep.h"
 #include "replication/walsender_private.h"
 #include "storage/ipc.h"
+#include "storage/latch.h"
 #include "libpq/libpq-be.h"
 
 #include "spock_output_plugin.h"
@@ -700,6 +705,125 @@ pg_decode_begin_txn(LogicalDecodingContext *ctx, ReorderBufferTXN *txn)
 }
 
 /*
+ * Is the walsender of this synchronous standby a logical one?
+ */
+static bool
+sync_standby_is_logical(SyncRepStandbyData *standby)
+{
+	bool		logical = false;
+
+#if PG_VERSION_NUM >= 160000
+	WalSnd	   *walsnd = &WalSndCtl->walsnds[standby->walsnd_index];
+
+	SpinLockAcquire(&walsnd->mutex);
+	logical = walsnd->pid == standby->pid &&
+		walsnd->kind == REPLICATION_KIND_LOGICAL;
+	SpinLockRelease(&walsnd->mutex);
+#else
+	int			i;
+
+	/* A walsender has no kind before PostgreSQL 16, so look at its slot. */
+	LWLockAcquire(ReplicationSlotControlLock, LW_SHARED);
+	for (i = 0; i < max_replication_slots; i++)
+	{
+		ReplicationSlot *slot = &ReplicationSlotCtl->replication_slots[i];
+		bool		found;
+
+		if (!slot->in_use)
+			continue;
+
+		SpinLockAcquire(&slot->mutex);
+		found = slot->active_pid == standby->pid;
+		SpinLockRelease(&slot->mutex);
+
+		if (found)
+		{
+			logical = SlotIsLogical(slot);
+			break;
+		}
+	}
+	LWLockRelease(ReplicationSlotControlLock);
+#endif
+
+	return logical;
+}
+
+/*
+ * Wait until synchronous_standby_names lets a commit that ends at lsn be sent
+ * to the subscriber.
+ *
+ * SyncRepWaitForLSN() does that for a subscriber that is not a synchronous
+ * standby.  It cannot be used for one that is, as the nodes of a shard group
+ * with a sync_count are: the subscriber can only confirm the commit once it
+ * has been sent, so the wait would never end, and the session that committed
+ * would wait with us.  Two such subscribers would wait for each other in the
+ * same way.  So the logical walsenders count as having confirmed here, and
+ * the wait is for the physical standbys that are still needed.  With
+ * 'FIRST 1 (standby, subscriber)' that is the standby while it is connected.
+ */
+static void
+wait_for_sync_standbys(XLogRecPtr lsn)
+{
+	for (;;)
+	{
+		SyncRepStandbyData *standbys;
+		int			nstandbys;
+		int			confirmed = 0;
+		int			i;
+
+		if (MyWalSnd->sync_standby_priority == 0)
+		{
+			HOLD_INTERRUPTS();
+			SyncRepWaitForLSN(lsn, true);
+			RESUME_INTERRUPTS();
+			return;
+		}
+
+		if (!SyncRepRequested() || SyncRepConfig == NULL)
+			return;
+
+		nstandbys = SyncRepGetCandidateStandbys(&standbys);
+		for (i = 0; i < nstandbys; i++)
+		{
+			XLogRecPtr	pos;
+
+			if (standbys[i].is_me || sync_standby_is_logical(&standbys[i]))
+			{
+				confirmed++;
+				continue;
+			}
+
+			if (synchronous_commit == SYNCHRONOUS_COMMIT_REMOTE_WRITE)
+				pos = standbys[i].write;
+			else if (synchronous_commit == SYNCHRONOUS_COMMIT_REMOTE_APPLY)
+				pos = standbys[i].apply;
+			else
+				pos = standbys[i].flush;
+
+			if (pos >= lsn)
+				confirmed++;
+		}
+		pfree(standbys);
+
+		if (confirmed >= SyncRepConfig->num_sync)
+			return;
+
+		/* Nothing wakes us when a standby confirms, so look again shortly. */
+		(void) WaitLatch(MyLatch, WL_TIMEOUT | WL_EXIT_ON_PM_DEATH, 1L);
+
+		CHECK_FOR_INTERRUPTS();
+
+		/* A reload may be what ends the wait, and nobody else sees it here. */
+		if (ConfigReloadPending)
+		{
+			ConfigReloadPending = false;
+			ProcessConfigFile(PGC_SIGHUP);
+			SyncRepInitConfig();
+		}
+	}
+}
+
+/*
  * COMMIT callback
  */
 static void
@@ -750,22 +874,8 @@ pg_decode_commit_txn(LogicalDecodingContext *ctx, ReorderBufferTXN *txn,
 		elog(LOG, "Spock: walsender idx too big (%d) - "
 			 " not calling SyncRepWaitForLSN()", MyWalSenderIdx);
 	}
-	else if (MyWalSnd->sync_standby_priority > 0)
-	{
-		/*
-		 * The subscriber this walsender serves is itself named in
-		 * synchronous_standby_names, as the nodes of a shard group with a
-		 * sync_count are.  The commit can only be confirmed once it has been
-		 * sent, so waiting here would wait for ever, and the session that
-		 * committed would wait with us.
-		 */
-	}
 	else
-	{
-		HOLD_INTERRUPTS();
-		SyncRepWaitForLSN(end_lsn, true);
-		RESUME_INTERRUPTS();
-	}
+		wait_for_sync_standbys(end_lsn);
 
 	/* update progress */
 	OutputPluginUpdateProgress(ctx, false);
