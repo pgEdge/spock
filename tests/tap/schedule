@@ -78,3 +78,4 @@ test: 118_monitor_views
 test: 119_structure_sync_error_report
 test: 122_failover_slot_idle_primary
 test: 129_resync_catchup_transaction
+test: 130_sync_standby_subscriber
