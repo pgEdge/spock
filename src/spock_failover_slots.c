@@ -102,8 +102,8 @@ typedef struct RemoteSlot
 	 */
 	XLogRecPtr	own_restart_lsn;
 
-	/* False while the WAL at the slot's own restart_lsn is not received */
-	bool		restart_received;
+	/* Has the standby received the WAL at the slot's own restart_lsn? */
+	bool		restart_lsn_received;
 } RemoteSlot;
 
 typedef enum FailoverSlotFilterKey
@@ -696,6 +696,9 @@ local_decoding_unavailable(ReplicationSlot *slot)
 static List *undecodable_warned = NIL;
 static List *inconsistent_warned = NIL;
 
+/* Slots reported because the standby has not received their restart_lsn */
+static List *unreceived_warned = NIL;
+
 #if PG_VERSION_NUM >= 170000
 /*
  * Copies made by native slot sync that the primary no longer has.  A
@@ -1009,8 +1012,17 @@ apply_remote_position(RemoteSlot *remote_slot)
 	LogicalConfirmReceivedLocation(remote_slot->confirmed_lsn);
 	LogicalIncreaseXminForSlot(remote_slot->confirmed_lsn,
 							   remote_slot->catalog_xmin);
-	LogicalIncreaseRestartDecodingForSlot(remote_slot->confirmed_lsn,
-										  restart_lsn);
+
+	/*
+	 * restart_lsn is the oldest of all the primary's slots, and is not capped
+	 * at the WAL received.  When the standby has not received it, leave the
+	 * copy's restart_lsn where it is: a promotion would otherwise leave the
+	 * slot pointing at WAL this node never had.  own_restart_lsn is capped,
+	 * and is below restart_lsn only in that case.
+	 */
+	if (restart_lsn <= remote_slot->own_restart_lsn)
+		LogicalIncreaseRestartDecodingForSlot(remote_slot->confirmed_lsn,
+											  restart_lsn);
 	return state;
 }
 
@@ -1031,11 +1043,6 @@ apply_remote_position(RemoteSlot *remote_slot)
  * passes it.  PostgreSQL also accepts older WAL that another local slot
  * holds.  That is left out here: on PG15 a slot can hold a restart_lsn
  * whose WAL is already gone.
- *
- * The caller passes InvalidXLogRecPtr while the WAL at the primary's
- * restart_lsn has not been received.  The position received so far need not
- * be the start of a WAL record, and decoding cannot start anywhere else, so
- * the copy then starts at the redo pointer as well.
  */
 static void
 reserve_wal_for_copy(XLogRecPtr remote_restart_lsn)
@@ -1165,6 +1172,7 @@ invalidated_warned_prune(List *remote_slots)
 	warned_list_prune(&invalidated_warned, remote_slots);
 	warned_list_prune(&undecodable_warned, remote_slots);
 	warned_list_prune(&inconsistent_warned, remote_slots);
+	warned_list_prune(&unreceived_warned, remote_slots);
 }
 
 /*
@@ -1427,6 +1435,28 @@ synchronize_one_slot(RemoteSlot *remote_slot)
 		ReplicationSlot *slot;
 
 		/*
+		 * A new copy starts at the primary slot's restart_lsn, so wait until
+		 * the standby has received it.  Until then the only position to offer
+		 * is the end of the WAL received, which while the standby is catching
+		 * up is usually inside a record.  Decoding cannot start there: the
+		 * error would end the worker on every pass, and where the standby
+		 * cannot decode, the copy would be made persistent at a position no
+		 * subscriber can start from.
+		 */
+		if (!remote_slot->restart_lsn_received)
+		{
+			/* Said once, not on every pass */
+			if (warning_due(&unreceived_warned, remote_slot->name, true))
+				elog(LOG,
+					 "not creating replication slot \"%s\" yet: the standby has not received the primary slot's restart_lsn",
+					 remote_slot->name);
+			PopActiveSnapshot();
+			CommitTransactionCommand();
+			return;
+		}
+		warning_due(&unreceived_warned, remote_slot->name, false);
+
+		/*
 		 * We have to create the slot to reserve its name and resources, but
 		 * don't want it to persist if we fail.
 		 *
@@ -1459,8 +1489,7 @@ synchronize_one_slot(RemoteSlot *remote_slot)
 		 * It's OK if we can't guarantee their safety yet, the slot isn't
 		 * visible to anyone else at this point.
 		 */
-		reserve_wal_for_copy(remote_slot->restart_received ?
-							 remote_slot->own_restart_lsn : InvalidXLogRecPtr);
+		reserve_wal_for_copy(remote_slot->own_restart_lsn);
 
 		/*
 		 * Compute the safe xmin horizon and seed the new slot.
@@ -1796,7 +1825,8 @@ synchronize_failover_slots(long sleep_time)
 	 * valid.
 	 */
 	{
-		XLogRecPtr	receivePtr = GetWalRcvFlushRecPtr(NULL, NULL);
+		TimeLineID	receiveTLI;
+		XLogRecPtr	receivePtr = GetWalRcvFlushRecPtr(NULL, &receiveTLI);
 
 		if (safe_lsn == InvalidXLogRecPtr ||
 			WalRcv->latestWalEnd == InvalidXLogRecPtr ||
@@ -1822,6 +1852,20 @@ synchronize_failover_slots(long sleep_time)
 			was_lsn_safe = false;
 			PQfinish(conn);
 			return Min(sleep_time, spock_failover_slots_feedback_naptime);
+		}
+
+		/*
+		 * WAL that has been replayed has been received, even where the
+		 * walreceiver's flush position is behind it: that position starts at
+		 * the beginning of a segment when the walreceiver first starts. This
+		 * is GetStandbyFlushRecPtr() in PostgreSQL's walsender.c.
+		 */
+		{
+			TimeLineID	replayTLI;
+			XLogRecPtr	replayPtr = GetXLogReplayRecPtr(&replayTLI);
+
+			if (receiveTLI != replayTLI || receivePtr < replayPtr)
+				receivePtr = replayPtr;
 		}
 
 		foreach(lc, slots)
@@ -1857,7 +1901,7 @@ synchronize_failover_slots(long sleep_time)
 			 * restart_lsn, so one slot that lags does not hold back the
 			 * others.
 			 */
-			remote_slot->restart_received =
+			remote_slot->restart_lsn_received =
 				remote_slot->restart_lsn <= receivePtr;
 			remote_slot->own_restart_lsn = Min(remote_slot->restart_lsn,
 											   receivePtr);
