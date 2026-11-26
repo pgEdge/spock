@@ -25,7 +25,7 @@ The following scripts and workflows are available via Zodan.
 
 The SQL-based implementation utilizes the Postgres `dblink` extension to
 handle node addition directly from within the database. This method is
-ideal for environments where you may not have access to a shell or Python.
+ideal for environments where you may not have shell access.
 
 Within the workflow, SQL commands orchestrate the following operations:
 
@@ -38,8 +38,11 @@ Within the workflow, SQL commands orchestrate the following operations:
   slots.
 - `sync_event` and `wait_for_sync_event` - Coordinate data synchronization
   events.
-- `get_commit_timestamp` and `advance_replication_slot` - Align
-  replication states.
+- `check_commit_timestamp_and_advance_slot` - Advance each slot and the
+  matching replication origin on the new node past the data the new node
+  already has.
+- `sync_repsets_from_source` - Copy the source node's replication sets to
+  the new node.
 
 To use the workflow, execute the following command in your Postgres
 session.  In the following example, the `spock.add_node` procedure adds a 
@@ -73,7 +76,7 @@ CALL spock.add_node(
 
 The SQL-based implementation utilizes the Postgres `dblink` extension to
 handle node removal directly from within the database. This method is
-ideal for environments where you may not have access to a shell or Python.
+ideal for environments where you may not have shell access.
 
 Within the workflow, SQL commands orchestrate the following operations:
 
