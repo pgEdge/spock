@@ -184,6 +184,11 @@ The steps that follow outline the process Zodan goes through
 when adding a node. You can manually perform the same steps to add a node
 to a cluster instead of using `spock.add_node` above.
 
+Run every command below from one `psql` session connected to the new
+node, n4. The commands reach the other nodes through `dblink`. Keep that
+session open until you are done: the LSNs you collect on the way are kept
+in a temporary table, which is gone when the session ends.
+
 ### Check the Spock Version Compatibility
 
 Before starting the node addition, check the Spock version on every node
@@ -203,7 +208,7 @@ Before starting the node addition, check the Spock version on every node
     checks.
 
 Each node's version has to be read on that node, so query the node list
-on n1 and then connect to each node in turn. On the orchestrator node, run
+on n1 and then connect to each node in turn. In your session on n4, run
 the following commands:
 
 ```sql
@@ -375,22 +380,35 @@ FROM dblink(
 
 #### Confirm that n4 Does Not Exist in the Cluster
 
-Check if a node with the name n4 is already registered in the cluster. If
-the node exists, ZODAN aborts to prevent duplicate node names. The
-following example checks to see if n4 already exists in the cluster:
+Check if a node with the name n4 is already registered, on n4 itself or
+on n1. If the node exists, ZODAN aborts to prevent duplicate node names.
+The following example checks both:
 
 ```sql
--- On orchestrator node (connected to n1)
+-- On n4
 SELECT count(*) FROM spock.node WHERE node_name = 'n4';
+-- Expected: 0
+
+-- On n1
+SELECT count
+FROM dblink(
+    'host=127.0.0.1 dbname=inventory port=5432 user=pgedge password=1safepassword',
+    'SELECT count(*) FROM spock.node WHERE node_name = ''n4'''
+) AS t(count integer);
 -- Expected: 0
 ```
 
+`spock.add_node()` runs this check on the new node only. If n1 still
+lists n4 from an earlier attempt, remove it with `spock.remove_node`
+before going on.
+
 #### Confirm that n4 Contains No Subscriptions
 
-In the following example, the query checks whether n4 has any existing
-subscriptions:
+In the following example, the query checks on n4 whether it has any
+existing subscriptions:
 
 ```sql
+-- On n4
 SELECT count(*)
 FROM spock.subscription s
 JOIN spock.node n ON s.sub_origin = n.node_id
@@ -400,10 +418,11 @@ WHERE n.node_name = 'n4';
 
 #### Confirm that n4 Contains No Replication Sets
 
-In the following example, the query checks whether n4 has any replication
-sets:
+In the following example, the query checks on n4 whether it has any
+replication sets:
 
 ```sql
+-- On n4
 SELECT count(*)
 FROM spock.replication_set rs
 JOIN spock.node n ON rs.set_nodeid = n.node_id
@@ -492,6 +511,12 @@ completes the following steps:
     The n2 to n4 and n3 to n4 subscriptions are just being prepared now,
     but will not start moving data until later.
 
+If the cluster has only the source node, there is no other node to
+prepare. Skip this section and the sections [Trigger a Sync on Other
+Nodes, Wait on Source](#trigger-a-sync-on-other-nodes-wait-on-source),
+[Advance the Slots and Origins](#advance-the-slots-and-origins) and
+[Enable Disabled Subscriptions](#enable-disabled-subscriptions).
+
 #### Identify All Existing Nodes
 
 Query n1 to find the existing nodes (n1, n2, n3) and their connection
@@ -557,7 +582,7 @@ FROM dblink(
 
 Call `sync_event(true)` on n2. It commits a marker into the n2
 replication stream and returns the LSN of that commit. Store it together
-with the slot LSN in a temporary table on the orchestrator node. You use
+with the slot LSN in a temporary table in your session on n4. You use
 the sync LSN in the next step, and again as a check before you advance
 the slot.
 
@@ -830,7 +855,13 @@ FROM dblink(
     'host=127.0.0.1 dbname=inventory port=5432 user=pgedge password=1safepassword',
     'CALL spock.wait_for_sync_event(true, ''n2'', ''0/1C9F400''::pg_lsn, 1200)'
 ) AS t(result bool);
+-- Returns: t
 ```
+
+The call returns `false` when the timeout runs out before n1 has the
+marker. Do not go on in that case: find out why n1 is behind n2 and
+repeat the wait until it returns `true`. `spock.add_node()` stops with an
+error here.
 
 #### Sync n3 to n1
 
@@ -856,6 +887,7 @@ FROM dblink(
     'host=127.0.0.1 dbname=inventory port=5432 user=pgedge password=1safepassword',
     'CALL spock.wait_for_sync_event(true, ''n3'', ''0/1D0E510''::pg_lsn, 1200)'
 ) AS t(result bool);
+-- Returns: t. If it returns f, stop and resolve it before going on.
 ```
 
 ### Copy the Source to New Subscription
@@ -1069,7 +1101,14 @@ FROM dblink(
     'host=127.0.0.1 dbname=inventory port=5435 user=pgedge password=1safepassword',
     'CALL spock.wait_for_sync_event(true, ''n1'', ''0/1E1F620''::pg_lsn, 1200)'
 ) AS t(result bool);
+-- Returns: t
 ```
+
+The wait covers the whole initial copy, so on a large database it can
+return `false` because 1200 seconds were not enough. Repeat the call with
+the same LSN until it returns `true`. Do not advance the slots before
+that: n4 would not yet have everything n1 had when the marker was
+committed.
 
 
 ### Advance the Slots and Origins
@@ -1249,7 +1288,16 @@ what `spock.replication_set`, `spock.replication_set_table` and
 If someone changes a replication set on n1 while the node is being added,
 n4 does not pick that up. Compare the sets on both nodes when you are done
 and fix any difference with `spock.repset_add_table()` or
-`spock.repset_remove_table()` on n4.
+`spock.repset_remove_table()` on n4. `zodan.sql` has a helper for the
+comparison, which lists every entry that only one of the two nodes has:
+
+```sql
+SELECT side, entry
+FROM spock.repset_diff(
+    'host=127.0.0.1 dbname=inventory port=5432 user=pgedge password=1safepassword',
+    'host=127.0.0.1 dbname=inventory port=5435 user=pgedge password=1safepassword');
+-- Expected: no rows
+```
 
 ### Enable Disabled Subscriptions
 
@@ -1564,6 +1612,8 @@ indicate the following issues:
 
 We want lag under 59 seconds, or lag_bytes=0 (meaning n4 has processed
 everything). If lag stays consistently low, n4 is successfully integrated.
+The loop below gives up after 1200 seconds, so that it cannot run for
+ever when no row for n1 shows up or the lag never comes down.
 
 The following example monitors replication lag:
 
@@ -1573,6 +1623,7 @@ DO $$
 DECLARE
     lag_interval interval;
     lag_bytes bigint;
+    started timestamptz := clock_timestamp();
 BEGIN
     LOOP
         SELECT now() - commit_timestamp, replication_lag_bytes
@@ -1590,6 +1641,10 @@ BEGIN
 
         EXIT WHEN lag_interval IS NOT NULL
                   AND (extract(epoch FROM lag_interval) < 59 OR lag_bytes = 0);
+
+        IF clock_timestamp() - started > interval '1200 seconds' THEN
+            RAISE EXCEPTION 'n4 is still behind n1 after 1200 seconds';
+        END IF;
 
         PERFORM pg_sleep(1);
     END LOOP;
@@ -1695,15 +1750,24 @@ ORDER BY node_name, subscription_name;
 
 ### Verification
 
-Next, we perform a series of tests to verify that the cluster is
-replicating between n1 and n4.
+Next, we perform a test to verify that the cluster is replicating between
+n1 and n4.
 
-First, we create a test table and insert data:
+Auto DDL is disabled for the node addition, so a table created on one
+node does not appear on the others. Create the test table on every node
+(n1, n2, n3, and n4) and add it to the `default` replication set there:
+
+```sql
+-- On each of n1, n2, n3 and n4
+CREATE TABLE test_replication (id int primary key, data text, created_at timestamp default now());
+SELECT spock.repset_add_table('default', 'test_replication');
+```
+
+Then insert a row on n1 and look for it on n4:
 
 ```sql
 -- On n1
-CREATE TABLE test_replication (id serial primary key, data text, created_at timestamp default now());
-INSERT INTO test_replication (data) VALUES ('Test from n1');
+INSERT INTO test_replication (id, data) VALUES (1, 'Test from n1');
 
 -- On n4 (wait a few seconds)
 SELECT * FROM test_replication;
@@ -1715,7 +1779,7 @@ SELECT * FROM test_replication;
 Next, we insert data on n4:
 
 ```sql
-INSERT INTO test_replication (data) VALUES ('Test from n4');
+INSERT INTO test_replication (id, data) VALUES (4, 'Test from n4');
 ```
 Then, verify replication on n1:
 
@@ -1723,6 +1787,13 @@ Then, verify replication on n1:
 -- On n1 (wait a few seconds)
 SELECT * FROM test_replication;
 -- Expected: Both rows appear on n1
+```
+
+When you are done, drop the table on every node:
+
+```sql
+-- On each of n1, n2, n3 and n4
+DROP TABLE test_replication;
 ```
 
 
