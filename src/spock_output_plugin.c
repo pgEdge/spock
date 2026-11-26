@@ -704,25 +704,17 @@ pg_decode_begin_txn(LogicalDecodingContext *ctx, ReorderBufferTXN *txn)
 	SPOCK_OUTPUT_TXN_STALL();
 }
 
+#if PG_VERSION_NUM < 160000
 /*
- * Is the walsender of this synchronous standby a logical one?
+ * Does the walsender with this pid stream from a logical slot?  A walsender
+ * has no kind before PostgreSQL 16, so look at the slot it holds.
  */
 static bool
-sync_standby_is_logical(SyncRepStandbyData *standby)
+walsender_slot_is_logical(pid_t pid)
 {
 	bool		logical = false;
-
-#if PG_VERSION_NUM >= 160000
-	WalSnd	   *walsnd = &WalSndCtl->walsnds[standby->walsnd_index];
-
-	SpinLockAcquire(&walsnd->mutex);
-	logical = walsnd->pid == standby->pid &&
-		walsnd->kind == REPLICATION_KIND_LOGICAL;
-	SpinLockRelease(&walsnd->mutex);
-#else
 	int			i;
 
-	/* A walsender has no kind before PostgreSQL 16, so look at its slot. */
 	LWLockAcquire(ReplicationSlotControlLock, LW_SHARED);
 	for (i = 0; i < max_replication_slots; i++)
 	{
@@ -733,7 +725,7 @@ sync_standby_is_logical(SyncRepStandbyData *standby)
 			continue;
 
 		SpinLockAcquire(&slot->mutex);
-		found = slot->active_pid == standby->pid;
+		found = slot->active_pid == pid;
 		SpinLockRelease(&slot->mutex);
 
 		if (found)
@@ -743,9 +735,105 @@ sync_standby_is_logical(SyncRepStandbyData *standby)
 		}
 	}
 	LWLockRelease(ReplicationSlotControlLock);
-#endif
 
 	return logical;
+}
+#endif
+
+/*
+ * Would a commit that ends at lsn be confirmed if every logical walsender
+ * named in synchronous_standby_names had confirmed it?
+ *
+ * This chooses the synchronous standbys as SyncRepGetCandidateStandbys()
+ * does, except that a logical walsender is one in any state.  That function
+ * leaves out a walsender that is still catching up, and a subscriber that
+ * reconnects is catching up until it has been sent what it missed.
+ */
+static bool
+sync_standbys_confirm(XLogRecPtr lsn)
+{
+	int		   *priorities = palloc(max_wal_senders * sizeof(int));
+	bool	   *confirmed = palloc(max_wal_senders * sizeof(bool));
+	int			nstandbys = 0;
+	int			nconfirmed = 0;
+	int			i;
+
+	for (i = 0; i < max_wal_senders; i++)
+	{
+		WalSnd	   *walsnd = &WalSndCtl->walsnds[i];
+		pid_t		pid;
+		WalSndState state;
+		XLogRecPtr	write;
+		XLogRecPtr	flush;
+		XLogRecPtr	apply;
+		int			priority;
+		bool		logical;
+		bool		done;
+		int			j;
+
+		SpinLockAcquire(&walsnd->mutex);
+		pid = walsnd->pid;
+		state = walsnd->state;
+		write = walsnd->write;
+		flush = walsnd->flush;
+		apply = walsnd->apply;
+		priority = walsnd->sync_standby_priority;
+#if PG_VERSION_NUM >= 160000
+		logical = walsnd->kind == REPLICATION_KIND_LOGICAL;
+#endif
+		SpinLockRelease(&walsnd->mutex);
+
+		if (pid == 0 || priority == 0)
+			continue;
+
+#if PG_VERSION_NUM < 160000
+		logical = walsnd == MyWalSnd || walsender_slot_is_logical(pid);
+#endif
+
+		if (logical)
+			done = true;
+		else
+		{
+			if (state != WALSNDSTATE_STREAMING &&
+				state != WALSNDSTATE_STOPPING)
+				continue;
+			if (flush == InvalidXLogRecPtr)
+				continue;
+
+			if (synchronous_commit == SYNCHRONOUS_COMMIT_REMOTE_WRITE)
+				done = write >= lsn;
+			else if (synchronous_commit == SYNCHRONOUS_COMMIT_REMOTE_APPLY)
+				done = apply >= lsn;
+			else
+				done = flush >= lsn;
+		}
+
+		/* Keep them in the order of their priority. */
+		for (j = nstandbys; j > 0 && priorities[j - 1] > priority; j--)
+		{
+			priorities[j] = priorities[j - 1];
+			confirmed[j] = confirmed[j - 1];
+		}
+		priorities[j] = priority;
+		confirmed[j] = done;
+		nstandbys++;
+	}
+
+	/* With FIRST only the standbys of the highest priority are asked. */
+	if (SyncRepConfig->syncrep_method == SYNC_REP_PRIORITY &&
+		nstandbys > SyncRepConfig->num_sync)
+		nstandbys = SyncRepConfig->num_sync;
+
+	for (i = 0; i < nstandbys; i++)
+	{
+		if (confirmed[i])
+			nconfirmed++;
+	}
+
+	pfree(priorities);
+	pfree(confirmed);
+
+	return nconfirmed >= SyncRepConfig->num_sync;
 }
 
 /*
@@ -766,11 +854,6 @@ wait_for_sync_standbys(XLogRecPtr lsn)
 {
 	for (;;)
 	{
-		SyncRepStandbyData *standbys;
-		int			nstandbys;
-		int			confirmed = 0;
-		int			i;
-
 		if (MyWalSnd->sync_standby_priority == 0)
 		{
 			HOLD_INTERRUPTS();
@@ -782,30 +865,7 @@ wait_for_sync_standbys(XLogRecPtr lsn)
 		if (!SyncRepRequested() || SyncRepConfig == NULL)
 			return;
 
-		nstandbys = SyncRepGetCandidateStandbys(&standbys);
-		for (i = 0; i < nstandbys; i++)
-		{
-			XLogRecPtr	pos;
-
-			if (standbys[i].is_me || sync_standby_is_logical(&standbys[i]))
-			{
-				confirmed++;
-				continue;
-			}
-
-			if (synchronous_commit == SYNCHRONOUS_COMMIT_REMOTE_WRITE)
-				pos = standbys[i].write;
-			else if (synchronous_commit == SYNCHRONOUS_COMMIT_REMOTE_APPLY)
-				pos = standbys[i].apply;
-			else
-				pos = standbys[i].flush;
-
-			if (pos >= lsn)
-				confirmed++;
-		}
-		pfree(standbys);
-
-		if (confirmed >= SyncRepConfig->num_sync)
+		if (sync_standbys_confirm(lsn))
 			return;
 
 		/* Nothing wakes us when a standby confirms, so look again shortly. */

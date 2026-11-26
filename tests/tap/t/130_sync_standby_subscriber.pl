@@ -61,12 +61,40 @@ ok(poll_query_until(2, "SELECT count(*) FROM sync_t WHERE id = 2", '1', 20),
 is(scalar_query(1, "SELECT count(*) FROM pg_stat_activity WHERE wait_event = 'SyncRep'"),
    '0', 'nothing on n1 waits for synchronous replication');
 
+# A subscriber that reconnects is behind, and its walsender is not counted
+# as a synchronous standby until it has caught up.  It must still be sent
+# what it missed.
+psql_or_bail(2, "SELECT spock.sub_disable('sub_n2_n1')");
+poll_query_until(1, "SELECT count(*) FROM pg_stat_replication "
+                  . "WHERE application_name = '$slot'", '0', 30)
+    or die "n2's walsender did not exit";
+system_or_bail("$pg_bin/psql", '-X', '-q', '-p', $node_ports->[0], '-d', $dbname,
+    '-c', 'SET synchronous_commit = local',
+    '-c', 'INSERT INTO sync_t VALUES (6)');
+psql_or_bail(2, "SELECT spock.sub_enable('sub_n2_n1')");
+ok(poll_query_until(2, "SELECT count(*) FROM sync_t WHERE id = 6", '1', 30),
+   'n2 is sent a commit it missed while it was away');
+ok(poll_query_until(1, "SELECT sync_state FROM pg_stat_replication "
+                     . "WHERE application_name = '$slot'", 'sync', 30),
+   'n2 is the synchronous standby again');
+
 # A physical standby ahead of the subscriber in synchronous_standby_names.
 my $standby_port = $node_ports->[0] + 10;
 my $standby_dir  = $config->{node_datadirs}->[0] . '_standby';
 my $walrcv_pid;
+my $standby_running = 0;
 
-END { kill 'CONT', $walrcv_pid if $walrcv_pid; }
+# Do not leave the standby behind when the test dies.
+END
+{
+    local $?;
+    kill 'CONT', $walrcv_pid if $walrcv_pid;
+    if ($standby_running)
+    {
+        system("$pg_bin/pg_ctl stop -D $standby_dir -m immediate >/dev/null 2>&1");
+        system("rm -rf $standby_dir 2>/dev/null");
+    }
+}
 
 system("rm -rf $standby_dir 2>/dev/null");
 system_or_bail("$pg_bin/pg_basebackup", '-D', $standby_dir, '-h', $host,
@@ -83,6 +111,7 @@ system_or_bail("$pg_bin/pg_basebackup", '-D', $standby_dir, '-h', $host,
         or die "Cannot create standby.signal: $!";
     close($signal);
 }
+$standby_running = 1;
 system_or_bail("$pg_bin/pg_ctl", 'start', '-D', $standby_dir,
     '-l', "$standby_dir/startup.log", '-w');
 
@@ -119,6 +148,7 @@ ok(poll_query_until(2, "SELECT count(*) FROM sync_t WHERE id = 4", '1', 30),
 
 # Without the physical standby n2 is the synchronous standby again.
 system_or_bail("$pg_bin/pg_ctl", 'stop', '-D', $standby_dir, '-m', 'fast', '-w');
+$standby_running = 0;
 ok(poll_query_until(1, "SELECT sync_state FROM pg_stat_replication "
                      . "WHERE application_name = '$slot'", 'sync', 30),
    'n2 is the synchronous standby when the physical one is gone');
@@ -142,7 +172,7 @@ ok(poll_query_until(1, "SELECT current_setting('synchronous_standby_names')", ''
    'n1 is asynchronous again');
 psql_or_bail(1, "INSERT INTO sync_t VALUES (3)");
 ok(sync_nodes(1, 2), 'n2 applies what n1 writes');
-is(scalar_query(2, "SELECT count(*) FROM sync_t"), '5', 'n2 has every row');
+is(scalar_query(2, "SELECT count(*) FROM sync_t"), '6', 'n2 has every row');
 
 destroy_cluster('Destroy test cluster');
 done_testing();
