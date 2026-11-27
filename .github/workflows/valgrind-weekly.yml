@@ -1,0 +1,183 @@
+name: Weekly Valgrind
+run-name: Valgrind memcheck of the spock test suite (PG ${{ inputs.pgver || '18' }})
+
+# Builds PostgreSQL from the ref selected in tests/postgres-build.conf with
+# -DUSE_VALGRIND, -O0 and debug symbols, applies spock's patches, builds
+# spock against it, and runs the test suite with every server process under
+# valgrind memcheck via tests/valgrind/run-valgrind.sh.  The readable report
+# lands in the job summary and in the run's artifacts.
+#
+# Runs once a week on main.  Dispatch it by hand to try another major, the
+# TAP suite, or leak checking.
+
+on:
+  schedule:
+    - cron: '0 3 * * 0'  # Sundays at 03:00 UTC
+  workflow_dispatch:
+    inputs:
+      pgver:
+        description: PostgreSQL major to build and test against
+        type: choice
+        default: '18'
+        options: ['15', '16', '17', '18', '19']
+      suite:
+        description: Which suite(s) to run
+        type: choice
+        default: regress
+        options: [regress, tap, all]
+      regress_tests:
+        description: Regression tests to run (names, space separated; empty = the whole suite)
+        type: string
+        default: ''
+      tap_tests:
+        description: TAP tests to run (names without .pl, space separated; empty = whole schedule)
+        type: string
+        default: ''
+      leak_check:
+        description: valgrind --leak-check
+        type: choice
+        default: 'no'
+        options: ['no', summary, full]
+      fail_on_errors:
+        description: Fail the job when valgrind reports errors
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: valgrind-weekly-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  valgrind:
+    runs-on: ubuntu-latest
+    # The regression suite alone takes well under an hour under memcheck;
+    # the full TAP schedule can take several.
+    timeout-minutes: 360
+
+    env:
+      PGVER: ${{ inputs.pgver || '18' }}
+      SUITE: ${{ inputs.suite || 'regress' }}
+      REGRESS_TESTS: ${{ inputs.regress_tests || '' }}
+      TAP_TESTS: ${{ inputs.tap_tests || '' }}
+      LEAK_CHECK: ${{ inputs.leak_check || 'no' }}
+      # Empty on a scheduled run; the step below treats empty as true.
+      FAIL_ON_ERRORS: ${{ inputs.fail_on_errors }}
+      PG_PREFIX: ${{ github.workspace }}/pg-install
+      PG_SRCDIR: ${{ github.workspace }}/postgres
+      OUTPUT_DIR: ${{ github.workspace }}/valgrind-output
+
+    steps:
+      - name: Checkout spock
+        uses: actions/checkout@v4
+        with:
+          path: spock
+
+      - name: Install build dependencies and valgrind
+        run: |
+          sudo apt-get update
+          # pkg-config and libicu-dev: PostgreSQL 16+ configures with ICU
+          # by default.  ubuntu-latest has them, a plain image does not.
+          sudo apt-get install -y --no-install-recommends \
+            build-essential bison flex pkg-config \
+            libreadline-dev zlib1g-dev libicu-dev \
+            libipc-run-perl libtest-simple-perl \
+            valgrind python3
+          valgrind --version
+
+      - name: Resolve and fetch PostgreSQL source
+        run: |
+          PG_REF=$(spock/tests/resolve-pg-ref.sh "$PGVER")
+          echo "PG $PGVER resolved to $PG_REF"
+          git init "$PG_SRCDIR"
+          git -C "$PG_SRCDIR" remote add origin \
+            https://github.com/postgres/postgres.git
+          git -C "$PG_SRCDIR" fetch --depth 1 origin "$PG_REF"
+          git -C "$PG_SRCDIR" checkout --detach FETCH_HEAD
+          echo "Checked out $(git -C "$PG_SRCDIR" rev-parse --short HEAD) ($PG_REF)"
+
+      - name: Apply spock patches
+        run: |
+          PATCH_DIR="${GITHUB_WORKSPACE}/spock/patches/${PGVER}"
+          if [ -d "$PATCH_DIR" ] && [ -n "$(ls -A "$PATCH_DIR" 2>/dev/null)" ]; then
+            cd "$PG_SRCDIR"
+            for p in "$PATCH_DIR"/*; do
+              echo "Applying $(basename "$p")"
+              patch -p1 < "$p"
+            done
+          else
+            echo "No spock patches for PG $PGVER; using vanilla source"
+          fi
+
+      # -DUSE_VALGRIND makes palloc'd memory visible to memcheck (PostgreSQL
+      # marks freed and unallocated chunks itself), -O0 keeps stacks honest,
+      # and --enable-cassert adds the memory context checks.  The flags
+      # reach spock too, through pg_config.
+      - name: Configure, build, install PostgreSQL (valgrind build)
+        run: |
+          cd "$PG_SRCDIR"
+          ./configure --prefix="$PG_PREFIX" \
+            --enable-debug --enable-cassert --enable-tap-tests \
+            CFLAGS="-O0 -g -fno-omit-frame-pointer" \
+            CPPFLAGS="-DUSE_VALGRIND"
+          make -j"$(nproc)" -s
+          make install -s
+          make -j"$(nproc)" -s -C contrib/dblink
+          make install -s -C contrib/dblink
+
+      - name: Build and install spock
+        run: |
+          export PATH="$PG_PREFIX/bin:$PATH"
+          cd "${GITHUB_WORKSPACE}/spock"
+          make -j"$(nproc)"
+          make install
+
+      - name: Run the suite under valgrind
+        id: run
+        run: |
+          export PATH="$PG_PREFIX/bin:$PATH"
+          export PG_CONFIG="$PG_PREFIX/bin/pg_config"
+          cd "${GITHUB_WORKSPACE}/spock"
+          args=(--suite "$SUITE" --pg-src "$PG_SRCDIR" --output "$OUTPUT_DIR"
+                --leak-check "$LEAK_CHECK"
+                --title "spock under Valgrind: PG $PGVER, $(git rev-parse --abbrev-ref HEAD) @ $(git rev-parse --short HEAD)")
+          [ -n "$REGRESS_TESTS" ] && args+=(--regress-tests "$REGRESS_TESTS")
+          [ -n "$TAP_TESTS" ] && args+=(--tap-tests "$TAP_TESTS")
+          [ "${FAIL_ON_ERRORS:-true}" != "false" ] && args+=(--fail-on-errors)
+          tests/valgrind/run-valgrind.sh "${args[@]}"
+
+      - name: Job summary
+        if: ${{ always() }}
+        run: |
+          if [ -f "$OUTPUT_DIR/summary.md" ]; then
+            cat "$OUTPUT_DIR/summary.md" >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "The full report with stacks and suppressions is in the" \
+                 "\`valgrind-report-pg$PGVER\` artifact (report.md, report.html)." \
+                 >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "## No valgrind report was produced" >> "$GITHUB_STEP_SUMMARY"
+            echo "The run stopped before the suite finished; see the job log." \
+                 >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      # Raw XML is kept too: it is what a new suppression is written from.
+      - name: Upload report and raw logs
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: valgrind-report-pg${{ env.PGVER }}
+          path: |
+            ${{ env.OUTPUT_DIR }}/report.md
+            ${{ env.OUTPUT_DIR }}/report.html
+            ${{ env.OUTPUT_DIR }}/summary.md
+            ${{ env.OUTPUT_DIR }}/summary.json
+            ${{ env.OUTPUT_DIR }}/regress.log
+            ${{ env.OUTPUT_DIR }}/tap.log
+            ${{ env.OUTPUT_DIR }}/regress/**
+            ${{ env.OUTPUT_DIR }}/tap-logs/**
+            ${{ env.OUTPUT_DIR }}/raw/*.xml
+          if-no-files-found: warn
+          retention-days: 30
