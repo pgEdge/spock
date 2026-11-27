@@ -47,10 +47,22 @@ manage_apply_workers(void)
 	ListCell   *slc,
 			   *wlc;
 	long		ret = restart_delay_default;
+	uint16	   *generations;
 
-	/* Get list of existing workers. */
+	/*
+	 * Get list of existing workers, and remember the generation of each. The
+	 * list is used again after the lock has been released, and a slot on it
+	 * can have been given to another worker by then.
+	 */
+	generations = palloc0(sizeof(uint16) * SpockCtx->total_workers);
 	LWLockAcquire(SpockCtx->lock, LW_EXCLUSIVE);
 	workers = spock_apply_find_all(MySpockWorker->dboid);
+	foreach(wlc, workers)
+	{
+		SpockWorker *worker = (SpockWorker *) lfirst(wlc);
+
+		generations[worker - &SpockCtx->workers[0]] = worker->generation;
+	}
 	LWLockRelease(SpockCtx->lock);
 
 	StartTransactionCommand();
@@ -162,6 +174,14 @@ manage_apply_workers(void)
 	{
 		SpockWorker *worker = (SpockWorker *) lfirst(wlc);
 
+		/*
+		 * The slot was registered again since the list was made: by the apply
+		 * worker started above, or by a table sync worker.  It is not the
+		 * worker that was found to be left over.
+		 */
+		if (worker->generation != generations[worker - &SpockCtx->workers[0]])
+			continue;
+
 		spock_worker_kill(worker);
 
 		/* Cleanup old info about crashed apply workers. */
@@ -174,6 +194,7 @@ manage_apply_workers(void)
 		}
 	}
 	LWLockRelease(SpockCtx->lock);
+	pfree(generations);
 
 	/*
 	 * Let's guard against a zero restart delay so that an external latch

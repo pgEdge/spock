@@ -4997,10 +4997,8 @@ process_syncing_tables(XLogRecPtr end_lsn)
 				 * TODO: What if the SYNC worker has gone? It may be any
 				 * trivial ERROR - memory allocation, or network connection,
 				 * for example. We need to restart syncing process from the
-				 * scratch. For now, suppose that it should be always exist in
-				 * testing environment.
+				 * scratch.  Until that is done the table is left as it is.
 				 */
-				Assert(spock_worker_running(worker));
 
 				if (spock_worker_running(worker) &&
 					replorigin_session_origin_lsn >= worker->worker.apply.replay_stop_lsn)
