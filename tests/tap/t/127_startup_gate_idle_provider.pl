@@ -81,13 +81,16 @@ ok(poll_query_until(1, $n2_state, 'caughtup', 60),
     'subscription to an idle provider has caught up');
 
 # Every later round starts at a position that only the other database
-# moved.  Each has to end in time.
+# moved.  Each has to end in time.  The round counter is read after the
+# write: the next round then starts past the write, and the one after it
+# starts only when that round has ended.
 for my $i (1 .. 5)
 {
-    my $round = scalar_query(1, $n2_round);
+    my $round;
 
     other_database_write(
         "INSERT INTO other_t SELECT g, 'r$i' FROM generate_series(1, 1000) g");
+    $round = scalar_query(1, $n2_round);
     ok(poll_query_until(1,
             "SELECT round >= $round + 2 FROM spock.startup_status " .
             "WHERE provider_node = 'n2'", 't', 30),
