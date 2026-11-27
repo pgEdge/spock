@@ -45,3 +45,10 @@ test: 103_manager_worker_dboid_race
 test: 110_resync_node_info_warning
 test: 120_standby_holdback_quorum
 test: 121_exception_slot_exhausted
+
+# --bidirectional join under sustained OLTP write load (pgedge-loadgen).
+# Not yet enabled here: needs its real-world runtime at
+# SPOCK_BIDIR_LOAD_LEVEL=medium/heavy characterized on CI hardware first,
+# and CI needs a pgedge-loadgen checkout (PGEDGE_LOADGEN_BIN) available --
+# it skip_alls cleanly without one. ~161s locally at the light default.
+#test: 071_bidir_join_under_load
