@@ -13,6 +13,7 @@ use Time::HiRes qw(usleep);
 use Cwd;
 
 our @EXPORT_OK = qw(
+    run_capture find_in_path
     create_cluster
     cross_wire
     destroy_cluster
@@ -81,6 +82,29 @@ my $LOG_FILE = $ENV{SPOCKTEST_LOG_FILE} // "${LOG_DIR}/${test_name}.log";
     open my $stderr_log, '>>', $LOG_FILE or die "Cannot open log $LOG_FILE: $!";
     select((select($stderr_log), $| = 1)[0]);
     open STDERR, '>>&', $stderr_log or die "Cannot dup STDERR: $!";
+}
+
+# Run a command without a shell and return (stdout, exit code).  stderr goes
+# to the per-test log like everything else.  Arguments are passed as a list,
+# so nothing in them is ever interpreted by a shell.
+sub run_capture {
+    my (@cmd) = @_;
+    my $pid = open(my $fh, '-|', @cmd);
+    return ('', 255) unless defined $pid;
+    my $out = do { local $/; <$fh> // '' };
+    close($fh);
+    my $rc = $? >> 8;
+    chomp $out;
+    return ($out, $rc);
+}
+
+# The first executable called $name on PATH, or undef.
+sub find_in_path {
+    my ($name) = @_;
+    for my $dir (split /:/, $ENV{PATH}) {
+        return "$dir/$name" if -x "$dir/$name";
+    }
+    return undef;
 }
 
 sub _run_cmd_logged_wait {

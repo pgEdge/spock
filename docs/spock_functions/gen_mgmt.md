@@ -8,6 +8,8 @@ You can use the following settings to manage your replication clusters.
 | [spock_max_proto_version](functions/spock_max_proto_version.md) | Returns the maximum protocol version supported by Spock. Defined in the public schema so invoked without the `spock.` prefix. |
 | [spock_min_proto_version](functions/spock_min_proto_version.md) | Returns the minimum protocol version supported by Spock. Defined in the public schema, so invoked without the `spock.` prefix. |
 | [spock.node_info](functions/spock_node_info.md) | Returns information about the local Spock node. |
+| [spock.quorum_status](functions/spock_quorum_status.md) | Reports what the configured quorum system says about this node. |
+| [spock.quorum_members](functions/spock_quorum_members.md) | Lists the cluster members the quorum system reports, filtered to Spock nodes. |
 | [spock_version](functions/spock_version.md) | Returns the version string of the Spock extension. Defined in the public schema so invoked without the `spock.` prefix. |
 | [spock_version_num](functions/spock_version_num.md) | Returns the version number of Spock as an integer. Defined in the public schema so invoked without the `spock.` prefix. |
 
