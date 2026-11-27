@@ -36,6 +36,7 @@
 #include "executor/executor.h"
 
 #include "spock_readonly.h"
+#include "spock_startup.h"
 #include "spock.h"
 
 /* GUC variable */
@@ -86,6 +87,10 @@ spock_ropost_parse_analyze(ParseState *pstate, Query *query, const JumbleState *
 spock_ropost_parse_analyze(ParseState *pstate, Query *query, JumbleState *jstate)
 #endif
 {
+	/* Hold the statement back while the startup gate is closed. */
+	spock_startup_gate_check(query->commandType == CMD_UTILITY ?
+							 query->utilityStmt : NULL);
+
 	/*
 	 * If spock.readonly is set, enforce Postgres core restriction for the
 	 * following query. We actively employ the fact that the core uses the
@@ -113,6 +118,8 @@ spock_ropost_parse_analyze(ParseState *pstate, Query *query, JumbleState *jstate
 void
 spock_roExecutorStart(QueryDesc *queryDesc, int eflags)
 {
+	spock_startup_gate_check(NULL);
+
 	/*
 	 * Let's do the same job as at parse analysis hook.
 	 *

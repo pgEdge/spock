@@ -31,6 +31,7 @@
 #include "spock_worker.h"
 #include "spock_group.h"
 #include "spock_output_plugin.h"
+#include "spock_startup.h"
 
 /* Previous hook values for chaining */
 static shmem_request_hook_type prev_shmem_request_hook = NULL;
@@ -119,6 +120,9 @@ spock_shmem_request(void)
 	/* Request shared memory for the monitoring subsystem */
 	spock_monitor_shmem_request(max_worker_processes);
 
+	/* Request shared memory for the startup gate */
+	spock_startup_shmem_request(max_worker_processes);
+
 	/* For SpockCtx->lock */
 	RequestNamedLWLockTranche("spock context lock", 1);
 }
@@ -183,6 +187,9 @@ spock_shmem_startup(void)
 
 	/* Initialize the monitoring subsystem shared memory structures */
 	spock_monitor_shmem_startup(found);
+
+	/* Initialize the startup gate shared memory structures */
+	spock_startup_shmem_startup(found);
 
 	LWLockRelease(AddinShmemInitLock);
 }
